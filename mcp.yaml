@@ -1,0 +1,12 @@
+llm:
+  provider: ollama
+  base_url: http://127.0.0.1:11434
+  model: llama3.2:3b
+
+mcpServers:
+  retrieval-server:
+    type: remote
+    url: http://127.0.0.1:8000/mcp
+
+planner:
+  system_prompt_file: ./planner_prompt.md
