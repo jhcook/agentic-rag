@@ -2,10 +2,10 @@
 """
 MCP Retrieval Server — FastMCP Streamable HTTP
 
-Env:ironment Variables:
+Environment Variables:
     MCP_PATH: HTTP path for FastMCP (default: /mcp)
-    MCP_HOST: 127.0.0.1
-    MCP_PORT: 8000"
+    MCP_HOST: Address to listen     (default: 127.0.0.1)
+    MCP_PORT: TCP port to listen    (default: 8000)
 
 Run (dev):
     uv run python server_http.py
@@ -14,26 +14,43 @@ Run (dev):
 
 Connect URL (client side):
     http://127.0.0.1:8000/mcp
-
-Notes:
-- Uses FastMCP streamable HTTP transport (recommended over SSE).
-- For browser clients, configure CORS (see below).
 """
 
 from __future__ import annotations
+import atexit
 import os
+import signal
+import sys
+import logging
 from typing import List, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
-# import shared logic
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Import shared logic
 from rag_core import (index_documents, index_path, search, rerank, grounded_answer,
                       verify_grounding, load_store, save_store, upsert_document)
 
-# On exit save the store
-import atexit
-atexit.register(save_store)
-
+# Create FastMCP instance
 mcp = FastMCP("retrieval-server")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    logger.info(f"Received signal {signum}. Saving store and shutting down...")
+    save_store()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+# Register store save on exit
+atexit.register(save_store)
 
 @mcp.tool()
 def upsert_document_tool(uri: str, text: str) -> dict:
@@ -71,6 +88,21 @@ def verify_grounding_tool(query: str, answer: str, citations: List[str] | None =
     return verify_grounding(query, answer, citations)
 
 if __name__ == "__main__":
-    mcp.settings.streamable_http_path = os.getenv("MCP_PATH", "/mcp")
-    load_store()
-    mcp.run(transport="streamable-http")
+    try:
+        # Configure MCP
+        mcp.settings.log_level = "debug"
+        mcp.settings.streamable_http_path = os.getenv("MCP_PATH", "/mcp")
+        mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
+        mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
+        
+        # Load store
+        logger.info("Loading document store...")
+        load_store()
+        
+        # Start server
+        mcp.run(
+            transport="streamable-http")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        save_store()
+        sys.exit(1)
