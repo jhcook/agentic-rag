@@ -5,7 +5,7 @@ Run with:
     uvicorn rest_server:app --host
 """
 
-# rest_server.py
+import os, sys, logging
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -13,7 +13,17 @@ from typing import Optional, List, Dict, Any
 from rag_core import (index_path, search, rerank, grounded_answer,
                       verify_grounding, upsert_document)
 
-app = FastAPI(title="retrieval-server REST")
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Get base path
+pth = os.getenv("RAG_PATH", "api")
+
+app = FastAPI(title="retrieval-rest-server")
 
 class IndexPathReq(BaseModel):
     path: str
@@ -39,31 +49,41 @@ class VerifyReq(BaseModel):
     answer: str
     citations: Optional[List[str]] = None
 
-# rest_server.py (new model + route)
+# ----- model + route -----
 class UpsertReq(BaseModel):
     uri: str
     text: str
 
-@app.post("/api/upsert_document")
+@app.post(f"/{pth}/upsert_document")
 def api_upsert(req: UpsertReq):
     return upsert_document(req.uri, req.text)
 
-@app.post("/api/index_path")
+@app.post(f"/{pth}/index_path")
 def api_index_path(req: IndexPathReq):
     return index_path(req.path, req.glob)
 
-@app.post("/api/search")
+@app.post(f"/{pth}/search")
 def api_search(req: SearchReq):
     return search(req.query, req.k, req.hybrid)
 
-@app.post("/api/rerank")
+@app.post(f"/{pth}/rerank")
 def api_rerank(req: RerankReq):
     return rerank(req.query, req.passages, req.model)
 
-@app.post("/api/grounded_answer")
+@app.post(f"/{pth}/grounded_answer")
 def api_grounded(req: GroundedReq):
     return grounded_answer(req.query, req.passages, req.k)
 
-@app.post("/api/verify_grounding")
+@app.post(f"/{pth}/verify_grounding")
 def api_verify(req: VerifyReq):
     return verify_grounding(req.query, req.answer, req.citations)
+
+if __name__ == "__main__":
+    try:
+        # Configure app settings
+        app.host = os.getenv("RAG_HOST", "127.0.0.1")
+        app.port = int(os.getenv("RAG_PORT", "8001"))
+        
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        sys.exit(1)
