@@ -3,11 +3,10 @@ Core RAG functions: indexing, searching, reranking, synthesizing, verifying.
 """
 
 from __future__ import annotations
-from collections import Counter
-from typing import List, Dict, Any, Optional
-import logging, pathlib, json, os, hashlib, time, re
+from typing import List, Dict, Any
+import logging, pathlib, json, os, hashlib, time, asyncio
 
-from litellm import completion, _turn_on_debug
+from litellm import completion, acompletion, APIConnectionError, _turn_on_debug
 _turn_on_debug()
 
 # Set up logging
@@ -95,7 +94,6 @@ def load_store():
                     logger.warning(f"Skipping invalid JSON line: {line[:50]}...")
                     continue
         STORE = new_store  # Only update global after successful load
-        send_store_to_llm()
         logger.info(f"Successfully loaded {len(STORE.docs)} documents")
     except Exception as e:
         logger.error(f"Error loading store: {str(e)}")
@@ -105,7 +103,13 @@ def upsert_document(uri: str, text: str) -> dict:
     """Upsert a single document into the store."""
     existed = uri in STORE.docs
     STORE.add(uri, text)
-    send_to_llm(text)
+    while True:
+        try:
+            asyncio.run(send_to_llm(text))
+        except APIConnectionError:
+            time.sleep(1)
+            continue
+        break
     save_store()
     return {"upserted": True, "existed": existed}
 
@@ -117,7 +121,13 @@ def index_documents(uris: List[str]) -> Dict[str, Any]:
         try:
             text = pathlib.Path(uri).read_text(encoding="utf-8", errors="ignore")
             STORE.add(str(pathlib.Path(uri)), text)
-            send_to_llm(text)
+            while True:
+                try:
+                    asyncio.run(send_to_llm(text))
+                except APIConnectionError:
+                    time.sleep(1)
+                    continue
+                break
             save_store()
             count += 1
         except Exception:
@@ -133,35 +143,44 @@ def index_path(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
         try:
             text = fp.read_text(encoding="utf-8", errors="ignore")
             STORE.add(str(fp), text)
-            send_to_llm(text)
+            while True:
+                try:
+                    asyncio.run(send_to_llm(text))
+                except APIConnectionError:
+                    time.sleep(1)
+                    continue
+                break
             save_store()
             count += 1
         except Exception:
             pass
     return {"indexed": count, "path": str(p), "glob": glob}
 
-def send_to_llm(query: str) -> str:
+async def send_to_llm(query: str) -> str:
     """Send the query to the LLM and return the response."""
     logger.debug(f"Document Text (first 100 chars): {query[:100]}")
     try:
-        resp = completion(
+        resp = await acompletion(
                     model="ollama/llama3.2:3b",
                     messages = [{ "content": f"{query}","role": "assistant"}],
                     api_base="http://localhost:11434",
-                    stream=False,
-                    timeout=120)
-        try:
-            return resp.choices[0].message["content"]
-        except (AttributeError, TypeError, KeyError):
-            return resp["choices"][0]["message"]["content"]
-    except ValueError as e:
-        return f"Value Error: {e}"
+                    stream=True, timeout=120)
+        return resp
+    except (ValueError, APIConnectionError) as e:
+        logger.debug(f"send_to_llm: {e}")
+        raise
 
 def send_store_to_llm():
     """Send STORE to LLM for processing."""
     for uri, text in STORE.docs.items():
         logger.debug(f"Loading STORE URI: {uri}")
-        send_to_llm(text)
+        while True:
+            try:
+                asyncio.run(send_to_llm(text))
+            except APIConnectionError:
+                time.sleep(1)
+                continue
+            break
 
 def search(query: str) -> List[Dict[str, Any]]:
     """Query the LLM."""
@@ -173,8 +192,7 @@ def search(query: str) -> List[Dict[str, Any]]:
                     model="ollama/llama3.2:3b",
                     messages = [{ "content": f"{query}","role": "user"}],
                     api_base="http://localhost:11434",
-                    stream=False,
-                    timeout=60)
+                    stream=True, timeout=120)
         try:
             return resp.choices[0].message["content"]
         except (AttributeError, TypeError, KeyError):
