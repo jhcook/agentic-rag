@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from rag_core import (index_path, search, upsert_document)
+from rag_core import (index_path, search, upsert_document, send_store_to_llm)
 
 # Set up logging
 logging.basicConfig(
@@ -33,25 +33,12 @@ class SearchReq(BaseModel):
     k: int = 12
     hybrid: bool = True
 
-class RerankReq(BaseModel):
-    query: str
-    passages: List[Dict[str, Any]]
-    model: str = "cross-encoder-mini"
-
-class GroundedReq(BaseModel):
-    query: str
-    passages: Optional[List[Dict[str, Any]]] = None
-    k: int = 8
-
-class VerifyReq(BaseModel):
-    query: str
-    answer: str
-    citations: Optional[List[str]] = None
-
-# ----- model + route -----
 class UpsertReq(BaseModel):
     uri: str
     text: str
+
+class LoadStoreReq(BaseModel):
+    _ : Optional[bool] = True
 
 @app.post(f"/{pth}/upsert_document")
 def api_upsert(req: UpsertReq):
@@ -65,17 +52,10 @@ def api_index_path(req: IndexPathReq):
 def api_search(req: SearchReq):
     return search(req.query)
 
-@app.post(f"/{pth}/rerank")
-def api_rerank(req: RerankReq):
-    return rerank(req.query, req.passages, req.model)
-
-@app.post(f"/{pth}/grounded_answer")
-def api_grounded(req: GroundedReq):
-    return grounded_answer(req.query, req.passages, req.k)
-
-@app.post(f"/{pth}/verify_grounding")
-def api_verify(req: VerifyReq):
-    return verify_grounding(req.query, req.answer, req.citations)
+@app.post(f"/{pth}/load_store")
+def api_load(req: LoadStoreReq):
+    store = send_store_to_llm()
+    return {"status": "store sent to LLM", "store_summary": store}
 
 if __name__ == "__main__":
     try:

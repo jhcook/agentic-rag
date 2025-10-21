@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import shared logic
-from rag_core import (index_documents, index_path, search, load_store, save_store,
+from rag_core import (index_documents, index_path, search, load_store, save_store, search,
                       upsert_document)
 
 # Create FastMCP instance
@@ -71,21 +71,6 @@ def index_path_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
 def search_tool(query: str, k: int = 12, hybrid: bool = True):
     """Search for passages relevant to the query."""
     return search(query, k, hybrid)
-
-@mcp.tool()
-def rerank_tool(query: str, passages: List[Dict[str, Any]], model: str = "cross-encoder-mini"):
-    """Rerank passages based on their relevance to the query."""
-    return rerank(query, passages, model)
-
-@mcp.tool()
-def grounded_answer_tool(query: str, passages: List[Dict[str, Any]] | None = None, k: int = 8):
-    """Generate a grounded answer based on the query and passages."""
-    return grounded_answer(query, passages, k)
-
-@mcp.tool()
-def verify_grounding_tool(query: str, answer: str, citations: List[str] | None = None):
-    """Verify the grounding of the answer based on the citations."""
-    return verify_grounding(query, answer, citations)
 
 if __name__ == "__main__":
     try:
