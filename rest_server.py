@@ -10,8 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-from rag_core import (index_path, search, rerank, grounded_answer,
-                      verify_grounding, upsert_document)
+from rag_core import (index_path, search, upsert_document)
 
 # Set up logging
 logging.basicConfig(
@@ -64,7 +63,7 @@ def api_index_path(req: IndexPathReq):
 
 @app.post(f"/{pth}/search")
 def api_search(req: SearchReq):
-    return search(req.query, req.k, req.hybrid)
+    return search(req.query)
 
 @app.post(f"/{pth}/rerank")
 def api_rerank(req: RerankReq):

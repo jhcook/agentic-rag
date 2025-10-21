@@ -33,8 +33,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import shared logic
-from rag_core import (index_documents, index_path, search, rerank, grounded_answer,
-                      verify_grounding, load_store, save_store, upsert_document)
+from rag_core import (index_documents, index_path, search, load_store, save_store,
+                      upsert_document)
 
 # Create FastMCP instance
 mcp = FastMCP("retrieval-server")
