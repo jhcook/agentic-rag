@@ -154,6 +154,7 @@ agentic-rag$ curl -s http://127.0.0.1:8001/api/search \
 ## Resources
 
 * https://ollama.com/library/llama3.2
+* https://docs.litellm.ai/docs/
 * https://pypi.org/project/mcp/
 * https://fastapi.tiangolo.com
 * https://mcphub.tools/detail/mark3labs/mcphost
