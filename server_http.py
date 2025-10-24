@@ -22,13 +22,18 @@ import os
 import signal
 import sys
 import logging
+import asyncio
 from typing import List, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('server_http.log'),
+        logging.StreamHandler()  # Keep console output as well
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -55,22 +60,30 @@ atexit.register(save_store)
 @mcp.tool()
 def upsert_document_tool(uri: str, text: str) -> dict:
     """Upsert a single document into the store."""
-    return upsert_document(uri, text)
+    loop = asyncio.run(upsert_document(uri, text))
+    asyncio.get_event_loop().set_debug(True)
+    return loop
 
 @mcp.tool()
 def index_documents_tool(uris: List[str]) -> Dict[str, Any]:
     """Index a list of document URIs."""
-    return index_documents(uris)
+    loop = asyncio.run(index_documents(uris))
+    asyncio.get_event_loop().set_debug(True)
+    return loop
 
 @mcp.tool()
-def index_path_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
-    """Index all text files in a given path matching the glob pattern."""
-    return index_path(path, glob)
+def index_path_tool(path: str, glob: str = "**/*.txt"):
+    """Index all text files in path that match the pattern glob."""
+    return index_path(path, glob)     
 
 @mcp.tool()
-def search_tool(query: str, k: int = 12, hybrid: bool = True):
+def search_tool(query: str):
     """Search for passages relevant to the query."""
-    return search(query, k, hybrid)
+    resp = search(query)
+    #contents = [choice["message"]["content"] for choice in resp["response"]["choices"]]
+    #return "\n".join(contents)
+    return resp
+
 
 if __name__ == "__main__":
     try:

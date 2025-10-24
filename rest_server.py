@@ -5,10 +5,10 @@ Run with:
     uvicorn rest_server:app --host
 """
 
-import os, sys, logging
+import os, sys, logging, asyncio
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from rag_core import (index_path, search, upsert_document, send_store_to_llm)
 
@@ -30,8 +30,6 @@ class IndexPathReq(BaseModel):
 
 class SearchReq(BaseModel):
     query: str
-    k: int = 12
-    hybrid: bool = True
 
 class UpsertReq(BaseModel):
     uri: str

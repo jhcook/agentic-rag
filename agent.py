@@ -9,6 +9,7 @@ import json, os, sys, requests, logging
 from typing import Any, Dict
 
 from urllib3.exceptions import ReadTimeoutError
+from requests.exceptions import ConnectionError, HTTPError
 
 # Set up logging
 logging.basicConfig(
@@ -30,13 +31,12 @@ def search(query: str):
     return post("/api/search", {"query": query})
 
 def control_loop(q: str, idx: str | None=None):
-    if idx:
-        index_path(idx)
-
     try:
+        if idx:
+            index_path(path=idx)
         resp = search(q)
-        return {"response": resp}
-    except ReadTimeoutError as e:
+        return resp
+    except (ConnectionError, ReadTimeoutError, HTTPError) as e:
         logging.error(f"Timeout error during search: {e}")
 
 if __name__ == "__main__":
@@ -46,4 +46,4 @@ if __name__ == "__main__":
     q = sys.argv[1]
     idx = sys.argv[2] if len(sys.argv) > 2 else None
     res = control_loop(q, idx)
-    print(json.dumps(res, indent=2))
+    print(json.dumps(res))

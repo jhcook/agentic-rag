@@ -3,3 +3,5 @@ mcp==1.18.0
 fastapi==0.119.0
 uvicorn
 litellm
+ollama
+dill
