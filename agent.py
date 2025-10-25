@@ -20,9 +20,12 @@ logging.basicConfig(
 BASE = os.getenv("RAG_BASE", "http://127.0.0.1:8001")
 
 def post(path: str, payload: Dict[str, Any]):
-    r = requests.post(f"{BASE}{path}", json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(f"{BASE}{path}", json=payload, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    except (ConnectionError, ReadTimeoutError, HTTPError) as e:
+        logging.error(f"HTTP error during POST to {path}: {e}")
 
 def index_path(path: str, glob: str="**/*.txt"):
     return post("/api/index_path", {"path": path, "glob": glob})
