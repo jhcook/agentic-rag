@@ -5,3 +5,6 @@ uvicorn
 litellm
 ollama
 dill
+faiss-cpu
+sentence-transformers
+numpy

@@ -7,6 +7,9 @@ from typing import List, Dict, Any
 from httpcore import RemoteProtocolError
 import logging, pathlib, json, os, hashlib, time, asyncio
 
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
 from ollama import AsyncClient
 from litellm import completion, _turn_on_debug
 from litellm.exceptions import APIConnectionError
@@ -19,6 +22,17 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# -------- Embedding model --------
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+
+# FAISS index (empty for now)
+VECTORS, META = [], []
+# determine embedding dimension from the sentence-transformers model and handle empty vectors
+EMBED_DIM = EMBEDDER.get_sentence_embedding_dimension()
+# cosine if vectors are L2-normalized or explicitly normalized
+INDEX = faiss.IndexFlatIP(EMBED_DIM)
 
 # -------- In-memory store (toy) --------
 class Store:
@@ -80,7 +94,9 @@ def save_store():
 
 def load_store():
     """Load the store from disk."""
-    global STORE
+    global STORE, VECTORS, META, INDEX
+    INDEX.reset()  # Clear existing FAISS index
+    VECTORS, META = [], []  # Reset vectors and meta
     if not os.path.exists(DB_PATH):
         logger.warning(f"Store file not found at {DB_PATH}")
         return
@@ -99,6 +115,19 @@ def load_store():
                     continue
         STORE = new_store  # Only update global after successful load
         logger.info(f"Successfully loaded {len(STORE.docs)} documents")
+        # Build FAISS index from STORE
+        for entry in STORE.index:
+            for piece in _chunk(entry["text"]):
+                emb = EMBEDDER.encode(piece, normalize_embeddings=True)
+                VECTORS.append(emb)
+                META.append((entry["uri"], piece))
+            if len(VECTORS) == 0:
+                v = np.zeros((0, EMBED_DIM), dtype="float32")
+            else:
+                v = np.vstack(VECTORS).astype("float32")
+            # Add vectors only if we have them
+            if v.shape[0] > 0:
+                INDEX.add(v)
     except Exception as e:
         logger.error(f"Error loading store: {str(e)}")
         raise
@@ -234,16 +263,132 @@ def send_store_to_llm():
 
     return resp
 
-def search(query: str) -> List[Dict[str, Any]]:
-    """Query the LLM."""
-    logger.info(f"Searching for query: {query}")
-    for _ in range(3):
-        try:
-            resp = completion(
-                        model="ollama/llama3.2:3b",
-                        messages = [{"content": f"{query}","role": "user"}],
-                        api_base="http://localhost:11434",
-                        stream=False, timeout=120)
-            return resp
-        except (ValueError, OllamaError) as e:
-            logger.error(f"Ollama API Error: {e}")
+def _chunk(text, max_chars=800, overlap=120):
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        j = min(n, i + max_chars)
+        out.append(text[i:j])
+        i = j - overlap
+
+
+
+# # Persist (optional)
+# faiss.write_index(index, "docs.index")
+# np.save("docs.meta.npy", np.array(META, dtype=object))
+# index.add(V)
+
+# # Persist (optional)
+# faiss.write_index(index, "docs.index")
+# np.save("docs.meta.npy", np.array(META, dtype=object))
+
+def _vector_search(query: str, top_k: int = 5):
+    qv = EMBEDDER.encode(query, normalize_embeddings=True).astype("float32")
+    D, I = INDEX.search(qv.reshape(1, -1), top_k * 4)  # over-fetch a bit, you can re-rank/filter later
+    hits = []
+    for rank, (score, idx) in enumerate(zip(D[0], I[0])):
+        if idx == -1:
+            continue
+        uri, text = META[idx]
+        hits.append({"score": float(score), "uri": uri, "text": text})
+    # De-duplicate by URI or trim near-duplicates if you want
+    return hits[:top_k]
+
+def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
+    logger.info(f"Vector searching for: {query}")
+    candidates = _vector_search(query, top_k=top_k)
+
+    if not candidates:
+        logger.info("No vector hits; refusing to answer from outside sources.")
+        return []
+
+    # Build context, respecting char budget
+    context_parts, total_chars = [], 0
+    for i, entry in enumerate(candidates, start=1):
+        part = f"--- Document {i} (uri: {entry['uri']}) ---\n{entry['text']}\n"
+        if total_chars + len(part) > max_context_chars:
+            break
+        context_parts.append(part)
+        total_chars += len(part)
+    context = "\n".join(context_parts)
+
+    system_msg = (
+        "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
+        "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
+        "any external knowledge or make assumptions."
+    )
+    user_msg = f"Documents:\n{context}\n\nQuestion: {query}"
+
+    try:
+        resp = completion(
+            model="ollama/llama3.2:3b",
+            messages=[{"role": "system", "content": system_msg},
+                      {"role": "user", "content": user_msg}],
+            api_base="http://localhost:11434",
+            stream=False,
+            timeout=120,
+        )
+        return resp
+    except (ValueError, OllamaError) as e:
+        logger.error(f"Ollama API Error: {e}")
+        return []
+
+# def search(query: str, top_k: int = 5, max_context_chars: int = 4000) -> Any:
+#     """Search the indexed documents and ask the LLM using only those documents as context."""
+#     logger.info(f"Searching for query: {query}")
+
+#     # Build query terms consistent with indexing
+#     qterms = {w.lower() for w in query.split() if w.isalpha() and len(w) > 1}
+
+#     # Score indexed docs by overlap of terms
+#     candidates = []
+#     for entry in STORE.index:
+#         score = len(entry.get("terms", set()) & qterms)
+#         if score > 0:
+#             candidates.append((score, entry))
+
+#     # If no overlap, return empty result (or you could choose to call the model with an explicit
+#     # "I don't know" instruction). This prevents the model from using non-indexed info.
+#     if not candidates:
+#         logger.info("No indexed documents match the query terms; refusing to answer from outside sources.")
+#         return []
+
+#     # Select top_k by score, then by shorter docs first (heuristic)
+#     candidates.sort(key=lambda s_e: (-s_e[0], len(s_e[1]["text"])))
+#     selected = [e for _, e in candidates[:top_k]]
+
+#     # Build context string with a safe char limit
+#     context_parts = []
+#     total_chars = 0
+#     for i, entry in enumerate(selected, start=1):
+#         part = f"--- Document {i} (uri: {entry['uri']}) ---\n{entry['text']}\n"
+#         if total_chars + len(part) > max_context_chars:
+#             break
+#         context_parts.append(part)
+#         total_chars += len(part)
+#     context = "\n".join(context_parts)
+
+#     # Construct messages that explicitly instruct the model to use only provided documents
+#     system_msg = (
+#         "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
+#         "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
+#         "any external knowledge or make assumptions."
+#     )
+#     user_msg = f"Documents:\n{context}\n\nQuestion: {query}"
+
+#     try:
+#         resp = completion(
+#             model="ollama/llama3.2:3b",
+#             messages=[
+#                 {"role": "system", "content": system_msg},
+#                 {"role": "user", "content": user_msg},
+#             ],
+#             api_base="http://localhost:11434",
+#             stream=False,
+#             timeout=120,
+#         )
+#         return resp
+#     except (ValueError, OllamaError) as e:
+#         logger.error(f"Ollama API Error: {e}")
+#         return []
