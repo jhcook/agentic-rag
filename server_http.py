@@ -44,7 +44,6 @@ from rag_core import (
     search, 
     load_store, 
     save_store,
-    upsert_document
     upsert_document,
     get_store
 )
@@ -108,8 +107,8 @@ def upsert_document_tool(uri: str, text: str) -> dict:
         return {"error": str(e), "upserted": False}
 
 @mcp.tool()
-def index_documents_tool(uris: List[str]) -> Dict[str, Any]:
-    """Index a list of document URIs.
+def add_documents_to_index_tool(uris: List[str]) -> Dict[str, Any]:
+    """Add a list of local document file paths to the index.
     
     Args:
         uris: List of file paths to index
