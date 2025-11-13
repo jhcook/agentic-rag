@@ -89,7 +89,8 @@ atexit.register(graceful_shutdown)
 @mcp.tool()
 def upsert_document_tool(uri: str, text: str) -> dict:
     """Upsert a single document into the store.
-    
+
+    IMPORTANT: The 'uri' must be an exact, literal string and must not be modified.
     Args:
         uri: Document identifier/path
         text: Document content
@@ -109,6 +110,8 @@ def upsert_document_tool(uri: str, text: str) -> dict:
 @mcp.tool()
 def add_documents_to_index_tool(uris: List[str]) -> Dict[str, Any]:
     """Add a list of local document file paths to the index.
+def index_documents_tool(uris: List[str]) -> Dict[str, Any]:
+    """Index a list of document URIs.
     
     Args:
         uris: List of file paths to index
