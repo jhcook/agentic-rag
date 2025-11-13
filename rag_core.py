@@ -69,6 +69,10 @@ class Store:
 
 STORE = Store()
 
+def get_store() -> Store:
+    """Return the global Store instance."""
+    return STORE
+
 # -------- Persist store --------
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 

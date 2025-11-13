@@ -45,6 +45,8 @@ from rag_core import (
     load_store, 
     save_store,
     upsert_document
+    upsert_document,
+    get_store
 )
 
 # Create FastMCP instance
@@ -164,6 +166,25 @@ def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
         logger.error(f"Error searching for '{query}': {e}")
         return {"error": str(e)}
 
+@mcp.tool()
+def list_indexed_documents_tool() -> Dict[str, Any]:
+    """List all document URIs currently in the store.
+
+    Returns:
+        dict with a list of document URIs or an error
+    """
+    try:
+        logger.info("Listing indexed documents")
+        store = get_store()
+        if not store:
+            return {"uris": [], "message": "Store not loaded or empty."}
+        
+        uris = list(store.docs.keys())
+        logger.info(f"Found {len(uris)} indexed documents.")
+        return {"uris": uris}
+    except Exception as e:
+        logger.error(f"Error listing indexed documents: {e}", exc_info=True)
+        return {"error": str(e), "uris": []}
 
 if __name__ == "__main__":
     try:
