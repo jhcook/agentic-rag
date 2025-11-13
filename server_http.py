@@ -22,67 +22,147 @@ import os
 import signal
 import sys
 import logging
-import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 # Set up logging
+os.makedirs('log', exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('server_http.log'),
-        logging.StreamHandler()  # Keep console output as well
+        logging.FileHandler('log/server_http.log'),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Import shared logic
-from rag_core import (index_documents, index_path, search, load_store, save_store, search,
-                      upsert_document)
+from rag_core import (
+    index_documents, 
+    index_path, 
+    search, 
+    load_store, 
+    save_store,
+    upsert_document
+)
 
 # Create FastMCP instance
 mcp = FastMCP("retrieval-server")
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    logger.info(f"Received signal {signum}. Saving store and shutting down...")
-    save_store()
-    sys.exit(0)
+# Track if we're already shutting down to prevent duplicate saves
+_shutting_down = False
 
-# Register signal handlers
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+def graceful_shutdown(signum=None, frame=None):
+    """Handle shutdown gracefully with proper cleanup."""
+    global _shutting_down
+    
+    if _shutting_down:
+        logger.debug("Shutdown already in progress, skipping duplicate")
+        return
+    
+    _shutting_down = True
+    
+    if signum:
+        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+    else:
+        logger.info("Initiating graceful shutdown...")
+    
+    try:
+        save_store()
+        logger.info("Store saved successfully")
+    except Exception as e:
+        logger.error(f"Error saving store during shutdown: {e}", exc_info=True)
+    finally:
+        logger.info("Shutdown complete")
+        if signum:
+            sys.exit(0)
 
-# Register store save on exit
-atexit.register(save_store)
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGINT, graceful_shutdown)   # Ctrl+C
+signal.signal(signal.SIGTERM, graceful_shutdown)  # kill command
+
+# Register cleanup on normal exit
+atexit.register(graceful_shutdown)
 
 @mcp.tool()
 def upsert_document_tool(uri: str, text: str) -> dict:
-    """Upsert a single document into the store."""
-    loop = asyncio.run(upsert_document(uri, text))
-    asyncio.get_event_loop().set_debug(True)
-    return loop
+    """Upsert a single document into the store.
+    
+    Args:
+        uri: Document identifier/path
+        text: Document content
+        
+    Returns:
+        dict with upserted status and whether document existed
+    """
+    try:
+        logger.info(f"Upserting document: {uri}")
+        result = upsert_document(uri, text)
+        logger.info(f"Successfully upserted document: {uri}")
+        return result
+    except Exception as e:
+        logger.error(f"Error upserting document {uri}: {e}")
+        return {"error": str(e), "upserted": False}
 
 @mcp.tool()
 def index_documents_tool(uris: List[str]) -> Dict[str, Any]:
-    """Index a list of document URIs."""
-    loop = asyncio.run(index_documents(uris))
-    asyncio.get_event_loop().set_debug(True)
-    return loop
+    """Index a list of document URIs.
+    
+    Args:
+        uris: List of file paths to index
+        
+    Returns:
+        dict with count of indexed documents
+    """
+    try:
+        logger.info(f"Indexing {len(uris)} documents")
+        result = index_documents(uris)
+        logger.info(f"Successfully indexed {result.get('indexed', 0)} documents")
+        return result
+    except Exception as e:
+        logger.error(f"Error indexing documents: {e}")
+        return {"error": str(e), "indexed": 0}
 
 @mcp.tool()
-def index_path_tool(path: str, glob: str = "**/*.txt"):
-    """Index all text files in path that match the pattern glob."""
-    return index_path(path, glob)     
+def index_path_tool(path: str, glob: str = "**/*.txt") -> Optional[Dict[str, Any]]:
+    """Index all text files in path that match the pattern glob.
+    
+    Args:
+        path: Directory path to search
+        glob: File pattern to match (default: **/*.txt)
+        
+    Returns:
+        dict with indexed count and total vectors
+    """
+    try:
+        logger.info(f"Indexing path: {path} with pattern: {glob}")
+        result = index_path(path, glob)
+        logger.info(f"Successfully indexed path: {path}")
+        return result
+    except Exception as e:
+        logger.error(f"Error indexing path {path}: {e}")
+        return {"error": str(e), "indexed": 0, "total_vectors": 0}
 
 @mcp.tool()
-def search_tool(query: str):
-    """Search for passages relevant to the query."""
-    resp = search(query)
-    #contents = [choice["message"]["content"] for choice in resp["response"]["choices"]]
-    #return "\n".join(contents)
-    return resp
+def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """Search for passages relevant to the query.
+    
+    Args:
+        query: Search query string
+        top_k: Number of top results to return (default: 5)
+        
+    Returns:
+        dict with search results or error
+    """
+    try:
+        logger.info(f"Searching for: {query}")
+        result = search(query, top_k=top_k)
+        logger.info(f"Search completed for: {query}")
+        return result
+    except Exception as e:
+        logger.error(f"Error searching for '{query}': {e}")
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":
@@ -96,11 +176,19 @@ if __name__ == "__main__":
         # Load store
         logger.info("Loading document store...")
         load_store()
+        logger.info("Document store loaded successfully")
+        
+        # Log server configuration
+        logger.info(f"Starting MCP server on {mcp.settings.host}:{mcp.settings.port}{mcp.settings.streamable_http_path}")
+        logger.info("Press Ctrl+C to gracefully shutdown")
         
         # Start server
-        mcp.run(
-            transport="streamable-http")
+        mcp.run(transport="streamable-http")
+        
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+        graceful_shutdown()
     except Exception as e:
-        logger.error(f"Server error: {e}")
-        save_store()
+        logger.error(f"Fatal server error: {e}", exc_info=True)
+        graceful_shutdown()
         sys.exit(1)
