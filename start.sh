@@ -105,6 +105,9 @@ cleanup_on_failure() {
         echo -e "${RED}========================================${NC}"
         echo -e "${RED}Startup failed. Check log/start.log for details${NC}"
         echo -e "${RED}========================================${NC}"
+
+        # Exit with the original error code to ensure script terminates
+        exit "$exit_code"
     fi
 }
 
