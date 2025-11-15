@@ -17,6 +17,10 @@ import numpy as np
 from dotenv import load_dotenv  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
 from ollama import AsyncClient  # type: ignore
+
+# Load .env early so configuration is available at module import time
+load_dotenv()
+
 try:
     from litellm import completion  # type: ignore
     from litellm.exceptions import APIConnectionError  # type: ignore
@@ -236,54 +240,98 @@ def _rebuild_faiss_index():
     """Rebuild the FAISS index from store documents."""
     global _STORE
     
-    # Get FAISS globals lazily
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
-    embedder = get_embedder()
-    
-    logger.info("Rebuilding FAISS index from store documents")
-    # Clear existing data
-    VECTORS.clear()
-    META.clear()
-    INDEX_TO_META.clear()
-    if INDEX is not None:
-        INDEX.reset()  # type: ignore
-    
-    # Use _STORE directly to avoid circular calls
-    if _STORE is None:
-        logger.warning("No store available to rebuild index from")
+    # Prevent recursive calls
+    if hasattr(_rebuild_faiss_index, '_in_progress') and _rebuild_faiss_index._in_progress:
+        logger.warning("_rebuild_faiss_index already in progress, skipping recursive call")
         return
+    
+    _rebuild_faiss_index._in_progress = True
+    
+    try:
+        # Skip in debug mode
+        if DEBUG_MODE:
+            logger.debug("Debug mode: skipping FAISS index rebuild")
+            return
+    
+        # Get FAISS globals and embedder
+        _, _, INDEX, INDEX_TO_META, _ = get_faiss_globals()
+        embedder = get_embedder()
         
-    faiss_index = 0
-    
-    # Process documents directly from store.docs (no redundant index)
-    for uri, text in _STORE.docs.items():
-        for chunk in _chunk(text):
-            emb = embedder.encode(chunk, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
-            emb_array = np.array(emb, dtype=np.float32)
+        logger.info("Rebuilding FAISS index from store documents")
+        # Clear existing data
+        INDEX_TO_META.clear()
+        if INDEX is not None:
+            INDEX.reset()  # type: ignore
+        
+        # Use _STORE directly to avoid circular calls
+        if _STORE is None:
+            logger.warning("No store available to rebuild index from")
+            return
+        
+        # Collect all chunks first (batch processing for efficiency)
+        all_chunks = []
+        chunk_metadata = []
+
+        logger.info(f"Processing {len(_STORE.docs)} documents for FAISS indexing")
+        
+        # Process documents with chunking
+        for uri, text in _STORE.docs.items():
+            logger.debug(f"Document {uri}: {len(text)} chars")
             
-            # Temporarily store for batch addition
-            VECTORS.append(emb_array)
-            META.append((uri, chunk))
-            INDEX_TO_META[faiss_index] = (uri, chunk)
-            faiss_index += 1
+            # Chunk the document
+            max_chars = 800
+            overlap = 120
+            i = 0
+            n = len(text)
+            chunk_count = 0
+            
+            while i < n:
+                j = min(n, i + max_chars)
+                chunk = text[i:j]
+                all_chunks.append(chunk)
+                chunk_metadata.append(uri)
+                chunk_count += 1
+                
+                # Increment position correctly to avoid infinite loop
+                i += max_chars - overlap
+                if i >= n:
+                    break
+            
+            logger.debug(f"Created {chunk_count} chunks from {uri}")
+
+        if not all_chunks:
+            logger.warning("No chunks to index")
+            return
+
+        logger.info(f"Encoding {len(all_chunks)} chunks in batch")
+
+        # Encode all chunks in ONE batch to avoid memory accumulation
+        embeddings = embedder.encode(all_chunks, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False)  # type: ignore
+
+        # Add to FAISS index
+        if INDEX is not None:
+            embeddings_array = np.array(embeddings, dtype=np.float32)
+            INDEX.add(embeddings_array)  # type: ignore
+
+            # Store metadata
+            for idx, (uri, chunk) in enumerate(zip(chunk_metadata, all_chunks)):
+                INDEX_TO_META[idx] = (uri, chunk)
+
+            logger.info(f"Added {len(all_chunks)} vectors to FAISS index")
+        else:
+            logger.warning("No FAISS index available")
     
-    if len(VECTORS) > 0 and INDEX is not None:
-        v = np.vstack(VECTORS)
-        INDEX.add(v)  # type: ignore
-        logger.info(f"Added {len(VECTORS)} vectors to FAISS index")
-        # Clear temporary storage to save memory
-        VECTORS.clear()
-    else:
-        logger.warning("No vectors to add to FAISS index or FAISS not available")
+    finally:
+        _rebuild_faiss_index._in_progress = False
 
 def load_store():
     """Load the store from disk and rebuild FAISS index."""
     global _STORE
-    
+
     if not os.path.exists(DB_PATH):
         logger.warning(f"Store file not found at {DB_PATH}")
         return
-    
+
     try:
         logger.info(f"Loading store from {DB_PATH}")
         new_store = Store()
@@ -296,20 +344,20 @@ def load_store():
                 except json.JSONDecodeError as e:
                     logger.warning(f"load_store: {e}")
                     continue
-        
+
         # Replace store contents (no redundant index to maintain)
         if _STORE is None:
             _STORE = Store()
         _STORE.docs.clear()
         _STORE.docs.update(new_store.docs)
         logger.info(f"Successfully loaded {len(_STORE.docs)} documents")
-        
+
         # Set last loaded timestamp
         _STORE._last_loaded = time.time()
-        
+
         # Rebuild FAISS index once after loading all documents
         _rebuild_faiss_index()
-        
+
     except Exception as e:
         logger.error(f"Error loading store: {str(e)}")
         raise
@@ -317,17 +365,17 @@ def load_store():
 def upsert_document(uri: str, text: str) -> Dict[str, Any]:
     """Upsert a single document into the store."""
     global _STORE
-    
+
     # Get FAISS globals and embedder lazily
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
+    _, _, INDEX, INDEX_TO_META, _ = get_faiss_globals()
     embedder = get_embedder()
-    
+
     _ensure_store_synced()
-    
+
     # Ensure store is initialized
     if _STORE is None:
         _STORE = Store()
-        
+
     existed = uri in _STORE.docs
     _STORE.add(uri, text)
     
@@ -343,8 +391,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         if embedder is not None:
             emb = embedder.encode(piece, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
             emb_array = np.array(emb, dtype=np.float32)
-            VECTORS.append(emb_array)
-            META.append((uri, piece))
+            # Add directly to INDEX and INDEX_TO_META (no need for VECTORS/META accumulators)
             if INDEX is not None:
                 INDEX.add(emb_array.reshape(1, -1))  # type: ignore
                 INDEX_TO_META[base_index + chunk_offset] = (uri, piece)
@@ -359,7 +406,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
 def index_documents(uris: List[str]) -> Dict[str, Any]:
     """Index a list of document URIs."""
     # Get FAISS globals and embedder lazily
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
+    _, _, INDEX, INDEX_TO_META, _ = get_faiss_globals()
     embedder = get_embedder()
     
     count = 0
@@ -406,11 +453,11 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     return files, resolved
 
 def _read_and_store_files(files: List[pathlib.Path]) -> List[str]:
-    """Read and store files into the STORE."""
+    """Read and store files into the _STORE."""
     global _STORE
     
     # Get FAISS globals and embedder lazily
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
+    _, _, INDEX, INDEX_TO_META, _ = get_faiss_globals()
     embedder = get_embedder()
     
     logger.debug(f"Reading and storing {len(files)} files")
@@ -453,7 +500,7 @@ def _read_and_store_files(files: List[pathlib.Path]) -> List[str]:
 def index_path(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
     """Index all text files in a given path matching the glob pattern."""
     # Get FAISS globals to access INDEX
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
+    _, _, INDEX, _, _ = get_faiss_globals()
     
     try:
         files, resolved = _collect_files(path, glob)
@@ -536,7 +583,7 @@ def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
 def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
     """Perform vector similarity search using FAISS."""
     # Get FAISS globals and embedder lazily
-    VECTORS, META, INDEX, INDEX_TO_META, EMBED_DIM = get_faiss_globals()
+    _, _, INDEX, INDEX_TO_META, _ = get_faiss_globals()
     embedder = get_embedder()
     
     if INDEX is None or INDEX.ntotal == 0:  # type: ignore

@@ -10,3 +10,4 @@ sentence-transformers==5.1.2
 torch
 uvicorn==0.38.0
 python-dotenv==1.0.1
+uv
