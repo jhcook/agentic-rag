@@ -48,7 +48,7 @@ $ ollama serve
 ```
 
 ```bash
-agentic-rag$ python3 server_http.py
+agentic-rag$ python3 http_server.py
 2025-10-21 10:07:36,790 - rag_core - INFO - Initialized new Store instance
 2025-10-21 10:07:36,809 - __main__ - INFO - Loading document store...
 2025-10-21 10:07:36,810 - rag_core - INFO - Loading store from ./rag_store.jsonl
@@ -66,7 +66,7 @@ agentic-rag$
 ```
 
 ```bash
-agentic-rag$ mcphost --model ollama:llama3.2:3b --config mcp.yaml
+agentic-rag$ mcphost --model ollama:llama3.2:1b --config mcp.yaml
 ```
 
 ## Development
@@ -83,7 +83,7 @@ agentic-rag$ pytest -v --cov=rag_core tests/ -s
 Running the HTTP Server:
 
 ```bash
-agentic-rag$ uv run python server_http.py
+agentic-rag$ uv run python http_server.py
 2025-10-21 09:39:20,482 - rag_core - INFO - Initialized new Store instance
 2025-10-21 09:39:20,502 - rag_core - INFO - Loading store from ./rag_store.jsonl
 2025-10-21 09:39:20,502 - rag_core - INFO - Initialized new Store instance
@@ -111,7 +111,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
 MCP Server:
 
 ```bash
-agentic-rag$ mcphost --model ollama:llama3.2:3b --config mcp.yaml
+agentic-rag$ mcphost --model ollama:llama3.2:1b --config mcp.yaml
 
 ```
 
