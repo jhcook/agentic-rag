@@ -42,11 +42,36 @@ def control_loop(q: str, idx: str | None=None):
     except (ConnectionError, ReadTimeoutError, HTTPError) as e:
         logging.error(f"Timeout error during search: {e}")
 
+def parse_command(user_input: str):
+    """Parse user input to detect indexing commands."""
+    # Check for index commands like "index docs", "index path/to/dir"
+    if user_input.lower().startswith("index "):
+        # Extract the path after "index "
+        path = user_input[6:].strip()
+        if path:
+            return "index", path
+    return "search", user_input
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: agent.py 'your question' [optional_index_path]", file=sys.stderr)
+        print("Examples:", file=sys.stderr)
+        print("  agent.py 'index docs'           # Index docs directory", file=sys.stderr) 
+        print("  agent.py 'what is my name?'     # Search query", file=sys.stderr)
+        print("  agent.py 'search query' docs    # Search + also index docs", file=sys.stderr)
         sys.exit(2)
-    q = sys.argv[1]
-    idx = sys.argv[2] if len(sys.argv) > 2 else None
-    res = control_loop(q, idx)
-    print(json.dumps(res))
+    
+    user_input = sys.argv[1]
+    explicit_index_path = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    # Parse the command
+    command_type, content = parse_command(user_input)
+    
+    if command_type == "index":
+        # Just index, don't search
+        result = index_path(path=content)
+        print(json.dumps(result))
+    else:
+        # Search (and optionally index first)
+        result = control_loop(content, explicit_index_path)
+        print(json.dumps(result))
