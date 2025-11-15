@@ -1,20 +1,37 @@
 """
 Core RAG functions: indexing, searching, reranking, synthesizing, verifying.
 """
+# type: ignore
 
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from httpcore import RemoteProtocolError
 import logging, pathlib, json, os, hashlib, time, asyncio
 
-import faiss
+try:
+    import faiss  # type: ignore
+except ImportError:
+    faiss = None
+
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from ollama import AsyncClient
-from litellm import completion, _turn_on_debug
-from litellm.exceptions import APIConnectionError
-from litellm.llms.ollama.common_utils import OllamaError
-_turn_on_debug()
+from dotenv import load_dotenv  # type: ignore
+from sentence_transformers import SentenceTransformer  # type: ignore
+from ollama import AsyncClient  # type: ignore
+try:
+    from litellm import completion  # type: ignore
+    from litellm.exceptions import APIConnectionError  # type: ignore
+    from litellm.llms.ollama.common_utils import OllamaError  # type: ignore
+except ImportError:
+    completion = None
+    APIConnectionError = Exception
+    OllamaError = Exception
+
+# Enable debug logging if available
+try:
+    import litellm  # type: ignore
+    litellm.set_verbose = True  # type: ignore
+except (ImportError, AttributeError):
+    pass
 
 # Set up logging
 logging.basicConfig(
@@ -23,55 +40,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -------- Embedding model --------
-EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+# Load environment variables from an optional .env file
+load_dotenv()
 
-# FAISS index (empty for now)
+# -------- Embedding model --------
+EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "sentence-transformers/paraphrase-MiniLM-L3-v2")
+OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
+ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
+try:
+    EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+except OSError as exc:
+    message = (
+        f"Failed to load embedding model '{EMBED_MODEL_NAME}'. "
+        "Confirm the identifier exists on Hugging Face or run `hf auth login` "
+        "to provide credentials."
+    )
+    logger.critical(message)
+    raise SystemExit(message) from exc
+
+# FAISS index - single source of truth for embeddings
+# VECTORS list is only used temporarily during batch operations, then cleared
 VECTORS: List[np.ndarray] = []
 META: List[tuple[str, str]] = []
-# determine embedding dimension from the sentence-transformers model and handle empty vectors
+# determine embedding dimension from the sentence-transformers model
 EMBED_DIM = EMBEDDER.get_sentence_embedding_dimension()
-# cosine if vectors are L2-normalized or explicitly normalized
-INDEX = faiss.IndexFlatIP(EMBED_DIM)
+if faiss is not None:
+    INDEX = faiss.IndexFlatIP(EMBED_DIM)  # type: ignore
+    # Map FAISS index positions to (uri, chunk_text) for retrieval
+    INDEX_TO_META: Dict[int, tuple[str, str]] = {}
+else:
+    INDEX = None  # type: ignore
+    INDEX_TO_META: Dict[int, tuple[str, str]] = {}
 
 # -------- In-memory store (toy) --------
 class Store:
-    """A simple in-memory document store."""
+    """Optimized document store - single source of truth for text."""
     def __init__(self):
-        self.docs: Dict[str, str] = {}
-        self.index: List[Dict[str, Any]] = []
-        logger.info("Initialized new Store instance")
+        self.docs: Dict[str, str] = {}  # URI -> full text (single storage)
+        self._last_loaded: float = 0.0  # For synchronization tracking
+        logger.debug("Initialized new Store instance")
 
     def add(self, uri: str, text: str):
-        """Add a document to the store and index."""
+        """Add a document to the store."""
         logger.debug(f"Adding document: {uri}")
         self.docs[uri] = text
-        
-        # Clear existing index entries for this URI
-        self.index = [idx for idx in self.index if idx["uri"] != uri]
-        
-        # Create index entry with preprocessed terms
-        terms = {word.lower() for word in text.split() 
-                if word.isalpha() and len(word) > 1}
-        
-        # Add new index entry
-        index_entry = {
-            "uri": uri,
-            "text": text,
-            "terms": terms
-        }
-        self.index.append(index_entry)
-        
-        logger.debug(f"Added document {uri} with {len(terms)} terms")
+        logger.debug(f"Added document {uri}")
+        logger.debug(f"Store now contains {len(self.docs)} documents")
         logger.debug(f"Store now contains {len(self.docs)} documents")
 
+    def _ensure_last_loaded_exists(self):
+        """Ensure _last_loaded attribute exists for compatibility."""
+        if not hasattr(self, '_last_loaded'):
+            self._last_loaded = 0.0
 
-STORE = Store()
+
+# Global store instance - lazily initialized
+_STORE: Optional[Store] = None
+
+def _ensure_store_synced():
+    """Ensure the store is synchronized with disk if modified externally."""
+    if not os.path.exists(DB_PATH):
+        return
+    
+    try:
+        # Check if the file was modified after our last load
+        file_mtime = os.path.getmtime(DB_PATH)
+        store = get_store()
+        
+        # Add a last_loaded timestamp to track when we last synced
+        if not hasattr(store, '_last_loaded'):
+            store._last_loaded = 0
+            
+        if file_mtime > store._last_loaded:
+            logger.info("Detected external changes, reloading store from disk")
+            load_store()
+            store._last_loaded = time.time()
+    except Exception as e:
+        logger.warning(f"Error checking store sync: {e}")
 
 def get_store() -> Store:
-    """Return the global Store instance."""
-    return STORE
+    """Return the global Store instance, creating it if necessary."""
+    global _STORE
+    if _STORE is None:
+        _STORE = Store()
+        # Try to load existing data
+        try:
+            load_store()
+        except Exception as e:
+            logger.debug(f"No existing store to load: {e}")
+    return _STORE
 
 # -------- Persist store --------
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
@@ -82,47 +140,64 @@ def _hash_uri(uri: str) -> str:
 def save_store():
     """Save the store to disk."""
     try:
+        store = get_store()
         logger.info(f"Saving store to {DB_PATH}")
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         with open(DB_PATH, "w", encoding="utf-8") as f:
-            for uri, text in STORE.docs.items():
-                rec = {
+            for uri, text in store.docs.items():
+                rec: Dict[str, Any] = {
                     "uri": uri,
                     "id": _hash_uri(uri),
                     "text": text,
                     "ts": int(time.time())
                 }
                 f.write(json.dumps(rec) + "\n")
-        logger.info(f"Successfully saved {len(STORE.docs)} documents")
+        logger.info(f"Successfully saved {len(get_store().docs)} documents")
+        
+        # Update last loaded timestamp to prevent unnecessary reloads
+        get_store()._last_loaded = time.time()
     except Exception as e:
         logger.error(f"Error saving store: {str(e)}")
         raise
 
 def _rebuild_faiss_index():
-    """Rebuild the FAISS index from STORE documents."""
-    global VECTORS, META, INDEX
+    """Rebuild the FAISS index from store documents."""
+    global VECTORS, META, INDEX, INDEX_TO_META
     
-    logger.info("Rebuilding FAISS index from store")
-    VECTORS, META = [], []
-    INDEX.reset()
+    logger.info("Rebuilding FAISS index from store documents")
+    # Clear existing data
+    VECTORS.clear()
+    META.clear()
+    INDEX_TO_META.clear()
+    if INDEX is not None:
+        INDEX.reset()  # type: ignore
     
-    for entry in STORE.index:
-        for piece in _chunk(entry["text"]):
-            emb = EMBEDDER.encode(piece, normalize_embeddings=True)
-            VECTORS.append(emb)
-            META.append((entry["uri"], piece))
+    store = get_store()
+    faiss_index = 0
     
-    if len(VECTORS) > 0:
-        v = np.vstack(VECTORS).astype("float32")
-        INDEX.add(v)
+    # Process documents directly from store.docs (no redundant index)
+    for uri, text in store.docs.items():
+        for chunk in _chunk(text):
+            emb = EMBEDDER.encode(chunk, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+            emb_array = np.array(emb, dtype=np.float32)
+            
+            # Temporarily store for batch addition
+            VECTORS.append(emb_array)
+            META.append((uri, chunk))
+            INDEX_TO_META[faiss_index] = (uri, chunk)
+            faiss_index += 1
+    
+    if len(VECTORS) > 0 and INDEX is not None:
+        v = np.vstack(VECTORS)
+        INDEX.add(v)  # type: ignore
         logger.info(f"Added {len(VECTORS)} vectors to FAISS index")
+        # Clear temporary storage to save memory
+        VECTORS.clear()
     else:
-        logger.warning("No vectors to add to FAISS index")
+        logger.warning("No vectors to add to FAISS index or FAISS not available")
 
 def load_store():
     """Load the store from disk and rebuild FAISS index."""
-    global STORE
-    
     if not os.path.exists(DB_PATH):
         logger.warning(f"Store file not found at {DB_PATH}")
         return
@@ -140,8 +215,14 @@ def load_store():
                     logger.warning(f"load_store: {e}")
                     continue
         
-        STORE = new_store
-        logger.info(f"Successfully loaded {len(STORE.docs)} documents")
+        # Replace store contents (no redundant index to maintain)
+        store = get_store()
+        store.docs.clear()
+        store.docs.update(new_store.docs)
+        logger.info(f"Successfully loaded {len(store.docs)} documents")
+        
+        # Set last loaded timestamp
+        store._last_loaded = time.time()
         
         # Rebuild FAISS index once after loading all documents
         _rebuild_faiss_index()
@@ -150,20 +231,24 @@ def load_store():
         logger.error(f"Error loading store: {str(e)}")
         raise
 
-def upsert_document(uri: str, text: str) -> dict:
+def upsert_document(uri: str, text: str) -> Dict[str, Any]:
     """Upsert a single document into the store."""
-    existed = uri in STORE.docs
-    STORE.add(uri, text)
+    _ensure_store_synced()
+    existed = uri in get_store().docs
+    get_store().add(uri, text)
     
     # Add embeddings for new document
     for piece in _chunk(text):
-        emb = EMBEDDER.encode(piece, normalize_embeddings=True)
-        VECTORS.append(emb)
+        emb = EMBEDDER.encode(piece, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+        emb_array = np.array(emb, dtype=np.float32)
+        VECTORS.append(emb_array)
         META.append((uri, piece))
-        INDEX.add(emb.reshape(1, -1).astype("float32"))
+        if INDEX is not None:
+            INDEX.add(emb_array.reshape(1, -1))  # type: ignore
     
     save_store()
-    logger.info(f"Upserted document {uri} (existed: {existed}), index now has {INDEX.ntotal} vectors")
+    total_vectors = INDEX.ntotal if INDEX is not None else 0  # type: ignore
+    logger.info(f"Upserted document {uri} (existed: {existed}), index now has {total_vectors} vectors")
     return {"upserted": True, "existed": existed}
 
 # -------- Retrieval / Index --------
@@ -173,21 +258,25 @@ def index_documents(uris: List[str]) -> Dict[str, Any]:
     for uri in uris:
         try:
             text = pathlib.Path(uri).read_text(encoding="utf-8", errors="ignore")
-            STORE.add(str(pathlib.Path(uri)), text)
+            # Store document
+            get_store().add(str(pathlib.Path(uri)), text)
             
             # Add embeddings
             for piece in _chunk(text):
-                emb = EMBEDDER.encode(piece, normalize_embeddings=True)
-                VECTORS.append(emb)
+                emb = EMBEDDER.encode(piece, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+                emb_array = np.array(emb, dtype=np.float32)
+                VECTORS.append(emb_array)
                 META.append((str(pathlib.Path(uri)), piece))
-                INDEX.add(emb.reshape(1, -1).astype("float32"))
+                if INDEX is not None:
+                    INDEX.add(emb_array.reshape(1, -1))  # type: ignore
             
             count += 1
         except Exception as e:
             logger.warning(f"Failed to index {uri}: {e}")
     
     save_store()
-    logger.info(f"Indexed {count} documents, index now has {INDEX.ntotal} vectors")
+    index_total = INDEX.ntotal if INDEX is not None else 0  # type: ignore
+    logger.info(f"Indexed {count} documents, index now has {index_total} vectors")
     return {"indexed": count}
 
 def _collect_files(path: str, glob: str) -> List[pathlib.Path]:
@@ -199,55 +288,60 @@ def _collect_files(path: str, glob: str) -> List[pathlib.Path]:
 def _read_and_store_files(files: List[pathlib.Path]) -> List[str]:
     """Read and store files into the STORE."""
     logger.debug(f"Reading and storing {len(files)} files")
-    texts = []
+    texts: List[str] = []
     for fp in files:
         try:
             text = fp.read_text(encoding="utf-8", errors="ignore")
-            STORE.add(str(fp), text)
+            get_store().add(str(fp), text)
             
-            # Add embeddings
-            for piece in _chunk(text):
-                emb = EMBEDDER.encode(piece, normalize_embeddings=True)
-                VECTORS.append(emb)
-                META.append((str(fp), piece))
-                INDEX.add(emb.reshape(1, -1).astype("float32"))
+            # Add embeddings efficiently
+            chunk_count = 0
+            base_index = INDEX.ntotal if INDEX is not None else 0  # type: ignore
+            
+            for chunk in _chunk(text):
+                emb = EMBEDDER.encode(chunk, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+                emb_array = np.array(emb, dtype=np.float32)
+                
+                if INDEX is not None:
+                    INDEX.add(emb_array.reshape(1, -1))  # type: ignore
+                    INDEX_TO_META[base_index + chunk_count] = (str(fp), chunk)
+                    chunk_count += 1
             
             texts.append(text)
         except Exception as e:
             logger.warning(f"Failed to read {fp}: {e}")
     
     save_store()
-    logger.info(f"Stored {len(texts)} files, index now has {INDEX.ntotal} vectors")
+    index_total = INDEX.ntotal if INDEX is not None else 0  # type: ignore
+    logger.info(f"Stored {len(texts)} files, index now has {index_total} vectors")
     return texts
 
 def index_path(path: str, glob: str = "**/*.txt") -> Optional[Any]:
     """Index all text files in a given path matching the glob pattern."""
     files = _collect_files(path, glob)
-    texts = _read_and_store_files(files)
+    _texts = _read_and_store_files(files)
     
-    return {"indexed": len(files), "total_vectors": INDEX.ntotal}
+    index_total = INDEX.ntotal if INDEX is not None else 0  # type: ignore
+    return {"indexed": len(files), "total_vectors": index_total}
 
-async def send_to_llm(query: List[str]) -> str:
+async def send_to_llm(query: List[str]) -> Any:
     """Send the query to the LLM and return the response."""
-    client = AsyncClient(host="http://127.0.0.1:11434")
+    client = AsyncClient(host=OLLAMA_API_BASE)
     messages = [{"content": f"{text}", "role": "user"} for text in query]
     try:
-        resp = await client.chat(
-            model="llama3.2:3b",
+        resp = await client.chat(  # type: ignore
+            model=ASYNC_LLM_MODEL_NAME,
             messages=messages
         )
         return resp
-    except (ValueError, APIConnectionError, RemoteProtocolError) as e:
+    except (ValueError, APIConnectionError, RemoteProtocolError) as e:  # type: ignore
         logger.debug(f"send_to_llm: {e}")
         raise
 
-def send_store_to_llm():
-    """Send STORE to LLM for processing, waiting for completion whether an
-    event loop is running or not.
-    """
-    logger.debug("Loading STORE")
-    resp = None
-    texts = list(STORE.docs.values())
+def send_store_to_llm() -> str:
+    """Send the entire store as context to the LLM for processing."""
+    _ensure_store_synced()
+    texts = list(get_store().docs.values())
 
     for _ in range(3):
         try:
@@ -277,7 +371,7 @@ def send_store_to_llm():
 
 def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
     """Chunk text into pieces of max_chars with overlap."""
-    out = []
+    out: List[str] = []
     i = 0
     n = len(text)
     while i < n:
@@ -288,38 +382,36 @@ def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
             break
     return out
 
-def _vector_search(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    """Perform vector search using FAISS index."""
-    if INDEX.ntotal == 0:
-        logger.warning("FAISS index is empty")
+def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
+    """Perform vector similarity search using FAISS."""
+    if INDEX is None or INDEX.ntotal == 0:  # type: ignore
+        logger.debug("No FAISS index available for vector search")
         return []
     
-    qv = EMBEDDER.encode(query, normalize_embeddings=True).astype("float32")
-    # Over-fetch for potential re-ranking/deduplication
-    k = min(top_k * 4, INDEX.ntotal)
-    D, I = INDEX.search(qv.reshape(1, -1), k)
+    # Generate query embedding
+    query_emb = EMBEDDER.encode(query, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+    query_array = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+    
+    # Search FAISS index
+    scores, indices = INDEX.search(query_array, min(k, INDEX.ntotal))  # type: ignore
     
     hits = []
     seen_uris = set()
-    for score, idx in zip(D[0], I[0]):
-        if idx == -1:
-            continue
-        uri, text = META[idx]
-        
-        # Deduplicate by URI - keep highest scoring chunk per document
-        if uri not in seen_uris:
-            hits.append({"score": float(score), "uri": uri, "text": text})
-            seen_uris.add(uri)
-            
-        if len(hits) >= top_k:
-            break
+    
+    for score, idx in zip(scores[0], indices[0]):
+        if idx in INDEX_TO_META:
+            uri, text = INDEX_TO_META[idx]
+            # Deduplicate by URI - keep highest scoring chunk per document
+            if uri not in seen_uris:
+                hits.append({"score": float(score), "uri": uri, "text": text})
+                seen_uris.add(uri)
     
     return hits
 
 def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
     """Search the indexed documents and ask the LLM using only those documents as context."""
     logger.info(f"Vector searching for: {query}")
-    candidates = _vector_search(query, top_k=top_k)
+    candidates = _vector_search(query, k=top_k)
 
     if not candidates:
         logger.info("No vector hits; refusing to answer from outside sources.")
@@ -331,9 +423,9 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
         part = f"--- Document {i} (uri: {entry['uri']}) ---\n{entry['text']}\n"
         if total_chars + len(part) > max_context_chars:
             break
-        context_parts.append(part)
+        context_parts.append(part)  # type: ignore
         total_chars += len(part)
-    context = "\n".join(context_parts)
+    context = "\n".join(context_parts)  # type: ignore
 
     system_msg = (
         "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
@@ -343,15 +435,21 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
     user_msg = f"Documents:\n{context}\n\nQuestion: {query}"
 
     try:
-        resp = completion(
-            model="ollama/llama3.2:3b",
+        if completion is None:
+            return {"error": "LiteLLM not available"}
+            
+        resp = completion(  # type: ignore
+            model=LLM_MODEL_NAME,
             messages=[{"role": "system", "content": system_msg},
                       {"role": "user", "content": user_msg}],
-            api_base="http://localhost:11434",
+            api_base=OLLAMA_API_BASE,
             stream=False,
             timeout=120,
         )
         return resp
-    except (ValueError, OllamaError) as e:
+    except (ValueError, OllamaError) as e:  # type: ignore
         logger.error(f"Ollama API Error: {e}")
-        return {"error": str(e)}
+        return {"error": str(e)}  # type: ignore
+    except Exception as e:  # type: ignore
+        logger.error(f"Unexpected error in completion: {e}")
+        return {"error": str(e)}  # type: ignore
