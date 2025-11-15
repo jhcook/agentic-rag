@@ -54,7 +54,8 @@ from rag_core import (
     load_store, 
     save_store,
     upsert_document,
-    get_store
+    get_store,
+    resolve_input_path,
 )
 
 # Create FastMCP instance
@@ -234,18 +235,38 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
         logger.error(f"Error upserting document {uri}: {e}")
         return {"error": str(e), "upserted": False}
 
+def _normalize_glob(glob: Optional[str]) -> str:
+    """Normalize the incoming glob string and handle common regex mistakes."""
+    default_glob = "**/*.txt"
+    if not glob or not glob.strip():
+        return default_glob
+    cleaned = glob.strip()
+    # Some clients mistakenly send regex '**/.*' meaning 'anything'
+    if cleaned in {"**/.*", "./**/.*"}:
+        logger.warning("Received regex-style glob '%s'; falling back to '%s'", cleaned, default_glob)
+        return default_glob
+    return cleaned
+
 @mcp.tool()
 def index_documents_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
     """Index every file under `path` that matches `glob` by upserting each document."""
     try:
-        base = Path(path)
-        if not base.exists():
-            return {"error": f"Path not found: {path}", "indexed": 0}
+        try:
+            base = resolve_input_path(path)
+        except FileNotFoundError as exc:
+            logger.warning(str(exc))
+            return {"error": str(exc), "indexed": 0, "uris": []}
         
-        files = list(base.rglob(glob))
+        normalized_glob = _normalize_glob(glob)
+        logger.info(f"Indexing directory {base} with glob '{normalized_glob}'")
+        if base.is_file():
+            files = [base]
+        else:
+            files = list(base.rglob(normalized_glob))
         if not files:
-            logger.info(f"No files found in {base} matching {glob}")
-            return {"indexed": 0, "uris": []}
+            message = f"No files found in {base} matching {normalized_glob}"
+            logger.info(message)
+            return {"indexed": 0, "uris": [], "error": message}
         
         indexed = 0
         indexed_uris = []
