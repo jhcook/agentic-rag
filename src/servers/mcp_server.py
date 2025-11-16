@@ -32,7 +32,15 @@ from typing import Dict, Any, Optional, List
 import re
 
 import psutil
+import requests
 from mcp.server.fastmcp import FastMCP
+from prometheus_client import (
+    CollectorRegistry,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
+from starlette.responses import Response
 from dotenv import load_dotenv
 
 # Import shared logic
@@ -47,6 +55,8 @@ from src.core.rag_core import (
     rerank,
     grounded_answer,
     verify_grounding,
+    get_faiss_globals,
+    OLLAMA_API_BASE,
 )
 
 # Set up logging
@@ -79,6 +89,72 @@ MEMORY_LOG_STEP_MB = 256  # log memory usage whenever it crosses another 256MB b
 MEMORY_MONITOR_THREAD = None
 LAST_MEMORY_LOG_BUCKET = None
 
+# Prometheus metrics
+METRICS_REGISTRY = CollectorRegistry()
+MCP_DOCUMENTS_INDEXED = Gauge(
+    "mcp_documents_indexed_total",
+    "Number of documents indexed in the MCP store.",
+    registry=METRICS_REGISTRY,
+)
+MCP_MEMORY_USAGE_MB = Gauge(
+    "mcp_memory_usage_megabytes",
+    "Current process RSS memory usage in megabytes.",
+    registry=METRICS_REGISTRY,
+)
+MCP_MEMORY_LIMIT_MB = Gauge(
+    "mcp_memory_limit_megabytes",
+    "Configured memory limit in megabytes.",
+    registry=METRICS_REGISTRY,
+)
+MCP_EMBEDDING_VECTORS = Gauge(
+    "mcp_embedding_vectors_total",
+    "Total vectors stored in the embedding index.",
+    registry=METRICS_REGISTRY,
+)
+MCP_EMBEDDING_CHUNKS = Gauge(
+    "mcp_embedding_chunks_total",
+    "Total text chunks tracked for embeddings.",
+    registry=METRICS_REGISTRY,
+)
+MCP_EMBEDDING_DIM = Gauge(
+    "mcp_embedding_dimension",
+    "Embedding dimension used by the current model.",
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_UP = Gauge(
+    "ollama_up",
+    "Whether the Ollama API responded successfully.",
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_RUNNING_MODELS = Gauge(
+    "ollama_running_models",
+    "Count of running models reported by Ollama /api/ps.",
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_AVAILABLE_MODELS = Gauge(
+    "ollama_available_models",
+    "Count of available models reported by Ollama /api/tags.",
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_RUNNING_MODEL_SIZE_BYTES = Gauge(
+    "ollama_running_model_size_bytes",
+    "Resident size of running models reported by Ollama.",
+    ["model", "digest"],
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_RUNNING_MODEL_VRAM_BYTES = Gauge(
+    "ollama_running_model_vram_bytes",
+    "VRAM usage of running models reported by Ollama.",
+    ["model", "digest"],
+    registry=METRICS_REGISTRY,
+)
+OLLAMA_MODEL_SIZE_BYTES = Gauge(
+    "ollama_model_size_bytes",
+    "Size of available Ollama models.",
+    ["model", "digest"],
+    registry=METRICS_REGISTRY,
+)
+
 def get_system_memory_mb():
     """Get total system memory in MB."""
     return psutil.virtual_memory().available / 1024 / 1024
@@ -98,6 +174,18 @@ def get_max_memory_mb():
         return int(system_memory_mb * 0.75)  # 75% of system memory
 
 MAX_MEMORY_MB = get_max_memory_mb()
+
+def _safe_int(value: Any) -> Optional[int]:
+    """Convert a value to int when possible, otherwise None."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+def _normalize_ollama_base() -> str:
+    """Return a normalized Ollama API base URL without trailing slash."""
+    base = os.getenv("OLLAMA_API_BASE", OLLAMA_API_BASE)
+    return base.rstrip("/")
 
 def memory_monitor():
     """Monitor memory usage and trigger cleanup if needed."""
@@ -173,6 +261,94 @@ def set_memory_limits():
         logger.info("Set process memory limit to %dMB", MAX_MEMORY_MB)
     except Exception as e:
         logger.warning("Could not set memory limit: %s", e)
+
+def _fetch_ollama_metrics(timeout: float = 2.5) -> Dict[str, Any]:
+    """Collect light-weight metrics from the Ollama server."""
+    metrics: Dict[str, Any] = {
+        "up": False,
+        "running_models": [],
+        "available_models": [],
+    }
+    base = _normalize_ollama_base()
+    if not base:
+        return metrics
+
+    try:
+        resp = requests.get(f"{base}/api/ps", timeout=timeout)
+        resp.raise_for_status()
+        body = resp.json()
+        metrics["running_models"] = body.get("models", []) or []
+        metrics["up"] = True
+    except Exception as exc:
+        logger.debug("Ollama /api/ps metrics unavailable: %s", exc)
+
+    try:
+        resp = requests.get(f"{base}/api/tags", timeout=timeout)
+        resp.raise_for_status()
+        body = resp.json()
+        metrics["available_models"] = body.get("models", []) or []
+        metrics["up"] = metrics["up"] or True
+    except Exception as exc:
+        logger.debug("Ollama /api/tags metrics unavailable: %s", exc)
+
+    return metrics
+
+def _set_labeled_gauge(gauge: Gauge, labels: Dict[str, str], value: Optional[int]):
+    """Safely set a labeled gauge when a numeric value is available."""
+    if value is None:
+        return
+    gauge.labels(**labels).set(value)
+
+def refresh_prometheus_metrics():
+    """Update Prometheus gauges with current server state."""
+    try:
+        store = get_store()
+        MCP_DOCUMENTS_INDEXED.set(len(getattr(store, "docs", {})))
+    except Exception as exc:
+        logger.debug("Failed to update document metrics: %s", exc)
+
+    try:
+        MCP_MEMORY_USAGE_MB.set(get_memory_usage())
+        MCP_MEMORY_LIMIT_MB.set(MAX_MEMORY_MB)
+    except Exception as exc:
+        logger.debug("Failed to update memory metrics: %s", exc)
+
+    try:
+        index, index_to_meta, embed_dim = get_faiss_globals()
+        total_vectors = index.ntotal if index is not None else 0  # type: ignore[attr-defined]
+        MCP_EMBEDDING_VECTORS.set(total_vectors)
+        MCP_EMBEDDING_CHUNKS.set(len(index_to_meta) if index_to_meta is not None else 0)
+        MCP_EMBEDDING_DIM.set(embed_dim or 0)
+    except Exception as exc:
+        logger.debug("Failed to update embedding metrics: %s", exc)
+
+    try:
+        ollama = _fetch_ollama_metrics()
+        OLLAMA_UP.set(1 if ollama.get("up") else 0)
+
+        running = ollama.get("running_models", []) or []
+        available = ollama.get("available_models", []) or []
+
+        OLLAMA_RUNNING_MODELS.set(len(running))
+        OLLAMA_AVAILABLE_MODELS.set(len(available))
+
+        OLLAMA_RUNNING_MODEL_SIZE_BYTES.clear()
+        OLLAMA_RUNNING_MODEL_VRAM_BYTES.clear()
+        for model in running:
+            model_name = model.get("name") or model.get("model") or "unknown"
+            digest = model.get("digest", "")
+            labels = {"model": str(model_name), "digest": str(digest)}
+            _set_labeled_gauge(OLLAMA_RUNNING_MODEL_SIZE_BYTES, labels, _safe_int(model.get("size")))
+            _set_labeled_gauge(OLLAMA_RUNNING_MODEL_VRAM_BYTES, labels, _safe_int(model.get("size_vram")))
+
+        OLLAMA_MODEL_SIZE_BYTES.clear()
+        for model in available:
+            model_name = model.get("name") or model.get("model") or "unknown"
+            digest = model.get("digest", "")
+            labels = {"model": str(model_name), "digest": str(digest)}
+            _set_labeled_gauge(OLLAMA_MODEL_SIZE_BYTES, labels, _safe_int(model.get("size")))
+    except Exception as exc:
+        logger.debug("Failed to update Ollama metrics: %s", exc)
 
 def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     """Handle shutdown gracefully with proper cleanup."""
@@ -585,6 +761,19 @@ def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> D
     except Exception as e:
         logger.error("Error verifying grounding: %s", e, exc_info=True)
         return {"error": str(e)}
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics_endpoint(_request) -> Response:
+    """Expose Prometheus metrics for the MCP server and Ollama backend."""
+    try:
+        refresh_prometheus_metrics()
+        payload = generate_latest(METRICS_REGISTRY)
+        return Response(payload, media_type=CONTENT_TYPE_LATEST)
+    except Exception as exc:
+        logger.error("Failed to generate metrics: %s", exc, exc_info=True)
+        return Response(
+            f"# metrics unavailable: {exc}\n", status_code=500, media_type="text/plain"
+        )
 
 if __name__ == "__main__":
     try:
