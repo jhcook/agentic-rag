@@ -157,6 +157,7 @@ ENVIRONMENT CONFIGURATION (.env):
 
     Key environment variables:
         OLLAMA_API_BASE       Ollama server URL (default: http://127.0.0.1:11434)
+        OLLAMA_KEEP_ALIVE     Duration that models stay loaded (-1 = indefinite, 24h = 24 hours, 5m = 5 minutes)
         MCP_HOST              MCP server host (default: 127.0.0.1)
         MCP_PORT              MCP server port (default: 8000)
         REST_HOST             REST API host (default: 127.0.0.1)
@@ -535,6 +536,10 @@ if [[ "$START_OLLAMA" == true ]]; then
     if check_process "$OLLAMA_PORT"; then
         echo -e "${YELLOW}Ollama already running on port $OLLAMA_PORT${NC}"
     else
+        # Ensure OLLAMA_KEEP_ALIVE is set for model persistence
+        export OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
+        echo "Ollama keep-alive setting: $OLLAMA_KEEP_ALIVE"
+
         nohup ollama serve >> log/ollama_server.log 2>&1 &
         OLLAMA_PID=$!
         STARTED_PIDS+=("$OLLAMA_PID")
