@@ -13,6 +13,7 @@ This directory contains project documentation, guides, and specifications.
 ### Getting Started
 - [Main README](../README.md) - Project overview, installation, and setup
 - [Quick Start](../README.md#quick-start) - Fast setup guide
+- [Models and Configuration](models-and-configuration.md) - AI models and their integration
 
 ### MCP Integration
 - [MCP Overview](mcp/index.md) - Model Context Protocol integration
