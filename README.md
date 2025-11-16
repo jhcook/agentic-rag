@@ -6,6 +6,34 @@
 
 Agentic RAG (Retrieval-Augmented Generation) is a project designed to enhance the capabilities of natural language processing by integrating retrieval mechanisms with generative models. This project allows users to index documents, perform searches, and synthesize answers based on retrieved information.
 
+## Project Structure
+
+```
+agentic-rag/
+├── src/
+│   ├── core/
+│   │   └── rag_core.py          # Core RAG functionality and vector operations
+│   ├── servers/
+│   │   ├── mcp_server.py       # Model Context Protocol server
+│   │   └── rest_server.py      # FastAPI REST API server
+│   ├── clients/
+│   │   └── cli_agent.py         # Command-line client for REST API
+│   └── utils/
+│       ├── debug_test.py        # Debugging utilities
+│       ├── simple_indexer.py    # Basic file indexing (no embeddings)
+│       └── pylance_check.py     # Pylance validation tools
+├── config/
+│   └── mcp/
+│       ├── mcp.yaml             # MCPHost configuration
+│       └── planner_prompt.md    # AI assistant planner configuration
+├── docs/                        # Project documentation and guides
+├── documents/                   # Indexable source documents (PDF, DOCX, TXT, etc.)
+├── tests/                       # Test suite
+├── cache/                       # Vector store and cache files
+├── log/                         # Log files
+└── scripts/                     # Startup and utility scripts
+```
+
 ## Features
 
 - **Document Indexing**: Index text documents for efficient retrieval using FAISS vector store
@@ -14,6 +42,7 @@ Agentic RAG (Retrieval-Augmented Generation) is a project designed to enhance th
 - **Grounding Verification**: Verify the grounding of generated answers against the source documents
 - **MCP Server**: Model Context Protocol server for integration with AI assistants
 - **REST API**: RESTful API for document search and RAG operations
+- **Debug Mode**: Skip expensive embedding operations for testing (`RAG_DEBUG_MODE=true`)
 - **Automated Startup**: Shell scripts for easy service management
 
 ## Installation
@@ -137,7 +166,7 @@ ollama serve
 #### Terminal 2: Start HTTP/MCP Server
 
 ```bash
-uv run python http_server.py
+python -m src.servers.mcp_server
 ```
 
 Expected output:
@@ -153,7 +182,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 #### Terminal 3: Start REST API Server
 
 ```bash
-uvicorn rest_server:app --host 127.0.0.1 --port 8001
+uvicorn src.servers.rest_server:app --host 127.0.0.1 --port 8001
 ```
 
 Expected output:
@@ -168,46 +197,59 @@ INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
 
 ## Usage
 
-### REST API
+### Starting Services
+
+#### MCP Server (Model Context Protocol)
+```bash
+python -m src.servers.mcp_server
+```
+- **Purpose**: AI assistant integration via MCP protocol
+- **Endpoint**: `http://127.0.0.1:8000/mcp`
+- **Features**: Document indexing, search, and RAG tools
+
+#### REST API Server
+```bash
+uvicorn src.servers.rest_server:app --host 127.0.0.1 --port 8001
+```
+- **Purpose**: RESTful API for document operations
+- **Endpoint**: `http://127.0.0.1:8001`
+- **Features**: `/api/search`, `/api/index_path`, `/api/upsert_document`
+
+#### CLI Client
+```bash
+python src/clients/cli_agent.py "your search query"
+python src/clients/cli_agent.py "index documents"
+```
+- **Purpose**: Command-line interface to REST API
+- **Features**: Search queries and document indexing
+
+### REST API Examples
 
 Search for documents:
-
 ```bash
 curl -s http://127.0.0.1:8001/api/search \
   -H 'content-type: application/json' \
   -d '{"query":"your search query","k":5}' | jq
 ```
 
-### Agent CLI
-
-Run the agentic workflow:
-
+Index documents:
 ```bash
-./agent.py "who is the nuix cto" ./rag
+curl -s http://127.0.0.1:8001/api/index_path \
+  -H 'content-type: application/json' \
+  -d '{"path":"documents","glob":"**/*.txt"}' | jq
 ```
 
-Example output:
+### Debug Mode
 
-```json
-{
-  "final": {
-    "answer": "Draft based on 6 passages.\n\nQuestion: who is the nuix cto\n\nEvidence:\n[1] ...\n[6] Alexis Rouch CTO, GAICD Nuix...",
-    "citations": [
-      "rag/cto.txt",
-      "rag/nuix_products.txt"
-    ]
-  },
-  "verdict": {
-    "answer_conf": 0.95,
-    "citation_coverage": 1.0,
-    "missing_facts": []
-  }
-}
+For testing without expensive embedding operations:
+```bash
+export RAG_DEBUG_MODE=true
+python src/clients/cli_agent.py "index documents"  # Fast indexing without ML
 ```
 
 ### MCP Integration
 
-The MCP server exposes document indexing and search tools that can be used by MCP-compatible AI assistants. Server endpoint: `http://127.0.0.1:8000/mcp`
+The MCP server exposes document indexing and search tools that can be used by MCP-compatible AI assistants. See the [MCP documentation](docs/mcp/index.md) for complete setup and usage instructions.
 
 ## Development
 
@@ -223,8 +265,7 @@ pytest -v --cov=rag_core tests/ -s
 All services log to the `log/` directory:
 
 - `log/start.log` - Startup script output (timestamped)
-- `log/ollama_server.log` - Ollama service logs
-- `log/http_server.log` - HTTP/MCP server logs
+- `log/mcp_server.log` - MCP server logs (renamed from http_server.log)
 - `log/rest_server.log` - REST API logs
 
 Monitor logs in real-time:
@@ -310,6 +351,7 @@ For more details, see `tests/README.md`.
 
 - [Ollama - llama3.2](https://ollama.com/library/llama3.2)
 - [LiteLLM Documentation](https://docs.litellm.ai/docs/)
+- [MCP Documentation](docs/mcp/index.md) - Complete MCP integration guide
 - [MCP Python SDK](https://pypi.org/project/mcp/)
 - [FastAPI](https://fastapi.tiangolo.com)
 - [MCPHost](https://mcphub.tools/detail/mark3labs/mcphost)

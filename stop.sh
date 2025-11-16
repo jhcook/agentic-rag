@@ -167,7 +167,7 @@ else
     echo -e "${RED}=== Failed to stop $failed service(s) ===${NC}"
     echo ""
     echo "You may need to manually kill processes:"
-    echo "  ps aux | grep -E 'ollama|http_server|rest_server'"
+    echo "  ps aux | grep -E 'ollama|mcp_server|rest_server'"
     echo "  kill -9 <PID>"
     exit 1
 fi

@@ -9,9 +9,9 @@ Environment Variables:
     MAX_MEMORY_MB: Memory limit in MB (default: 75% of system memory)
 
 Run (dev):
-    uv run python http_server.py
+    uv run python src/servers/mcp_server.py
     # or
-    python http_server.py
+    python src/servers/mcp_server.py
 
 Connect URL (client side):
     http://127.0.0.1:8000/mcp
@@ -36,7 +36,7 @@ from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
 
 # Import shared logic
-from rag_core import (
+from src.core.rag_core import (
     search,
     load_store,
     save_store,
@@ -55,7 +55,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('log/http_server.log'),
+        logging.FileHandler('log/mcp_server.log'),
         logging.StreamHandler()
     ]
 )
@@ -311,16 +311,16 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
     Supports: .txt, .pdf, .docx, .doc, .html, .htm files
 
     Args:
-        path: Directory to index (e.g., "docs", "./documents")
+        path: Directory to index (e.g., "documents", "./documents")
         glob: File pattern (default: "**/*" for all supported files)
 
     Returns:
         dict with count of indexed documents and their URIs
 
     Examples:
-        User: "index docs" → index_documents_tool("docs")
-        User: "index the documents" → index_documents_tool("docs")
-        User: "add docs to index" → index_documents_tool("docs")
+        User: "index documents" → index_documents_tool("documents")
+        User: "index the documents" → index_documents_tool("documents")
+        User: "add documents to index" → index_documents_tool("documents")
     """
     try:
         try:
@@ -409,7 +409,7 @@ def index_url_tool(
             url = _extract_url_from_query(query)
 
         # If there is no URL but we received something that looks like a local path,
-        # route the request to the directory indexer so "index ./docs" works.
+        # route the request to the directory indexer so "index ./documents" works.
         if not url:
             possible_path = _extract_path_from_query(query)
             if possible_path and not possible_path.startswith(("http://", "https://")):

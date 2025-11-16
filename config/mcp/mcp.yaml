@@ -9,4 +9,4 @@ mcpServers:
     url: http://127.0.0.1:8000/mcp
 
 planner:
-  system_prompt_file: ./planner_prompt.md
+  system_prompt_file: ./config/mcp/planner_prompt.md
