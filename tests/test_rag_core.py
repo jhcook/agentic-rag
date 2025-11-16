@@ -2,10 +2,10 @@ import pytest
 import logging
 from pathlib import Path
 import tempfile
-from rag_core import (
-    Store, STORE, save_store, load_store, upsert_document,
-    index_documents, index_path, search, rerank, synthesize_answer,
-    grounded_answer, verify_grounding_simple, verify_grounding
+from src.core.rag_core import (
+    Store, save_store, load_store, upsert_document,
+    index_path, search, rerank, synthesize_answer,
+    grounded_answer, verify_grounding_simple, verify_grounding, get_store
 )
 
 # Set up logging
@@ -27,7 +27,7 @@ def temp_db_path():
 def test_store_initialization():
     store = Store()
     assert store.docs == {}
-    assert store.index == []
+    assert store.last_loaded == 0.0
 
 def test_store_add():
     store = Store()
@@ -48,12 +48,13 @@ def test_save_and_load_store(temp_db_path, monkeypatch):
     logger.info(f"Using temporary DB path: {temp_db_path}")
     
     # Reset global store
-    global STORE
-    STORE = Store()
+    from src.core.rag_core import _STORE
+    global _STORE
+    _STORE = Store()
     
     # Add test content
     test_content = "Test content for persistence"
-    STORE.add("test.txt", test_content)
+    _STORE.add("test.txt", test_content)
     logger.info("Added test document to store")
     
     # Save store
@@ -61,22 +62,23 @@ def test_save_and_load_store(temp_db_path, monkeypatch):
     logger.info("Saved store to disk")
     
     # Create new store instance
-    STORE = Store()
-    assert len(STORE.docs) == 0, "Expected empty store after reset"
+    _STORE = Store()
+    assert len(_STORE.docs) == 0, "Expected empty store after reset"
     
     # Load from disk
     load_store()
-    logger.info(f"Loaded store. Contents: {STORE.docs}")
+    logger.info(f"Loaded store. Contents: {_STORE.docs}")
     
     # Verify
-    assert "test.txt" in STORE.docs, f"Expected 'test.txt' in {list(STORE.docs.keys())}"
-    assert STORE.docs["test.txt"] == test_content
+    assert "test.txt" in _STORE.docs, f"Expected 'test.txt' in {list(_STORE.docs.keys())}"
+    assert _STORE.docs["test.txt"] == test_content
 
 def test_upsert_document():
     """Test document upsert with proper store reset."""
     # Reset store
-    global STORE
-    STORE = Store()
+    from src.core.rag_core import _STORE
+    global _STORE
+    _STORE = Store()
     
     # Perform upsert
     test_content = "Test content for upsert"
@@ -85,17 +87,15 @@ def test_upsert_document():
     
     # Verify
     assert result["upserted"] is True
-    assert "test_doc.txt" in STORE.docs
-    assert STORE.docs["test_doc.txt"] == test_content
+    assert "test_doc.txt" in _STORE.docs
+    assert _STORE.docs["test_doc.txt"] == test_content
 
-def test_index_documents(tmp_path):
-    # Create temporary test files
-    doc1 = tmp_path / "doc1.txt"
-    doc2 = tmp_path / "doc2.txt"
-    doc1.write_text("Test content 1")
-    doc2.write_text("Test content 2")
+def test_index_path(tmp_path):
+    # Create temporary directory with test files
+    (tmp_path / "test1.txt").write_text("Content 1")
+    (tmp_path / "test2.txt").write_text("Content 2")
     
-    result = index_documents([str(doc1), str(doc2)])
+    result = index_path(str(tmp_path))
     assert result["indexed"] == 2
 
 def test_index_path(tmp_path):
@@ -108,12 +108,13 @@ def test_index_path(tmp_path):
 
 def test_search():
     # Clear the store first
-    global STORE
-    STORE = Store()
+    from src.core.rag_core import _STORE
+    global _STORE
+    _STORE = Store()
     
     # Add test document
     test_doc = "This is a test document about artificial intelligence"
-    STORE.add("test.txt", test_doc)
+    _STORE.add("test.txt", test_doc)
     logger.info(f"Added test document to store: {test_doc}")
     
     # Perform search
@@ -143,7 +144,10 @@ def test_synthesize_answer():
     assert "citations" in result
 
 def test_grounded_answer():
-    STORE.add("ai_doc.txt", "AI is artificial intelligence")
+    from src.core.rag_core import _STORE
+    global _STORE
+    _STORE = Store()
+    _STORE.add("ai_doc.txt", "AI is artificial intelligence")
     result = grounded_answer("What is AI?", k=1)
     assert "answer" in result
     assert "citations" in result
@@ -163,7 +167,10 @@ def test_verify_grounding_simple():
     assert "missing_facts" in result
 
 def test_verify_grounding():
-    STORE.add("doc1.txt", "AI is artificial intelligence")
+    from src.core.rag_core import _STORE
+    global _STORE
+    _STORE = Store()
+    _STORE.add("doc1.txt", "AI is artificial intelligence")
     result = verify_grounding(
         "What is AI?",
         "AI is artificial intelligence [1].",
