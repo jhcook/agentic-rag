@@ -497,7 +497,7 @@ if [[ "$START_OLLAMA" == true ]]; then
     if check_process "$OLLAMA_PORT"; then
         echo -e "${YELLOW}Ollama already running on port $OLLAMA_PORT${NC}"
     else
-        nohup ollama serve > log/ollama_server.log 2>&1 &
+        nohup ollama serve >> log/ollama_server.log 2>&1 &
         OLLAMA_PID=$!
         STARTED_PIDS+=("$OLLAMA_PID")
         STARTED_SERVICES+=("Ollama")
@@ -520,7 +520,7 @@ echo -e "${YELLOW}Starting HTTP server...${NC}"
 if check_process "$MCP_PORT"; then
     echo -e "${YELLOW}HTTP server already running on port $MCP_PORT${NC}"
 else
-    nohup uv run python http_server.py > log/http_server.log 2>&1 &
+    nohup uv run python http_server.py >> log/http_server.log 2>&1 &
     HTTP_PID=$!
     STARTED_PIDS+=("$HTTP_PID")
     STARTED_SERVICES+=("HTTP Server")
@@ -539,7 +539,7 @@ echo -e "${YELLOW}Starting REST API server...${NC}"
 if check_process "$REST_PORT"; then
     echo -e "${YELLOW}REST API server already running on port $REST_PORT${NC}"
 else
-    nohup uvicorn rest_server:app --host "$REST_HOST" --port "$REST_PORT" > log/rest_server.log 2>&1 &
+    nohup uvicorn rest_server:app --host "$REST_HOST" --port "$REST_PORT" >> log/rest_server.log 2>&1 &
     REST_PID=$!
     STARTED_PIDS+=("$REST_PID")
     STARTED_SERVICES+=("REST API Server")
