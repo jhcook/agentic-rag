@@ -10,19 +10,53 @@ import os
 import hashlib
 import time
 import asyncio
+import gc
 
 from typing import List, Dict, Any, Optional, Tuple
-from httpcore import RemoteProtocolError
 
 try:
-    import faiss  # type: ignore
+    from httpcore import RemoteProtocolError  # type: ignore
 except ImportError:
-    faiss = None
+    RemoteProtocolError = None  # type: ignore
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
 from ollama import AsyncClient  # type: ignore
+
+try:
+    from pypdf import PdfReader  # type: ignore
+except ImportError:
+    PdfReader = None
+
+try:
+    from docx import Document  # type: ignore
+except ImportError:
+    Document = None
+
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except ImportError:
+    BeautifulSoup = None
+
+try:
+    import requests  # type: ignore
+except ImportError:
+    requests = None
+
+try:
+    import faiss  # type: ignore
+except ImportError:
+    if os.getenv("RAG_DEBUG_MODE", "false").lower() != "true":
+        raise
+    faiss = None
+
+# Disable PyTorch multiprocessing to avoid segfaults on macOS
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -39,7 +73,7 @@ except ImportError:
 # Enable debug logging if available
 try:
     import litellm  # type: ignore
-    litellm.set_verbose = True  # type: ignore
+    os.environ['LITELLM_LOG'] = 'DEBUG'
 except (ImportError, AttributeError):
     pass
 
@@ -80,7 +114,14 @@ def get_embedder() -> Optional[SentenceTransformer]:
     if _EMBEDDER is None:
         try:
             logger.info("Loading embedding model: %s", EMBED_MODEL_NAME)
-            _EMBEDDER = SentenceTransformer(EMBED_MODEL_NAME)
+            _EMBEDDER = SentenceTransformer(
+                EMBED_MODEL_NAME,
+                device='cpu',
+                backend='torch'
+            )
+            # Disable multiprocessing to avoid segfaults on macOS
+            import torch
+            torch.set_num_threads(1)
         except OSError as exc:
             message = (
                 "Failed to load embedding model '%s'. "
@@ -271,39 +312,48 @@ def _rebuild_faiss_index():
             logger.warning("No store available to rebuild index from")
             return
 
-        all_chunks = []
-        chunk_metadata = []
-
         logger.info("Processing %d documents for FAISS indexing", len(_STORE.docs))
 
+        total_vectors = 0
+        batch_size = 8
+
+        # Process each document separately to avoid accumulating all chunks in memory
         for uri, text in _STORE.docs.items():
             logger.debug("Document %s: %d chars", uri, len(text))
             chunks, metadata = _chunk_document(text, uri)
-            all_chunks.extend(chunks)
-            chunk_metadata.extend(metadata)
             logger.debug("Created %d chunks from %s", len(chunks), uri)
 
-        if not all_chunks:
-            logger.warning("No chunks to index")
-            return
+            if not chunks:
+                continue
 
-        logger.info("Encoding %d chunks in batch", len(all_chunks))
+            # Process chunks from this document in small batches
+            for i in range(0, len(chunks), batch_size):
+                batch_chunks = chunks[i:i+batch_size]
+                batch_meta = metadata[i:i+batch_size]
 
-        embeddings = embedder.encode(
-            all_chunks,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False
-        )  # type: ignore
+                embeddings = embedder.encode(
+                    batch_chunks,
+                    normalize_embeddings=True,
+                    convert_to_numpy=True,
+                    show_progress_bar=False
+                )  # type: ignore
+
+                if index is not None:
+                    embeddings_array = np.array(embeddings, dtype=np.float32)
+                    index.add(embeddings_array)  # type: ignore
+
+                    current_index = index.ntotal - len(batch_chunks)  # type: ignore
+                    for idx, (chunk_uri, chunk) in enumerate(zip(batch_meta, batch_chunks)):
+                        index_to_meta[current_index + idx] = (chunk_uri, chunk)
+
+                total_vectors += len(batch_chunks)
+
+                # Force garbage collection after each batch
+                del embeddings, embeddings_array, batch_chunks, batch_meta
+                gc.collect()
 
         if index is not None:
-            embeddings_array = np.array(embeddings, dtype=np.float32)
-            index.add(embeddings_array)  # type: ignore
-
-            for idx, (uri, chunk) in enumerate(zip(chunk_metadata, all_chunks)):
-                index_to_meta[idx] = (uri, chunk)
-
-            logger.info("Added %d vectors to FAISS index", len(all_chunks))
+            logger.info("Added %d vectors to FAISS index", total_vectors)
         else:
             logger.warning("No FAISS index available")
 
@@ -367,15 +417,32 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         return {"upserted": True, "existed": existed}
 
     base_index = index.ntotal if index is not None else 0  # type: ignore
-    chunk_offset = 0
-    for piece in _chunk(text):
-        if embedder is not None:
-            emb = embedder.encode(piece, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
-            emb_array = np.array(emb, dtype=np.float32)
-            if index is not None:
-                index.add(emb_array.reshape(1, -1))  # type: ignore
-                index_to_meta[base_index + chunk_offset] = (uri, piece)
-                chunk_offset += 1
+    chunks = list(_chunk(text))
+
+    if embedder is not None and index is not None:
+        # Process in batches to control memory
+        batch_size = 8
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i:i+batch_size]
+            embeddings = embedder.encode(
+                batch_chunks,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                batch_size=batch_size
+            )
+            embeddings = np.array(embeddings, dtype=np.float32)
+            if len(embeddings.shape) == 1:
+                embeddings = embeddings.reshape(1, -1)
+
+            index.add(embeddings)
+
+            # Update metadata for each chunk in batch
+            for j, chunk in enumerate(batch_chunks):
+                index_to_meta[base_index + i + j] = (uri, chunk)
+
+            # Explicit cleanup
+            del embeddings, batch_chunks
+            gc.collect()
 
     save_store()
     total_vectors = index.ntotal if index is not None else 0  # type: ignore
@@ -395,25 +462,177 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     return files, resolved
 
 
+def _download_from_url(url: str) -> bytes:
+    """Download content from a URL."""
+    if requests is None:
+        logger.warning("URL support not available. Install requests: pip install requests")
+        return b""
+    try:
+        logger.info("Downloading from %s", url)
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.SSLError as ssl_exc:
+        logger.error("SSL error downloading %s: %s", url, ssl_exc)
+        return b"[SSL ERROR: Could not connect to %s]" % url.encode()
+    except requests.exceptions.ConnectionError as conn_exc:
+        logger.error("Connection error downloading %s: %s", url, conn_exc)
+        return b"[CONNECTION ERROR: Could not connect to %s]" % url.encode()
+    except Exception as exc:
+        logger.error("Failed to download %s: %s", url, exc)
+        return b"[ERROR: Could not download %s: %s]" % (url.encode(), str(exc).encode())
+
+
+def _extract_text_from_file(file_path: pathlib.Path) -> str:
+    """Extract text from various file types (txt, pdf, docx, html) or URLs."""
+    # Check if it's a URL and normalize single-slash URLs
+    file_str = str(file_path)
+    if file_str.startswith('http:/') and not file_str.startswith('http://'):
+        file_str = file_str.replace('http:/', 'http://', 1)
+    elif file_str.startswith('https:/') and not file_str.startswith('https://'):
+        file_str = file_str.replace('https:/', 'https://', 1)
+
+    if file_str.startswith(('http://', 'https://')):
+        content = _download_from_url(file_str)
+        if not content:
+            return ""
+        # Determine file type from URL or content
+        if file_str.endswith('.pdf'):
+            suffix = '.pdf'
+        elif file_str.endswith(('.docx', '.doc')):
+            suffix = '.docx'
+        elif file_str.endswith(('.html', '.htm')):
+            suffix = '.html'
+        else:
+            # Try to detect HTML
+            try:
+                decoded = content.decode('utf-8', errors='ignore')
+                if decoded.strip().startswith(('<html', '<!DOCTYPE', '<!doctype')):
+                    suffix = '.html'
+                else:
+                    suffix = '.txt'
+            except Exception:
+                suffix = '.txt'
+    else:
+        content = None
+        suffix = file_path.suffix.lower()
+
+    if suffix == '.pdf':
+        if PdfReader is None:
+            logger.warning("PDF support not available. Install pypdf: pip install pypdf")
+            return ""
+        try:
+            if content:
+                # PDF from URL
+                import io
+                reader = PdfReader(io.BytesIO(content))
+            else:
+                # PDF from file
+                reader = PdfReader(str(file_path))
+            text_parts = []
+            for page in reader.pages:
+                text_parts.append(page.extract_text())
+            return "\n".join(text_parts)
+        except Exception as exc:
+            logger.error("Failed to read PDF %s: %s", file_path, exc)
+            return ""
+
+    elif suffix in ['.docx', '.doc']:
+        if Document is None:
+            logger.warning("DOCX support not available. Install python-docx: pip install python-docx")
+            return ""
+        try:
+            if content:
+                # DOCX from URL
+                import io
+                doc = Document(io.BytesIO(content))
+            else:
+                # DOCX from file
+                doc = Document(str(file_path))
+            text_parts = [paragraph.text for paragraph in doc.paragraphs]
+            return "\n".join(text_parts)
+        except Exception as exc:
+            logger.error("Failed to read DOCX %s: %s", file_path, exc)
+            return ""
+
+    elif suffix in ['.html', '.htm']:
+        if BeautifulSoup is None:
+            logger.warning("HTML support not available. Install beautifulsoup4: pip install beautifulsoup4")
+            return ""
+        try:
+            if content:
+                # HTML from URL
+                html_content = content.decode('utf-8', errors='ignore')
+            else:
+                # HTML from file
+                html_content = file_path.read_text(encoding="utf-8", errors="ignore")
+            soup = BeautifulSoup(html_content, 'html.parser')
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            # Get text
+            text = soup.get_text(separator='\n')
+            # Clean up whitespace
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            return text
+        except Exception as exc:
+            logger.error("Failed to read HTML %s: %s", file_path, exc)
+            return ""
+
+    else:
+        # Default to plain text
+        try:
+            if content:
+                # Text from URL
+                return content.decode('utf-8', errors='ignore')
+            else:
+                # Text from file
+                return file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            logger.error("Failed to read file %s: %s", file_path, exc)
+            return ""
+
+
 def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
                   embedder: Optional[SentenceTransformer]) -> str:
     """Process a single file and add to index."""
-    text = file_path.read_text(encoding="utf-8", errors="ignore")
+    text = _extract_text_from_file(file_path)
+    if not text:
+        logger.warning("No text extracted from %s", file_path)
+        return ""
+
     store = get_store()
     store.add(str(file_path), text)
 
-    if not DEBUG_MODE and embedder is not None:
-        chunk_count = 0
-        base_index = index.ntotal if index is not None else 0  # type: ignore
+    if not DEBUG_MODE and embedder is not None and index is not None:
+        base_index = index.ntotal  # type: ignore
+        chunks = list(_chunk(text))
 
-        for chunk in _chunk(text):
-            emb = embedder.encode(chunk, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
-            emb_array = np.array(emb, dtype=np.float32)
+        # Process in batches to control memory
+        batch_size = 8
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i:i+batch_size]
+            embeddings = embedder.encode(
+                batch_chunks,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                batch_size=batch_size
+            )
+            embeddings = np.array(embeddings, dtype=np.float32)
+            if len(embeddings.shape) == 1:
+                embeddings = embeddings.reshape(1, -1)
 
-            if index is not None:
-                index.add(emb_array.reshape(1, -1))  # type: ignore
-                index_to_meta[base_index + chunk_count] = (str(file_path), chunk)
-                chunk_count += 1
+            index.add(embeddings)
+
+            # Update metadata for each chunk in batch
+            for j, chunk in enumerate(batch_chunks):
+                index_to_meta[base_index + i + j] = (str(file_path), chunk)
+
+            # Explicit cleanup
+            del embeddings, batch_chunks
+            gc.collect()
     elif DEBUG_MODE:
         logger.debug("Debug mode: skipping embeddings for %s", file_path)
 
@@ -469,7 +688,10 @@ async def send_to_llm(query: List[str]) -> Any:
             messages=messages
         )
         return resp
-    except (ValueError, APIConnectionError, RemoteProtocolError) as exc:  # type: ignore
+    except (ValueError, APIConnectionError) as exc:  # type: ignore
+        logger.error("LLM error: %s", exc)
+        raise
+    except Exception as exc:  # Catch RemoteProtocolError and other network errors
         logger.debug("send_to_llm: %s", exc)
         raise
 
@@ -493,12 +715,12 @@ def send_store_to_llm() -> str:
             else:
                 resp = asyncio.run(send_to_llm(texts))
 
-        except APIConnectionError:
-            time.sleep(1)
-            continue
         except (OSError, ValueError) as exc:
             logger.error("send_store_to_llm failed: %s", exc)
             raise
+        except APIConnectionError:
+            time.sleep(1)
+            continue
         break
 
     return resp
@@ -512,8 +734,8 @@ def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
     while i < n:
         j = min(n, i + max_chars)
         out.append(text[i:j])
-        i = j - overlap
-        if i >= j:
+        i += max_chars - overlap  # Fixed: increment by step size, not absolute position
+        if i >= n:
             break
     return out
 
