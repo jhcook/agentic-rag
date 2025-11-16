@@ -5,7 +5,7 @@ Run with:
     uvicorn rest_server:app --host
 """
 
-import os, sys, logging, asyncio
+import os, sys, logging
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
@@ -26,7 +26,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Ensure log file flushes immediately
-import sys
 sys.stdout.flush()
 sys.stderr.flush()
 
@@ -40,21 +39,26 @@ logger.info(f"REST server initialized with base path: /{pth}")
 logger.info(f"Log file: log/rest_server.log")
 
 class IndexPathReq(BaseModel):
+    """Request model for indexing a filesystem path."""
     path: str
     glob: Optional[str] = "**/*.txt"
 
 class SearchReq(BaseModel):
+    """Request model for performing a search."""
     query: str
 
 class UpsertReq(BaseModel):
+    """Request model for upserting a document."""
     uri: str
     text: str
 
 class LoadStoreReq(BaseModel):
+    """Request model for sending the store to an LLM."""
     _ : Optional[bool] = True
 
 @app.post(f"/{pth}/upsert_document")
 def api_upsert(req: UpsertReq):
+    """Upsert a document into the store."""
     logger.info(f"Upserting document: uri={req.uri}")
     import sys
     sys.stdout.flush()
@@ -70,6 +74,7 @@ def api_upsert(req: UpsertReq):
 
 @app.post(f"/{pth}/index_path")
 def api_index_path(req: IndexPathReq):
+    """Index a filesystem path into the retrieval store."""
     logger.info(f"Indexing path: path={req.path}, glob={req.glob}")
     import sys
     sys.stdout.flush()
@@ -85,6 +90,7 @@ def api_index_path(req: IndexPathReq):
 
 @app.post(f"/{pth}/search")
 def api_search(req: SearchReq):
+    """Search the retrieval store."""
     logger.info(f"Processing search query: {req.query}")
     import sys
     sys.stdout.flush()
@@ -100,6 +106,7 @@ def api_search(req: SearchReq):
 
 @app.post(f"/{pth}/load_store")
 def api_load(req: LoadStoreReq):
+    """Send the current store to the LLM."""
     logger.info("Loading store to LLM")
     try:
         store = send_store_to_llm()
