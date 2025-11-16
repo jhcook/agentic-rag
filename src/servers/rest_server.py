@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 
-from src.core.rag_core import (index_path, search, upsert_document, send_store_to_llm)
+from src.core.rag_core import (index_path, search, upsert_document, send_store_to_llm, get_store)
 
 # Set up logging
 os.makedirs('log', exist_ok=True)
@@ -37,6 +37,11 @@ app = FastAPI(title="retrieval-rest-server")
 # Log startup information
 logger.info(f"REST server initialized with base path: /{pth}")
 logger.info(f"Log file: log/rest_server.log")
+
+# Load the document store and rebuild FAISS index on module import
+logger.info("Loading document store and rebuilding search index...")
+store = get_store()
+logger.info(f"Document store loaded with {len(store.docs)} documents")
 
 class IndexPathReq(BaseModel):
     """Request model for indexing a filesystem path."""
@@ -125,6 +130,11 @@ if __name__ == "__main__":
         logger.info(f"Starting REST server on {app.host}:{app.port}")
         logger.info(f"API base path: /{pth}")
         
+        # Load the document store and rebuild FAISS index on startup
+        logger.info("Loading document store and rebuilding search index...")
+        store = get_store()
+        logger.info(f"Document store loaded with {len(store.docs)} documents")
+
     except Exception as e:
         logger.error(f"Server startup error: {e}")
         sys.exit(1)
