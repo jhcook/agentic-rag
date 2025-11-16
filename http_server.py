@@ -18,6 +18,7 @@ Connect URL (client side):
 """
 
 from __future__ import annotations
+import atexit
 import gc
 import os
 from pathlib import Path
