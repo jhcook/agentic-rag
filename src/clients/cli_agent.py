@@ -60,9 +60,9 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: agent.py 'your question' [optional_index_path]", file=sys.stderr)
         print("Examples:", file=sys.stderr)
-        print("  agent.py 'index docs'           # Index docs directory", file=sys.stderr) 
+        print("  agent.py 'index documents'           # Index documents directory", file=sys.stderr) 
         print("  agent.py 'what is my name?'     # Search query", file=sys.stderr)
-        print("  agent.py 'search query' docs    # Search + also index docs", file=sys.stderr)
+        print("  agent.py 'search query' documents    # Search + also index documents", file=sys.stderr)
         sys.exit(2)
 
     user_input = sys.argv[1]

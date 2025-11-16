@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 
-from rag_core import (index_path, search, upsert_document, send_store_to_llm)
+from src.core.rag_core import (index_path, search, upsert_document, send_store_to_llm)
 
 # Set up logging
 os.makedirs('log', exist_ok=True)

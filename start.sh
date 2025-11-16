@@ -68,7 +68,7 @@ cleanup_on_failure() {
 
         # Show recent log entries if they exist
         echo -e "${YELLOW}Recent log entries:${NC}"
-        for log_file in log/ollama_server.log log/http_server.log log/rest_server.log; do
+        for log_file in log/ollama_server.log log/mcp_server.log log/rest_server.log; do
             if [[ -f "$log_file" ]]; then
                 echo "--- Last 10 lines of $log_file ---"
                 tail -10 "$log_file" 2>/dev/null || true
@@ -172,7 +172,7 @@ SERVICES STARTED (in order):
 
     2. HTTP Server - MCP (Model Context Protocol) server
        Port: MCP_PORT
-       Log: log/http_server.log
+       Log: log/mcp_server.log
 
     3. REST API Server - REST API for document search and RAG operations
        Port: REST_PORT
@@ -211,7 +211,7 @@ EXAMPLES:
 
 STOPPING SERVICES:
     To stop all running services:
-        pkill -f 'ollama serve|http_server.py|rest_server'
+        pkill -f 'ollama serve|mcp_server.py|rest_server'
 
 VIEWING LOGS:
     To monitor all service logs in real-time:
@@ -232,7 +232,7 @@ FILES:
     requirements.txt        Python dependencies
     log/start.log          Startup script output
     log/ollama_server.log  Ollama service logs
-    log/http_server.log    MCP server logs
+    log/mcp_server.log    MCP server logs
     log/rest_server.log    REST API logs
 
 EXIT CODES:
@@ -556,19 +556,19 @@ else
 fi
 
 # 2. Start HTTP Server (MCP Server)
-echo -e "${YELLOW}Starting HTTP server...${NC}"
+echo -e "${YELLOW}Starting HTTP/MCP server...${NC}"
 if check_process "$MCP_PORT"; then
-    echo -e "${YELLOW}HTTP server already running on port $MCP_PORT${NC}"
+    echo -e "${YELLOW}HTTP/MCP server already running on port $MCP_PORT${NC}"
 else
-    nohup uv run python http_server.py >> log/http_server.log 2>&1 &
+    nohup uv run python -m src.servers.mcp_server >> log/mcp_server.log 2>&1 &
     HTTP_PID=$!
     STARTED_PIDS+=("$HTTP_PID")
     STARTED_SERVICES+=("HTTP Server")
     echo "HTTP Server PID: $HTTP_PID"
 
-    if ! wait_for_service "$MCP_PORT" "HTTP server"; then
-        echo -e "${RED}Failed to start HTTP server${NC}"
-        echo -e "${RED}Check log/http_server.log for details${NC}"
+    if ! wait_for_service "$MCP_PORT" "HTTP/MCP server"; then
+        echo -e "${RED}Failed to start HTTP/MCP server${NC}"
+        echo -e "${RED}Check log/mcp_server.log for details${NC}"
         exit 1
     fi
 fi
@@ -579,7 +579,7 @@ echo -e "${YELLOW}Starting REST API server...${NC}"
 if check_process "$REST_PORT"; then
     echo -e "${YELLOW}REST API server already running on port $REST_PORT${NC}"
 else
-    nohup uvicorn rest_server:app --host "$REST_HOST" --port "$REST_PORT" >> log/rest_server.log 2>&1 &
+    nohup uvicorn src.servers.rest_server:app --host "$REST_HOST" --port "$REST_PORT" >> log/rest_server.log 2>&1 &
     REST_PID=$!
     STARTED_PIDS+=("$REST_PID")
     STARTED_SERVICES+=("REST API Server")
@@ -605,8 +605,8 @@ if [[ "$START_OLLAMA" == true ]]; then
 else
     echo "  - Ollama: $OLLAMA_API_BASE (remote)"
 fi
-echo "  - HTTP Server: http://${MCP_HOST}:${MCP_PORT} (log: log/http_server.log)"
+echo "  - HTTP/MCP Server: http://${MCP_HOST}:${MCP_PORT} (log: log/mcp_server.log)"
 echo "  - REST API: http://${REST_HOST}:${REST_PORT} (log: log/rest_server.log)"
 echo ""
-echo "To stop all services, run: pkill -f 'ollama serve|http_server.py|rest_server'"
+echo "To stop all services, run: pkill -f 'ollama serve|mcp_server.py|rest_server'"
 echo "To view logs: tail -f log/*.log"

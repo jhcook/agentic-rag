@@ -2,4 +2,4 @@ venv              # Used for development environment
 .venv             # Intended for production environment
 __pycache__
 log
-docs
+documents
