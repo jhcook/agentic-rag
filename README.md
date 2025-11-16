@@ -281,6 +281,31 @@ Force recreation of the virtual environment:
 ./start.sh --recreate-venv
 ```
 
+## Test Coverage
+
+The Agentic RAG project includes a comprehensive test suite covering:
+
+- Document store logic, search, upsert, rerank, synthesis, grounding, and verification
+- Extraction from TXT, HTML, URL, and edge cases (empty, bad path, SSL errors)
+- FAISS index creation, vector shape, and reset logic
+- FastAPI tool endpoint integration for document indexing, URL indexing, and search
+- Edge cases for empty docs, nonexistent files, and bad URLs
+
+Test files are located in the `tests/` directory:
+- `test_rag_core.py`: Core logic
+- `test_extraction.py`: Extraction and error handling
+- `test_faiss.py`: FAISS index
+- `test_http_server.py`: HTTP server integration
+- `test_edge_cases.py`: Edge cases
+
+To run all tests and view coverage:
+
+```bash
+pytest tests/
+```
+
+For more details, see `tests/README.md`.
+
 ## Resources
 
 - [Ollama - llama3.2](https://ollama.com/library/llama3.2)
