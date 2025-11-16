@@ -29,10 +29,22 @@ import threading
 import time
 import logging
 from typing import Dict, Any, Optional
+import re
 
 import psutil
 from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
+
+# Import shared logic
+from rag_core import (
+    search,
+    load_store,
+    save_store,
+    upsert_document,
+    get_store,
+    resolve_input_path,
+    _extract_text_from_file,
+)
 
 # Set up logging
 os.makedirs('log', exist_ok=True)
@@ -49,21 +61,11 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
 
-# Import shared logic
-from rag_core import (
-    search,
-    load_store,
-    save_store,
-    upsert_document,
-    get_store,
-    resolve_input_path,
-)
-
 # Create FastMCP instance
 mcp = FastMCP("retrieval-server")
 
 # Track if we're already shutting down to prevent duplicate saves
-_shutting_down = False
+SHUTTING_DOWN = False
 
 # Memory management settings
 MEMORY_CHECK_INTERVAL = 30  # seconds
@@ -71,8 +73,8 @@ MEMORY_LOG_STEP_MB = 256  # log memory usage whenever it crosses another 256MB b
 # macOS has a global jetsam killer that will SIGKILL processes under memory pressure
 # before Python can log anything. We still monitor usage so we have a trail when the
 # OS lets us run, but jetsam kills will appear as sudden exits with no last log line.
-_memory_monitor_thread = None
-_last_memory_log_bucket = None
+MEMORY_MONITOR_THREAD = None
+LAST_MEMORY_LOG_BUCKET = None
 
 def get_system_memory_mb():
     """Get total system memory in MB."""
@@ -96,14 +98,14 @@ MAX_MEMORY_MB = get_max_memory_mb()
 
 def memory_monitor():
     """Monitor memory usage and trigger cleanup if needed."""
-    global _last_memory_log_bucket
+    global LAST_MEMORY_LOG_BUCKET
     consecutive_limit_hits = 0
-    while not _shutting_down:
+    while not SHUTTING_DOWN:
         try:
             memory_mb = get_memory_usage()
             current_bucket = int(memory_mb // MEMORY_LOG_STEP_MB)
-            if _last_memory_log_bucket is None or current_bucket > _last_memory_log_bucket:
-                _last_memory_log_bucket = current_bucket
+            if LAST_MEMORY_LOG_BUCKET is None or current_bucket > LAST_MEMORY_LOG_BUCKET:
+                LAST_MEMORY_LOG_BUCKET = current_bucket
                 logger.info(
                     "Memory usage crossed %dMB: %.1fMB used (limit %dMB)",
                     current_bucket * MEMORY_LOG_STEP_MB, memory_mb, MAX_MEMORY_MB
@@ -141,10 +143,10 @@ def memory_monitor():
 
 def start_memory_monitor():
     """Start the memory monitoring thread."""
-    global _memory_monitor_thread
-    if _memory_monitor_thread is None:
-        _memory_monitor_thread = threading.Thread(target=memory_monitor, daemon=True)
-        _memory_monitor_thread.start()
+    global MEMORY_MONITOR_THREAD
+    if MEMORY_MONITOR_THREAD is None:
+        MEMORY_MONITOR_THREAD = threading.Thread(target=memory_monitor, daemon=True)
+        MEMORY_MONITOR_THREAD.start()
         logger.info("Started memory monitor. Max memory limit: %dMB", MAX_MEMORY_MB)
 
 def set_memory_limits():
@@ -171,13 +173,13 @@ def set_memory_limits():
 
 def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     """Handle shutdown gracefully with proper cleanup."""
-    global _shutting_down
+    global SHUTTING_DOWN
 
-    if _shutting_down:
+    if SHUTTING_DOWN:
         logger.debug("Shutdown already in progress, skipping duplicate")
         return
 
-    _shutting_down = True
+    SHUTTING_DOWN = True
 
     if signum:
         logger.info("Received signal %d. Initiating graceful shutdown...", signum)
@@ -203,12 +205,23 @@ atexit.register(graceful_shutdown)
 
 @mcp.tool()
 def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
-    """Upsert a single document into the store.
+    """Upsert a SINGLE document into the store.
+
+    DO NOT USE this tool for:
+    - Indexing directories (use index_documents_tool instead)
+    - Indexing multiple files (use index_documents_tool instead)
+    - When user says "index", "add docs", "index directory" (use index_documents_tool)
+
+    USE THIS TOOL ONLY when:
+    - Adding/updating ONE specific document with provided text content
+    - Adding/updating an Internet URL, e.g., http://example.com/doc.txt
+    - The text content is already available (not reading from disk)
 
     IMPORTANT: The 'uri' must be an exact, literal string and must not be modified.
+
     Args:
-        uri: Document identifier/path
-        text: Document content
+        uri: Document identifier/path (must be a FILE, not a directory)
+        text: Document content (required, not empty)
 
     Returns:
         dict with upserted status and whether document existed
@@ -221,8 +234,12 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
             # Fallback to reading from disk when the caller provided only a file path.
             file_path = Path(uri)
             if file_path.exists():
+                if file_path.is_dir():
+                    return {"error": f"Cannot upsert directory. Use index_documents_tool for directories: {normalized_uri}", "upserted": False}
                 try:
-                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    content = _extract_text_from_file(file_path)
+                    if not content:
+                        return {"error": f"No text extracted from {normalized_uri}", "upserted": False}
                     logger.debug("Read %d characters from %s for upsert", len(content), normalized_uri)
                 except Exception as file_err:
                     logger.error("Failed to read %s: %s", normalized_uri, file_err)
@@ -239,7 +256,7 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
 
 def _normalize_glob(glob: Optional[str]) -> str:
     """Normalize the incoming glob string and handle common regex mistakes."""
-    default_glob = "**/*.txt"
+    default_glob = "**/*"
     if not glob or not glob.strip():
         return default_glob
     cleaned = glob.strip()
@@ -249,28 +266,58 @@ def _normalize_glob(glob: Optional[str]) -> str:
         return default_glob
     return cleaned
 
-@mcp.tool()
-def index_documents_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
-    """Index documents from a directory or file path into the searchable store.
+_URL_PATTERN = re.compile(r"https?://[^\s\"'>]+")
 
-    This tool reads documents from disk and makes them searchable via search_tool().
-    Use this when the user asks to "index" documents, files, or directories.
+def _extract_url_from_query(query: Optional[str]) -> Optional[str]:
+    """Pull the first URL-looking token from a free-form query string."""
+    if not query:
+        return None
+    match = _URL_PATTERN.search(query)
+    if match:
+        return match.group(0).strip().rstrip(",.")
+    return None
+
+def _extract_path_from_query(query: Optional[str]) -> Optional[str]:
+    """
+    Pull a potential filesystem path from a free-form string like
+    'index ./docs' so we can route to index_documents_tool.
+    """
+    if not query:
+        return None
+    text = query.strip().strip("\"'")
+    lowered = text.lower()
+    for prefix in ("index ", "add ", "ingest ", "load "):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip().strip("\"'")
+            break
+    if text:
+        return text
+    return None
+
+@mcp.tool()
+def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
+    """ADD/INDEX documents from a directory into the searchable store.
+
+    USE THIS TOOL when the user wants to:
+    - Add documents to the index
+    - Index files or directories
+    - Make documents searchable
+    - Build/create/populate the document index
+
+    This reads files from disk and makes them searchable via search_tool().
+    Supports: .txt, .pdf, .docx, .doc, .html, .htm files
 
     Args:
-        path: File path or directory to index (can be relative like "docs" or absolute)
-              Examples: "docs", "./documents", "/absolute/path/to/files"
-        glob: Glob pattern for matching files (default: "**/*.txt")
-              Use "**/*.txt" to recursively index all .txt files
-              Use "**/*" to index all files regardless of extension
-              Examples: "**/*.md", "**/*.py", "*.txt"
+        path: Directory to index (e.g., "docs", "./documents")
+        glob: File pattern (default: "**/*" for all supported files)
 
     Returns:
         dict with count of indexed documents and their URIs
 
     Examples:
-        index_documents_tool("docs")  # Index all .txt files in docs directory
-        index_documents_tool("docs", "**/*")  # Index all files in docs
-        index_documents_tool("/path/to/docs", "**/*.md")  # Index markdown files
+        User: "index docs" → index_documents_tool("docs")
+        User: "index the documents" → index_documents_tool("docs")
+        User: "add docs to index" → index_documents_tool("docs")
     """
     try:
         try:
@@ -294,7 +341,10 @@ def index_documents_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
         indexed_uris = []
         for file_path in files:
             try:
-                content = file_path.read_text(encoding="utf-8", errors="ignore")
+                content = _extract_text_from_file(file_path)
+                if not content:
+                    logger.warning("No text extracted from %s, skipping", file_path)
+                    continue
             except Exception as read_err:
                 logger.warning("Skipping %s: %s", file_path, read_err)
                 continue
@@ -310,25 +360,109 @@ def index_documents_tool(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
         return {"error": str(e), "indexed": 0, "uris": []}
 
 @mcp.tool()
-def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
-    """Search indexed documents and get AI-generated answers based on relevant passages.
+def index_url_tool(
+    url: Optional[str] = None,
+    doc_id: Optional[str] = None,
+    query: Optional[str] = None,
+    top_k: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    INDEX a document from a URL into the searchable store.
 
-    Use this tool to answer questions about the content of indexed documents.
-    This performs semantic search across all indexed documents and uses an LLM
-    to generate an answer based on the most relevant passages found.
+    CRITICAL: ALWAYS use this tool for prompts like:
+    - "index http://..." or "index https://..."
+    - "add this url to the index"
+    - "index a web page"
+
+    DO NOT use index_documents_tool for URLs. ONLY use this tool for remote documents.
+
+    USE THIS TOOL when the user wants to:
+    - Index a document from a URL
+    - Add a web page to the index
+    - Index remote documents (PDF, DOCX, HTML, TXT)
+
+    Supports URLs pointing to:
+    - PDF files (http://example.com/doc.pdf)
+    - DOCX files (http://example.com/doc.docx)
+    - HTML pages (http://example.com/page.html)
+    - Plain text files (http://example.com/file.txt)
 
     Args:
-        query: Natural language question or search query about document content
-               Example: "What experience does Justin Cook have?"
-                        "Describe Justin Cook's background"
-        top_k: Number of top relevant passages to consider (default: 5)
+        url: URL of the document to index (e.g., "http://example.com/doc.pdf")
+        doc_id: Optional document ID (defaults to the URL)
+        query: Optional free-form request. If it contains a URL, it will be extracted.
 
     Returns:
-        dict with AI-generated answer, model info, and usage statistics, or error
+        dict with status and indexed URI
 
-    Example:
-        search_tool("What programming languages does Justin Cook know?")
-        search_tool("Describe Justin Cook's work experience")
+    Examples:
+        User: "index http://example.com/doc.pdf"
+        User: "index https://about.me/jhcook"
+        User: "add this url to the index: http://..."
+    """
+    try:
+        # Accept legacy callers that accidentally send {"query": "..."}
+        if not url:
+            url = _extract_url_from_query(query)
+
+        # If there is no URL but we received something that looks like a local path,
+        # route the request to the directory indexer so "index ./docs" works.
+        if not url:
+            possible_path = _extract_path_from_query(query)
+            if possible_path and not possible_path.startswith(("http://", "https://")):
+                logger.info(
+                    "index_url_tool received non-URL input '%s'; routing to index_documents_tool",
+                    possible_path
+                )
+                return index_documents_tool(possible_path)
+
+        if not url:
+            return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
+
+        import pathlib
+        # Treat URL as a pathlib.Path for _extract_text_from_file
+        url_path = pathlib.Path(url)
+        content = _extract_text_from_file(url_path)
+
+        if not content:
+            logger.warning("No text extracted from URL %s", url)
+            return {"error": "Failed to extract text from URL", "indexed": 0, "uri": url}
+
+        # Use URL as document ID if not provided
+        doc_id = doc_id or url
+        upsert_document(doc_id, content)
+
+        logger.info("Indexed document from URL: %s", url)
+        return {"indexed": 1, "uri": url, "doc_id": doc_id}
+    except Exception as e:
+        logger.error("Error indexing URL %s: %s", url, e)
+        return {"error": str(e), "indexed": 0, "uri": url}
+
+@mcp.tool()
+def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
+    """Search and answer questions about indexed documents.
+
+    This tool searches indexed documents and returns a complete answer generated by an LLM.
+    Use this whenever the user asks about document content.
+
+    CRITICAL INSTRUCTIONS:
+    1. Pass the user's exact question unchanged
+    2. After calling this tool, immediately present the answer to the user
+    3. The response contains a complete answer - relay it directly without adding anything
+
+    Args:
+        query: User's exact question (unchanged)
+        top_k: Number of passages to consider (default: 5)
+
+    Returns:
+        Complete answer in result["choices"][0]["message"]["content"]
+        OR result["answer"] if dict format
+
+    Workflow:
+        User asks: "what does justin cook do"
+        You call: search_tool("what does justin cook do")
+        Tool returns: {"choices": [{"message": {"content": "Justin Cook is..."}}]}
+        You respond: "Justin Cook is..."
     """
     try:
         logger.info("Searching for: %s", query)
@@ -364,26 +498,40 @@ def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
 
 @mcp.tool()
 def list_indexed_documents_tool() -> Dict[str, Any]:
-    """List all document file paths/URIs currently indexed in the system.
+    """
+    CRITICAL: ALWAYS use this tool for prompts like:
+        - "what documents are indexed"
+        - "list indexed documents"
+        - "show indexed documents"
+        - "what is in the index"
+        - "list all indexed URLs/files"
+        - "which documents have you loaded"
 
-    NOTE: This tool ONLY returns file paths, NOT document content.
+    DO NOT use index_url_tool or index_documents_tool for these queries.
+
+    This tool ONLY returns file paths/URIs, NOT document content.
     To answer questions ABOUT the documents, use search_tool() instead.
 
     Use this tool when you need to:
-    - See what documents are available in the index
-    - Check if a specific file has been indexed
-    - Get a list of indexed file paths
+        - See what documents are available in the index
+        - Check if a specific file has been indexed
+        - Get a list of indexed file paths/URIs
 
     Do NOT use this tool when you need to:
-    - Answer questions about document content (use search_tool)
-    - Get information from documents (use search_tool)
-    - Describe or summarize documents (use search_tool)
+        - Answer questions about document content (use search_tool)
+        - Get information from documents (use search_tool)
+        - Describe or summarize documents (use search_tool)
 
     Returns:
         dict with a list of document file paths/URIs or an error
 
     Example response:
         {"uris": ["/path/to/document1.txt", "/path/to/document2.txt"]}
+
+    Examples:
+        User: "what documents are indexed?" → list_indexed_documents_tool()
+        User: "show me the indexed files" → list_indexed_documents_tool()
+        User: "which documents have you loaded?" → list_indexed_documents_tool()
     """
     try:
         logger.info("Listing indexed documents")
