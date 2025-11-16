@@ -381,6 +381,44 @@ else
     echo "✓ Using remote Ollama (local installation not required)"
 fi
 
+extract_ollama_model() {
+    local raw="$1"
+    if [[ -z "$raw" ]]; then
+        return
+    fi
+    # Strip provider prefix like "ollama/" if present
+    echo "$raw" | sed -E 's|^ollama/||'
+}
+
+pull_ollama_models() {
+    # Only pull when running local Ollama
+    if [[ "$START_OLLAMA" != true ]]; then
+        return
+    fi
+
+    local models=()
+    models+=("$(extract_ollama_model "$LLM_MODEL_NAME")")
+    models+=("$(extract_ollama_model "$ASYNC_LLM_MODEL_NAME")")
+
+    # Deduplicate and skip empty entries
+    local seen=""
+    for m in "${models[@]}"; do
+        if [[ -z "$m" ]]; then
+            continue
+        fi
+        if [[ "$seen" == *"|$m|"* ]]; then
+            continue
+        fi
+        seen+="|$m|"
+        echo -e "${YELLOW}Ensuring Ollama model '$m' is available...${NC}"
+        if ! ollama pull "$m" >> log/ollama_server.log 2>&1; then
+            echo -e "${RED}Warning: failed to pull model '$m'. Check log/ollama_server.log${NC}"
+        else
+            echo "✓ Model ready: $m"
+        fi
+    done
+}
+
 echo -e "${GREEN}All requirements satisfied${NC}"
 echo ""
 
@@ -509,6 +547,8 @@ if [[ "$START_OLLAMA" == true ]]; then
             exit 1
         fi
     fi
+    # Pull required models after server is reachable
+    pull_ollama_models
     echo ""
 else
     echo -e "${GREEN}Using remote Ollama at $OLLAMA_API_BASE${NC}"
