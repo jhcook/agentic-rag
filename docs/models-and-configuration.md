@@ -1,0 +1,232 @@
+# Models and Configuration in Agentic RAG
+
+This document explains the different AI models used in the Agentic RAG system, their purposes, and how they are integrated into the codebase.
+
+## Overview
+
+The Agentic RAG system uses multiple AI models working together to provide retrieval-augmented generation capabilities:
+
+1. **Embedding Model** - Converts text into numerical vectors for semantic search
+2. **LLM Models** - Generate human-like responses based on retrieved context
+3. **Ollama Integration** - Local model serving and API communication
+
+## Model Configuration
+
+All models are configured through environment variables in the `.env` file:
+
+```dotenv
+EMBED_MODEL_NAME=Snowflake/arctic-embed-xs
+LLM_MODEL_NAME=ollama/qwen2.5:7b
+ASYNC_LLM_MODEL_NAME=qwen2.5:7b
+OLLAMA_API_BASE=http://127.0.0.1:11434
+OLLAMA_KEEP_ALIVE=-1
+```
+
+## Embedding Model (`EMBED_MODEL_NAME`)
+
+### Purpose
+The embedding model converts text documents into high-dimensional numerical vectors that capture semantic meaning. This enables semantic similarity search rather than simple keyword matching.
+
+### Current Configuration
+- **Model**: `Snowflake/arctic-embed-xs`
+- **Dimensions**: 384-dimensional vectors
+- **Provider**: Hugging Face via SentenceTransformers
+
+### Code Integration
+
+**Loading the Model** (`src/core/rag_core.py`):
+```python
+def get_embedder() -> Optional[SentenceTransformer]:
+    global _EMBEDDER
+    if DEBUG_MODE:
+        return None
+    if _EMBEDDER is None:
+        logger.info("Loading embedding model: %s", EMBED_MODEL_NAME)
+        _EMBEDDER = SentenceTransformer(
+            EMBED_MODEL_NAME,
+            device='cpu',
+            backend='torch'
+        )
+    return _EMBEDDER
+```
+
+**Usage in Vector Search**:
+```python
+def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
+    embedder = get_embedder()
+    query_emb = embedder.encode(query, normalize_embeddings=True, convert_to_numpy=True)
+    # Search FAISS index for similar vectors
+```
+
+**Document Indexing**:
+```python
+def _rebuild_faiss_index():
+    embedder = get_embedder()
+    for uri, text in _STORE.docs.items():
+        chunks = _chunk(text)
+        embeddings = embedder.encode(chunks, normalize_embeddings=True)
+        index.add(embeddings)  # Add to FAISS vector database
+```
+
+## Primary LLM Model (`LLM_MODEL_NAME`)
+
+### Purpose
+The primary language model generates grounded answers by synthesizing information from retrieved documents. It ensures responses are based only on the provided context.
+
+### Current Configuration
+- **Model**: `ollama/qwen2.5:7b`
+- **Provider**: Ollama (local)
+- **Usage**: Synchronous completions via LiteLLM
+
+### Code Integration
+
+**Search Function** (`src/core/rag_core.py`):
+```python
+def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
+    # 1. Vector search to find relevant documents
+    candidates = _vector_search(query, k=top_k)
+    
+    # 2. Build context from retrieved documents
+    context = build_context_from_candidates(candidates)
+    
+    # 3. Generate response using LLM
+    resp = completion(
+        model=LLM_MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Documents:\n{context}\n\nQuestion: {query}"}
+        ],
+        api_base=OLLAMA_API_BASE,
+        stream=False,
+        timeout=120,
+    )
+    return resp
+```
+
+The system prompt enforces grounding: *"Answer the user's question using ONLY the documents provided. If the answer is not contained in the documents, reply exactly: 'I don't know.'"*
+
+## Async LLM Model (`ASYNC_LLM_MODEL_NAME`)
+
+### Purpose
+Handles asynchronous operations and bulk text processing, particularly useful for sending large amounts of text to the model or when working with async contexts.
+
+### Current Configuration
+- **Model**: `qwen2.5:7b` (same as primary but without provider prefix)
+- **Provider**: Ollama AsyncClient
+- **Usage**: Asynchronous chat completions
+
+### Code Integration
+
+**Async Text Processing** (`src/core/rag_core.py`):
+```python
+async def send_to_llm(query: List[str]) -> Any:
+    client = AsyncClient(host=OLLAMA_API_BASE)
+    messages = [{"content": str(text), "role": "user"} for text in query]
+    resp = await client.chat(
+        model=ASYNC_LLM_MODEL_NAME,
+        messages=messages
+    )
+    return resp
+```
+
+**Document Store Processing**:
+```python
+def send_store_to_llm() -> str:
+    texts = list(get_store().docs.values())
+    # Handle both sync and async execution contexts
+    if running_loop and running_loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(send_to_llm(texts), running_loop)
+        resp = future.result(timeout=120)
+    else:
+        resp = asyncio.run(send_to_llm(texts))
+    return resp
+```
+
+## Ollama Integration
+
+### API Base URL (`OLLAMA_API_BASE`)
+
+**Purpose**: Specifies the endpoint where the Ollama service is running.
+
+**Current Configuration**: `http://127.0.0.1:11434` (default Ollama port)
+
+**Usage**: Used by both LiteLLM and Ollama's AsyncClient for API communication.
+
+### Keep Alive (`OLLAMA_KEEP_ALIVE`)
+
+**Purpose**: Controls how long Ollama keeps models loaded in memory to improve response times.
+
+**Current Configuration**: `-1` (keep models loaded indefinitely)
+
+**Usage**: This is an Ollama server configuration parameter that prevents model reloading between requests, significantly improving performance for the qwen2.5:7b model.
+
+## Model Workflow
+
+### Document Indexing Pipeline
+
+1. **Text Extraction**: Documents are parsed from various formats (PDF, DOCX, HTML, TXT)
+2. **Chunking**: Text is split into overlapping chunks (800 chars, 120 char overlap)
+3. **Embedding**: Each chunk is converted to a 384-dimensional vector using `EMBED_MODEL_NAME`
+4. **Storage**: Vectors are stored in FAISS index with metadata linking back to source documents
+
+### Query Processing Pipeline
+
+1. **Query Embedding**: User query is converted to vector using same embedding model
+2. **Vector Search**: FAISS finds most similar document chunks (top-k results)
+3. **Context Assembly**: Retrieved chunks are assembled into context (max 4000 chars)
+4. **Answer Generation**: `LLM_MODEL_NAME` generates response using only the retrieved context
+5. **Response**: Grounded answer based on indexed documents
+
+### Async Processing
+
+- `ASYNC_LLM_MODEL_NAME` handles bulk operations like processing entire document stores
+- Used when the main processing needs to be non-blocking
+- Supports both synchronous and asynchronous execution contexts
+
+## Configuration Best Practices
+
+### Model Selection
+- **Embedding Model**: Choose models optimized for semantic similarity (384-768 dimensions typical)
+- **LLM**: Balance size vs. quality; qwen2.5:7b provides good quality with reasonable resource usage
+- **Async Model**: Usually same as primary LLM but can be different for specialized tasks
+
+### Performance Tuning
+- **OLLAMA_KEEP_ALIVE=-1**: Prevents model reloading for better response times
+- **Chunk Size**: 800 characters with 120 character overlap balances context and precision
+- **Top-K**: 5-10 results typically provide sufficient context without overwhelming the LLM
+
+### Resource Management
+- **Memory**: Monitor usage with `MAX_MEMORY_MB` setting
+- **Debug Mode**: Set `RAG_DEBUG_MODE=true` to skip embeddings for testing
+- **Batch Processing**: Embeddings are processed in batches of 8 to control memory usage
+
+## Troubleshooting
+
+### Common Issues
+
+**Embedding Model Fails to Load**:
+- Check Hugging Face model identifier
+- Ensure network connectivity for model download
+- Verify sufficient disk space (models can be several GB)
+
+**LLM Connection Errors**:
+- Confirm Ollama is running: `ollama serve`
+- Check `OLLAMA_API_BASE` URL is correct
+- Verify model is available: `ollama list`
+
+**Slow Responses**:
+- Ensure `OLLAMA_KEEP_ALIVE=-1` is set
+- Check system has sufficient RAM for model size
+- Consider smaller models for resource-constrained environments
+
+**Empty Search Results**:
+- Verify documents have been indexed: check `cache/rag_store.jsonl`
+- Confirm FAISS index exists and has vectors
+- Check debug logs for embedding failures
+
+## Related Documentation
+
+- [README.md](../README.md) - Project overview and setup
+- [MCP Configuration](mcp/configuration.md) - MCP integration setup
+- [.env.example](../.env.example) - Complete environment variable reference</content>
+<parameter name="filePath">/Users/jcook/repo/agentic-rag/docs/models-and-configuration.md
