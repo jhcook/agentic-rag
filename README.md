@@ -21,6 +21,7 @@ agentic-rag/
 │   └── utils/
 │       ├── debug_test.py        # Debugging utilities
 │       ├── simple_indexer.py    # Basic file indexing (no embeddings)
+│       └── metrics_dashboard.py # Terminal metrics dashboard + log tail
 │       └── pylance_check.py     # Pylance validation tools
 ├── config/
 │   └── mcp/
@@ -196,6 +197,20 @@ INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
 ```
 
 ## Usage
+
+### Metrics & Monitoring
+
+- **Prometheus endpoint**: The MCP server exposes metrics at `http://127.0.0.1:8000/metrics` (configurable via `MCP_HOST`/`MCP_PORT`). Metrics include indexed documents, embeddings, process memory, and Ollama model information.
+- **Terminal dashboard + log tail**: Use the bundled curses dashboard to view key metrics (with a memory usage bar) in the top half of the terminal while tailing `log/mcp_server.log` in the bottom half:
+
+```bash
+python -m src.utils.metrics_dashboard \
+  --url http://localhost:8000/metrics \
+  --refresh 5 \
+  --log-file log/mcp_server.log
+```
+
+The defaults already match the example above; override `--url`, `--refresh` (seconds), or `--log-file` as needed.
 
 ### Starting Services
 
