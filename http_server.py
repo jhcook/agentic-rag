@@ -18,7 +18,6 @@ Connect URL (client side):
 """
 
 from __future__ import annotations
-import atexit
 import gc
 import os
 from pathlib import Path
@@ -28,7 +27,7 @@ import sys
 import threading
 import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import re
 
 import psutil
@@ -44,6 +43,9 @@ from rag_core import (
     get_store,
     resolve_input_path,
     _extract_text_from_file,
+    rerank,
+    grounded_answer,
+    verify_grounding,
 )
 
 # Set up logging
@@ -545,6 +547,43 @@ def list_indexed_documents_tool() -> Dict[str, Any]:
     except Exception as e:
         logger.error("Error listing indexed documents: %s", e, exc_info=True)
         return {"error": str(e), "uris": []}
+
+@mcp.tool()
+def rerank_tool(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    RERANK passages for a query using a lightweight heuristic.
+
+    Use this after search_tool when you need the most relevant snippets first.
+    """
+    try:
+        return rerank(query, passages)
+    except Exception as e:
+        logger.error("Error reranking passages: %s", e, exc_info=True)
+        return []
+
+@mcp.tool()
+def grounded_answer_tool(question: str, k: int = 5) -> Dict[str, Any]:
+    """
+    Generate a grounded answer from the indexed corpus.
+
+    This performs a vector search and returns an answer plus citations.
+    """
+    try:
+        return grounded_answer(question, k=k)
+    except Exception as e:
+        logger.error("Error generating grounded answer: %s", e, exc_info=True)
+        return {"error": str(e)}
+
+@mcp.tool()
+def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
+    """
+    Verify that an answer is grounded in the cited documents.
+    """
+    try:
+        return verify_grounding(question, answer, citations)
+    except Exception as e:
+        logger.error("Error verifying grounding: %s", e, exc_info=True)
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     try:

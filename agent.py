@@ -20,6 +20,7 @@ logging.basicConfig(
 BASE = os.getenv("RAG_BASE", "http://127.0.0.1:8001")
 
 def post(path: str, payload: Dict[str, Any]):
+    """POST a JSON payload to the REST API and return the parsed response."""
     try:
         r = requests.post(f"{BASE}{path}", json=payload, timeout=60)
         r.raise_for_status()
@@ -28,12 +29,15 @@ def post(path: str, payload: Dict[str, Any]):
         logging.error(f"HTTP error during POST to {path}: {e}")
 
 def index_path(path: str, glob: str="**/*.txt"):
+    """Invoke the REST indexer for a local path."""
     return post("/api/index_path", {"path": path, "glob": glob})
 
 def search(query: str):
+    """Invoke the REST search endpoint."""
     return post("/api/search", {"query": query})
 
 def control_loop(q: str, idx: str | None=None):
+    """Optionally index a path, then perform a search."""
     try:
         if idx:
             index_path(path=idx)
@@ -60,13 +64,13 @@ if __name__ == "__main__":
         print("  agent.py 'what is my name?'     # Search query", file=sys.stderr)
         print("  agent.py 'search query' docs    # Search + also index docs", file=sys.stderr)
         sys.exit(2)
-    
+
     user_input = sys.argv[1]
     explicit_index_path = sys.argv[2] if len(sys.argv) > 2 else None
-    
+
     # Parse the command
     command_type, content = parse_command(user_input)
-    
+
     if command_type == "index":
         # Just index, don't search
         result = index_path(path=content)

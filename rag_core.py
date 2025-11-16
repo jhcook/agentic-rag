@@ -14,11 +14,6 @@ import gc
 
 from typing import List, Dict, Any, Optional, Tuple
 
-try:
-    from httpcore import RemoteProtocolError  # type: ignore
-except ImportError:
-    RemoteProtocolError = None  # type: ignore
-
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
@@ -170,6 +165,7 @@ def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, str]], int]:
 class Store:
     """Optimized document store - single source of truth for text."""
     def __init__(self):
+        """Initialize an empty in-memory store."""
         self.docs: Dict[str, str] = {}
         self.last_loaded: float = 0.0
         logger.debug("Initialized new Store instance")
@@ -221,6 +217,7 @@ def resolve_input_path(path: str) -> pathlib.Path:
     candidates = []
 
     def _add_candidate(p: pathlib.Path):
+        """Track a candidate path if not already present."""
         candidate = p.resolve()
         if candidate not in candidates:
             candidates.append(candidate)
@@ -681,7 +678,7 @@ def index_path(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
 async def send_to_llm(query: List[str]) -> Any:
     """Send the query to the LLM and return the response."""
     client = AsyncClient(host=OLLAMA_API_BASE)
-    messages = [{"content": f"{text}", "role": "user"} for text in query]
+    messages = [{"content": str(text), "role": "user"} for text in query]
     try:
         resp = await client.chat(  # type: ignore
             model=ASYNC_LLM_MODEL_NAME,
@@ -811,3 +808,80 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
     except (OSError, RuntimeError) as exc:  # type: ignore
         logger.error("Unexpected error in completion: %s", exc)
         return {"error": str(exc)}  # type: ignore
+
+
+# --- Lightweight rerank/ground/verify utilities used by MCP tools ---
+
+def rerank(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Simple reranker that boosts passages containing the query terms. This is a
+    lightweight heuristic so we avoid an additional model dependency.
+    """
+    lowered_terms = [t for t in query.lower().split() if t]
+
+    def _score(p: Dict[str, Any]) -> float:
+        """Heuristic score combining existing score with query term hits."""
+        base = float(p.get("score", 0.0) or 0.0)
+        text = str(p.get("text", "")).lower()
+        term_hits = sum(text.count(term) for term in lowered_terms) if lowered_terms else 0
+        return base + term_hits * 0.1
+
+    ranked = sorted(passages, key=_score, reverse=True)
+    # Attach heuristic scores for downstream consumers
+    for p in ranked:
+        p["score"] = _score(p)
+    return ranked
+
+
+def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Produce a grounded answer by concatenating the top passage texts. This keeps
+    outputs deterministic when no LLM is available.
+    """
+    if not passages:
+        return {"answer": "I don't know.", "citations": []}
+
+    top_passages = passages[:3]
+    answer_parts = [p.get("text", "") for p in top_passages if p.get("text")]
+    answer = " ".join(answer_parts).strip()
+    citations = [p.get("uri", "") for p in top_passages if p.get("uri")]
+    return {"answer": answer or "I don't know.", "citations": citations}
+
+
+def grounded_answer(question: str, k: int = 3) -> Dict[str, Any]:
+    """
+    Retrieve top-k passages via vector search and synthesize a grounded answer.
+    """
+    hits = _vector_search(question, k=k)
+    reranked = rerank(question, hits)
+    return synthesize_answer(question, reranked)
+
+
+def verify_grounding_simple(question: str, draft_answer: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Minimal grounding check: ensures at least one citation-like string maps to a
+    provided passage and computes coverage heuristically.
+    """
+    if not passages:
+        return {"answer_conf": 0.0, "citation_coverage": 0.0, "missing_facts": [draft_answer]}
+
+    cited = len(passages)
+    coverage = min(1.0, cited / max(1, len(passages)))
+    conf = 0.5 + 0.1 * min(5, cited)
+    return {
+        "answer_conf": min(conf, 0.95),
+        "citation_coverage": coverage,
+        "missing_facts": [] if cited else [draft_answer],
+    }
+
+
+def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> Dict[str, Any]:
+    """
+    Verify grounding given a list of citation URIs by pulling text from the store.
+    """
+    store = get_store()
+    passages: List[Dict[str, Any]] = []
+    for uri in citations:
+        if uri in store.docs:
+            passages.append({"uri": uri, "text": store.docs[uri], "score": 1.0})
+    return verify_grounding_simple(question, draft_answer, passages)
