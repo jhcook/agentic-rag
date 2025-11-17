@@ -2,20 +2,21 @@
 """
 A simple agent that interacts with the retrieval server via REST API.
 Run with:
-    python agent.py "your question" [optional_index_path]
+    python cli_agent.py "your question" [optional_index_path] [--verbose]
 """
 
-import json, os, sys, requests, logging
+import argparse
+import json
+import logging
+import os
+import sys
 from typing import Any, Dict
 
+import requests
 from urllib3.exceptions import ReadTimeoutError
 from requests.exceptions import ConnectionError, HTTPError
 
-# Set up logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logger = logging.getLogger(__name__)
 
 BASE = os.getenv("RAG_BASE", "http://127.0.0.1:8001")
 
@@ -26,7 +27,8 @@ def post(path: str, payload: Dict[str, Any]):
         r.raise_for_status()
         return r.json()
     except (ConnectionError, ReadTimeoutError, HTTPError) as e:
-        logging.error(f"HTTP error during POST to {path}: {e}")
+        logger.error("HTTP error during POST to %s: %s", path, e)
+        return {"error": str(e)}
 
 def index_path(path: str, glob: str="**/*.txt"):
     """Invoke the REST indexer for a local path."""
@@ -38,44 +40,76 @@ def search(query: str):
 
 def control_loop(q: str, idx: str | None=None):
     """Optionally index a path, then perform a search."""
-    try:
-        if idx:
-            index_path(path=idx)
-        resp = search(q)
-        return resp
-    except (ConnectionError, ReadTimeoutError, HTTPError) as e:
-        logging.error(f"Timeout error during search: {e}")
+    if idx:
+        index_path(path=idx)
+    return search(q)
 
 def parse_command(user_input: str):
     """Parse user input to detect indexing commands."""
-    # Check for index commands like "index docs", "index path/to/dir"
     if user_input.lower().startswith("index "):
-        # Extract the path after "index "
         path = user_input[6:].strip()
         if path:
             return "index", path
     return "search", user_input
 
+def extract_message_content(result: Any) -> str:
+    """Extract a friendly message string from a completion-like response plus sources."""
+    if result is None:
+        return ""
+    sources = []
+    if isinstance(result, dict):
+        srcs = result.get("sources") or result.get("citations") or []
+        if isinstance(srcs, list):
+            sources = [str(s) for s in srcs if s]
+        if "error" in result:
+            base = f"error: {result.get('error')}"
+        else:
+            base = ""
+            choices = result.get("choices")
+            if choices and isinstance(choices, list):
+                first = choices[0] or {}
+                msg = first.get("message", {}) if isinstance(first, dict) else {}
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if content:
+                    base = str(content).strip()
+                elif "text" in first:
+                    base = str(first.get("text", "")).strip()
+            if not base and "answer" in result:
+                base = str(result.get("answer", "")).strip()
+        parts = [p for p in [base] if p]
+        if sources:
+            parts.append("Sources:")
+            parts.extend([f"- {s}" for s in sources])
+        return "\n".join(parts)
+    return json.dumps(result)
+
+def build_parser() -> argparse.ArgumentParser:
+    """Create the CLI argument parser."""
+    parser = argparse.ArgumentParser(description="CLI agent for the retrieval REST server.")
+    parser.add_argument("user_input", help="Query text or 'index <path>' command")
+    parser.add_argument("index_path", nargs="?", help="Optional path to index before search")
+    parser.add_argument("--verbose", action="store_true", help="Print full JSON responses and verbose logs")
+    return parser
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: agent.py 'your question' [optional_index_path]", file=sys.stderr)
-        print("Examples:", file=sys.stderr)
-        print("  agent.py 'index documents'           # Index documents directory", file=sys.stderr) 
-        print("  agent.py 'what is my name?'     # Search query", file=sys.stderr)
-        print("  agent.py 'search query' documents    # Search + also index documents", file=sys.stderr)
-        sys.exit(2)
+    parser = build_parser()
+    args = parser.parse_args()
 
-    user_input = sys.argv[1]
-    explicit_index_path = sys.argv[2] if len(sys.argv) > 2 else None
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.CRITICAL,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
-    # Parse the command
-    command_type, content = parse_command(user_input)
+    command_type, content = parse_command(args.user_input)
 
     if command_type == "index":
-        # Just index, don't search
         result = index_path(path=content)
-        print(json.dumps(result))
     else:
-        # Search (and optionally index first)
-        result = control_loop(content, explicit_index_path)
-        print(json.dumps(result))
+        result = control_loop(content, args.index_path)
+
+    if args.verbose:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        msg = extract_message_content(result)
+        if msg:
+            print(msg)
