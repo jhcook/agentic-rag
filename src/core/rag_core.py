@@ -72,6 +72,12 @@ try:
 except (ImportError, AttributeError):
     pass
 
+try:
+    from prometheus_client import Counter, Histogram
+except ImportError:
+    Counter = None  # type: ignore
+    Histogram = None  # type: ignore
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -85,6 +91,7 @@ DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
 OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 
 # Lazy-initialized global state
@@ -93,6 +100,16 @@ _INDEX: Optional[Any] = None
 _INDEX_TO_META: Optional[Dict[int, Tuple[str, str]]] = None
 _EMBED_DIM: Optional[int] = None
 _STORE: Optional['Store'] = None
+
+# Embedding metrics (shared by servers)
+EMBEDDING_REQUESTS = Counter("embedding_requests_total", "Embedding encode invocations.", ["stage"]) if Counter else None
+EMBEDDING_ERRORS = Counter("embedding_errors_total", "Embedding encode failures.", ["stage"]) if Counter else None
+EMBEDDING_DURATION = Histogram(
+    "embedding_duration_seconds",
+    "Time spent in embedding encode calls.",
+    ["stage"],
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8],
+) if Histogram else None
 
 # Absolute path to the repository so relative inputs resolve consistently
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
@@ -175,6 +192,26 @@ class Store:
         logger.debug("Adding document: %s", uri)
         self.docs[uri] = text
         logger.debug("Store now contains %d documents", len(self.docs))
+
+
+def _encode_with_metrics(embedder: SentenceTransformer, inputs: Any, stage: str, **kwargs):
+    """Wrap embedder.encode to record metrics when available."""
+    if embedder is None:  # Defensive: should already be handled by callers
+        raise RuntimeError("Embedding model is not initialized.")
+
+    if EMBEDDING_REQUESTS:
+        EMBEDDING_REQUESTS.labels(stage=stage).inc()
+
+    start = time.perf_counter()
+    try:
+        result = embedder.encode(inputs, **kwargs)
+        if EMBEDDING_DURATION:
+            EMBEDDING_DURATION.labels(stage=stage).observe(time.perf_counter() - start)
+        return result
+    except Exception:
+        if EMBEDDING_ERRORS:
+            EMBEDDING_ERRORS.labels(stage=stage).inc()
+        raise
 
 
 def _ensure_store_synced():
@@ -328,12 +365,14 @@ def _rebuild_faiss_index():
                 batch_chunks = chunks[i:i+batch_size]
                 batch_meta = metadata[i:i+batch_size]
 
-                embeddings = embedder.encode(
+                embeddings = _encode_with_metrics(
+                    embedder,
                     batch_chunks,
+                    "rebuild_index",
                     normalize_embeddings=True,
                     convert_to_numpy=True,
-                    show_progress_bar=False
-                )  # type: ignore
+                    show_progress_bar=False,
+                )
 
                 if index is not None:
                     embeddings_array = np.array(embeddings, dtype=np.float32)
@@ -421,11 +460,13 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i:i+batch_size]
-            embeddings = embedder.encode(
+            embeddings = _encode_with_metrics(
+                embedder,
                 batch_chunks,
+                "upsert_document",
                 normalize_embeddings=True,
                 convert_to_numpy=True,
-                batch_size=batch_size
+                batch_size=batch_size,
             )
             embeddings = np.array(embeddings, dtype=np.float32)
             if len(embeddings.shape) == 1:
@@ -611,11 +652,13 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i:i+batch_size]
-            embeddings = embedder.encode(
+            embeddings = _encode_with_metrics(
+                embedder,
                 batch_chunks,
+                "index_path",
                 normalize_embeddings=True,
                 convert_to_numpy=True,
-                batch_size=batch_size
+                batch_size=batch_size,
             )
             embeddings = np.array(embeddings, dtype=np.float32)
             if len(embeddings.shape) == 1:
@@ -746,7 +789,13 @@ def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
         logger.debug("No FAISS index available for vector search")
         return []
 
-    query_emb = embedder.encode(query, normalize_embeddings=True, convert_to_numpy=True)  # type: ignore
+    query_emb = _encode_with_metrics(
+        embedder,
+        query,
+        "search_query",
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+    )  # type: ignore
     query_array = np.array(query_emb, dtype=np.float32).reshape(1, -1)
 
     scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore
@@ -768,14 +817,15 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
     """Search the indexed documents and ask the LLM using only those documents as context."""
     logger.info("Vector searching for: %s", query)
     candidates = _vector_search(query, k=top_k)
+    sources = [c.get("uri", "") for c in candidates if c.get("uri")]
 
     if not candidates:
         logger.info("No vector hits; refusing to answer from outside sources.")
-        return {"error": "No relevant documents found in the indexed corpus."}
+        return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
 
     context_parts, total_chars = [], 0
-    for i, entry in enumerate(candidates, start=1):
-        part = "--- Document %d (uri: %s) ---\n%s\n" % (i, entry['uri'], entry['text'])
+    for entry in candidates:
+        part = "Source: %s\nContent:\n%s\n" % (entry["uri"], entry["text"])
         if total_chars + len(part) > max_context_chars:
             break
         context_parts.append(part)  # type: ignore
@@ -784,6 +834,7 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
 
     system_msg = (
         "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
+        "Cite the exact source URI for each fact. Include a final 'Sources:' section listing the URIs you used. "
         "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
         "any external knowledge or make assumptions."
     )
@@ -798,16 +849,19 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
             messages=[{"role": "system", "content": system_msg},
                       {"role": "user", "content": user_msg}],
             api_base=OLLAMA_API_BASE,
+            temperature=LLM_TEMPERATURE,
             stream=False,
             timeout=120,
         )
+        if isinstance(resp, dict):
+            resp.setdefault("sources", sources)
         return resp
     except (ValueError, OllamaError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)
-        return {"error": str(exc)}  # type: ignore
+        return {"error": str(exc), "sources": sources}  # type: ignore
     except (OSError, RuntimeError) as exc:  # type: ignore
         logger.error("Unexpected error in completion: %s", exc)
-        return {"error": str(exc)}  # type: ignore
+        return {"error": str(exc), "sources": sources}  # type: ignore
 
 
 # --- Lightweight rerank/ground/verify utilities used by MCP tools ---
