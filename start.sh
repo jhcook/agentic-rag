@@ -606,7 +606,7 @@ echo -e "${YELLOW}Starting REST API server...${NC}"
 if check_process "$REST_PORT"; then
     echo -e "${YELLOW}REST API server already running on port $REST_PORT${NC}"
 else
-    nohup uvicorn src.servers.rest_server:app --host "$REST_HOST" --port "$REST_PORT" >> log/rest_server.log 2>&1 &
+    nohup uvicorn src.servers.rest_server:app --host "$REST_HOST" --port "$REST_PORT" --no-access-log >> log/rest_server.log 2>&1 &
     REST_PID=$!
     STARTED_PIDS+=("$REST_PID")
     STARTED_SERVICES+=("REST API Server")
