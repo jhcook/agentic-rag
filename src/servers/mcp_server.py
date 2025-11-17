@@ -61,6 +61,8 @@ from src.core.rag_core import (
 
 # Set up logging
 os.makedirs('log', exist_ok=True)
+
+# Process logger (application logs)
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -70,6 +72,14 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Access logger (HTTP access logs)
+access_logger = logging.getLogger('mcp_access')
+access_logger.setLevel(logging.INFO)
+access_handler = logging.FileHandler('log/mcp_server_access.log')
+access_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+access_logger.addHandler(access_handler)
+access_logger.propagate = False  # Don't propagate to root logger
 
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
@@ -775,6 +785,40 @@ async def metrics_endpoint(_request) -> Response:
             f"# metrics unavailable: {exc}\n", status_code=500, media_type="text/plain"
         )
 
+# Add access logging middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class AccessLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log HTTP access for MCP server."""
+    
+    async def dispatch(self, request, call_next):
+        import time
+        start_time = time.time()
+
+        response = await call_next(request)
+
+        # Calculate response time
+        duration = time.time() - start_time
+
+        # Log access in Apache combined log format style
+        client_ip = getattr(request.client, 'host', 'unknown') if request.client else 'unknown'
+        method = request.method
+        path = request.url.path
+        query = str(request.url.query) if request.url.query else ''
+        if query:
+            path = f"{path}?{query}"
+        status = response.status_code
+        user_agent = request.headers.get('user-agent', '-')
+        content_length = response.headers.get('content-length', '-')
+
+        access_logger.info(
+            f'{client_ip} - - [{time.strftime("%d/%b/%Y:%H:%M:%S %z", time.localtime(start_time))}] '
+            f'"{method} {path} HTTP/{request.scope.get("http_version", "1.1")}" '
+            f'{status} {content_length} "-" "{user_agent}" {duration:.4f}s'
+        )
+
+        return response
+
 if __name__ == "__main__":
     try:
         # Set memory limits before doing anything else
@@ -785,6 +829,10 @@ if __name__ == "__main__":
         mcp.settings.streamable_http_path = os.getenv("MCP_PATH", "/mcp")
         mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
         mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
+
+        # Add access logging middleware to the streamable HTTP app
+        streamable_app = mcp.streamable_http_app()
+        streamable_app.add_middleware(AccessLoggingMiddleware)
 
         # Start memory monitoring
         start_memory_monitor()
