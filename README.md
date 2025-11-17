@@ -32,6 +32,12 @@ agentic-rag/
 ├── tests/                       # Test suite
 ├── cache/                       # Vector store and cache files
 ├── log/                         # Log files
+│   ├── mcp_server.log          # MCP server process logs
+│   ├── mcp_server_access.log   # MCP server access logs
+│   ├── rest_server.log         # REST API process logs
+│   ├── rest_server_access.log  # REST API access logs
+│   ├── ollama_server.log       # Ollama server logs
+│   └── start.log                # Startup script output
 └── scripts/                     # Startup and utility scripts
 ```
 
@@ -280,13 +286,21 @@ pytest -v --cov=rag_core tests/ -s
 All services log to the `log/` directory:
 
 - `log/start.log` - Startup script output (timestamped)
-- `log/mcp_server.log` - MCP server logs (renamed from http_server.log)
-- `log/rest_server.log` - REST API logs
+- `log/mcp_server.log` - MCP server process logs (application events, errors, debug info)
+- `log/mcp_server_access.log` - MCP server access logs (HTTP requests in Apache format)
+- `log/rest_server.log` - REST API process logs (application events, errors, debug info)
+- `log/rest_server_access.log` - REST API access logs (HTTP requests in Apache format)
+- `log/ollama_server.log` - Ollama server logs (when started locally)
 
 Monitor logs in real-time:
 
 ```bash
 tail -f log/*.log
+```
+
+Access logs follow Apache combined log format:
+```
+127.0.0.1 - - [17/Nov/2025:10:51:35 +1100] "GET /mcp HTTP/1.1" 200 1234 "-" "user-agent" 0.1234s
 ```
 
 ## Troubleshooting

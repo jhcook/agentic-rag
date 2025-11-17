@@ -20,6 +20,7 @@ LLM_MODEL_NAME=ollama/qwen2.5:7b
 ASYNC_LLM_MODEL_NAME=qwen2.5:7b
 OLLAMA_API_BASE=http://127.0.0.1:11434
 OLLAMA_KEEP_ALIVE=-1
+LLM_TEMPERATURE=0.1
 ```
 
 ## Embedding Model (`EMBED_MODEL_NAME`)
@@ -159,6 +160,44 @@ def send_store_to_llm() -> str:
 **Current Configuration**: `-1` (keep models loaded indefinitely)
 
 **Usage**: This is an Ollama server configuration parameter that prevents model reloading between requests, significantly improving performance for the qwen2.5:7b model.
+
+## Temperature Control (`LLM_TEMPERATURE`)
+
+### Purpose
+Controls the randomness and creativity of LLM responses. Lower values produce more consistent, deterministic answers while higher values introduce more variation.
+
+### Current Configuration
+- **Value**: `0.1` (low temperature for consistent, grounded responses)
+- **Range**: 0.0 (most deterministic) to 2.0 (most creative)
+- **Default**: 0.1
+
+### Code Integration
+
+**Configuration Loading** (`src/core/rag_core.py`):
+```python
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
+```
+
+**Usage in Completions**:
+```python
+resp = completion(
+    model=LLM_MODEL_NAME,
+    messages=[{"role": "system", "content": system_msg},
+              {"role": "user", "content": user_msg}],
+    api_base=OLLAMA_API_BASE,
+    temperature=LLM_TEMPERATURE,  # Controls response consistency
+    stream=False,
+    timeout=120,
+)
+```
+
+### Temperature Guidelines
+- **0.0-0.3**: Highly consistent, deterministic responses (best for RAG applications)
+- **0.4-0.7**: Balanced creativity and consistency
+- **0.8-1.2**: More creative, varied responses
+- **1.3-2.0**: Highly creative, potentially unpredictable
+
+For retrieval-augmented generation, low temperature (0.1) ensures responses stay grounded in the retrieved documents rather than generating speculative content.
 
 ## Model Workflow
 
