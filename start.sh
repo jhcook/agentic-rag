@@ -147,9 +147,9 @@ OPTIONS:
         Default: python3.11
         Examples: python3.12, /usr/local/bin/python3.11, python3
 
-    --recreate-venv
-        Force recreation of the virtual environment even if it already exists
-        Useful when dependencies are corrupted or Python version needs to change
+    --skip-model-pull
+        Skip automatic Ollama model pulling
+        Useful for offline usage or when models are already available
 
 ENVIRONMENT CONFIGURATION (.env):
     The script reads configuration from a .env file in the current directory.
@@ -204,6 +204,9 @@ EXAMPLES:
     # Use custom virtual environment name with specific Python
     ./start.sh --venv myenv --python python3.11
 
+    # Skip model pulling for offline usage
+    ./start.sh --skip-model-pull
+
     # Force recreate with custom settings
     ./start.sh --venv .venv --python python3.12 --recreate-venv
 
@@ -252,6 +255,7 @@ ENV_FILE=".env"
 VENV_NAME=".venv"
 PYTHON_CMD="python3.11"
 RECREATE_VENV=false
+SKIP_MODEL_PULL=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -275,10 +279,14 @@ while [[ $# -gt 0 ]]; do
             RECREATE_VENV=true
             shift
             ;;
+        --skip-model-pull)
+            SKIP_MODEL_PULL=true
+            shift
+            ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
             echo ""
-            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--recreate-venv]"
+            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--recreate-venv] [--skip-model-pull]"
             echo ""
             echo "Run './start.sh --help' for detailed information"
             exit 1
@@ -397,6 +405,12 @@ pull_ollama_models() {
         return
     fi
 
+    # Skip if user requested to skip model pulling
+    if [[ "$SKIP_MODEL_PULL" == true ]]; then
+        echo -e "${YELLOW}Skipping Ollama model pulling (--skip-model-pull)${NC}"
+        return
+    fi
+
     local models=()
     models+=("$(extract_ollama_model "$LLM_MODEL_NAME")")
     models+=("$(extract_ollama_model "$ASYNC_LLM_MODEL_NAME")")
@@ -411,9 +425,17 @@ pull_ollama_models() {
             continue
         fi
         seen+="|$m|"
-        echo -e "${YELLOW}Ensuring Ollama model '$m' is available...${NC}"
+
+        # Check if model is already available locally
+        if ollama list 2>/dev/null | grep -q "^${m}[[:space:]]"; then
+            echo "✓ Model already available: ${m}"
+            continue
+        fi
+
+        echo -e "${YELLOW}Pulling Ollama model '$m'...${NC}"
         if ! ollama pull "$m" >> log/ollama_server.log 2>&1; then
             echo -e "${RED}Warning: failed to pull model '$m'. Check log/ollama_server.log${NC}"
+            echo -e "${YELLOW}Note: You can run 'ollama pull $m' manually when online, or use a remote Ollama instance${NC}"
         else
             echo "✓ Model ready: $m"
         fi
