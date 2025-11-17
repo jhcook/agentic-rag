@@ -76,10 +76,54 @@ logger = logging.getLogger(__name__)
 # Access logger (HTTP access logs)
 access_logger = logging.getLogger('mcp_access')
 access_logger.setLevel(logging.INFO)
-access_handler = logging.FileHandler('log/mcp_server_access.log')
-access_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-access_logger.addHandler(access_handler)
-access_logger.propagate = False  # Don't propagate to root logger
+# Clear all handlers and prevent propagation
+access_logger.handlers.clear()
+access_logger.propagate = False
+# Add a NullHandler to prevent any propagation
+access_logger.addHandler(logging.NullHandler())
+
+# Disable uvicorn's default access logger to keep access lines out of mcp_server.log
+uvicorn_access_logger = logging.getLogger("uvicorn.access")
+uvicorn_access_logger.handlers.clear()
+uvicorn_access_logger.propagate = False
+uvicorn_access_logger.disabled = True
+
+# Force uvicorn to use a log config without the access logger handlers (uvicorn resets
+# logging with its LOGGING_CONFIG, so we patch that too).
+try:
+    import uvicorn
+    from copy import deepcopy
+
+    patched = deepcopy(getattr(uvicorn.config, "LOGGING_CONFIG", {}))
+    if patched and "loggers" in patched and "uvicorn.access" in patched["loggers"]:
+        patched["loggers"]["uvicorn.access"]["handlers"] = []
+        patched["loggers"]["uvicorn.access"]["propagate"] = False
+        patched["loggers"]["uvicorn.access"]["level"] = "WARNING"
+        uvicorn.config.LOGGING_CONFIG = patched
+    # Also set env flag that uvicorn respects
+    os.environ.setdefault("UVICORN_ACCESS_LOG", "false")
+except Exception as exc:  # pragma: no cover
+    logger.debug("Unable to patch uvicorn access logging: %s", exc)
+
+# Monkey-patch FastMCP's streamable HTTP runner to disable uvicorn access logging.
+async def _run_streamable_http_no_access(self):
+    import uvicorn
+
+    starlette_app = self.streamable_http_app()
+    config = uvicorn.Config(
+        starlette_app,
+        host=self.settings.host,
+        port=self.settings.port,
+        log_level=self.settings.log_level.lower(),
+        access_log=False,  # critical: disable uvicorn access logger
+        log_config=getattr(uvicorn.config, "LOGGING_CONFIG", None),
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+# Bind monkey patch so FastMCP uses access-log-disabled server startup
+from mcp.server.fastmcp import FastMCP as _FastMCP
+_FastMCP.run_streamable_http_async = _run_streamable_http_no_access
 
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
@@ -790,9 +834,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 class AccessLoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log HTTP access for MCP server."""
-    
+
     async def dispatch(self, request, call_next):
         import time
+        from datetime import datetime
         start_time = time.time()
 
         response = await call_next(request)
@@ -811,13 +856,31 @@ class AccessLoggingMiddleware(BaseHTTPMiddleware):
         user_agent = request.headers.get('user-agent', '-')
         content_length = response.headers.get('content-length', '-')
 
-        access_logger.info(
+        # Write directly to access log file instead of using logger
+        log_entry = (
+            f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]} - '
             f'{client_ip} - - [{time.strftime("%d/%b/%Y:%H:%M:%S %z", time.localtime(start_time))}] '
             f'"{method} {path} HTTP/{request.scope.get("http_version", "1.1")}" '
-            f'{status} {content_length} "-" "{user_agent}" {duration:.4f}s'
+            f'{status} {content_length} "-" "{user_agent}" {duration:.4f}s\n'
         )
 
+        with open('log/mcp_server_access.log', 'a') as f:
+            f.write(log_entry)
+
         return response
+
+# Patch FastMCP to ensure every streamable HTTP app instance includes our middleware
+# and metrics endpoint; FastMCP builds a fresh Starlette app on each call, so we
+# wrap the constructor rather than mutating a one-off instance.
+_orig_streamable_http_app = _FastMCP.streamable_http_app
+
+def _streamable_http_app_with_access_logging(self):
+    app = _orig_streamable_http_app(self)
+    app.add_middleware(AccessLoggingMiddleware)
+    app.add_route("/metrics", metrics_endpoint, methods=["GET"])
+    return app
+
+_FastMCP.streamable_http_app = _streamable_http_app_with_access_logging
 
 if __name__ == "__main__":
     try:
@@ -829,10 +892,6 @@ if __name__ == "__main__":
         mcp.settings.streamable_http_path = os.getenv("MCP_PATH", "/mcp")
         mcp.settings.host = os.getenv("MCP_HOST", "127.0.0.1")
         mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
-
-        # Add access logging middleware to the streamable HTTP app
-        streamable_app = mcp.streamable_http_app()
-        streamable_app.add_middleware(AccessLoggingMiddleware)
 
         # Start memory monitoring
         start_memory_monitor()
