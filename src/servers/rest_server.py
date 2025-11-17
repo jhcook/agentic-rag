@@ -6,6 +6,7 @@ Run with:
 """
 
 import os, sys, logging, time
+from pathlib import Path
 from datetime import datetime
 import psutil
 from fastapi import FastAPI, Request, Response
@@ -22,14 +23,15 @@ from prometheus_client import (
 from src.core.rag_core import (index_path, search, upsert_document, send_store_to_llm, get_store)
 
 # Set up logging
-os.makedirs('log', exist_ok=True)
+LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Process logger (application logs)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('log/rest_server.log'),
+        logging.FileHandler(LOG_DIR / 'rest_server.log'),
         logging.StreamHandler()
     ],
     force=True  # Override any existing configuration
@@ -84,6 +86,10 @@ REST_MEMORY_USAGE_MB = Gauge(
     "rest_memory_usage_megabytes",
     "Current REST server process RSS memory in MB.",
 )
+REST_MEMORY_LIMIT_MB = Gauge(
+    "rest_memory_limit_megabytes",
+    "Configured memory limit for REST server in MB.",
+)
 REST_EMBEDDING_VECTORS = Gauge(
     "rest_embedding_vectors_total",
     "Total vectors stored in the embedding index (REST server view).",
@@ -99,7 +105,7 @@ REST_EMBEDDING_DIM = Gauge(
 
 # Log startup information
 logger.info(f"REST server initialized with base path: /{pth}")
-logger.info(f"Log file: log/rest_server.log")
+logger.info(f"Log file: {LOG_DIR / 'rest_server.log'}")
 
 # Load the document store and rebuild FAISS index on module import
 logger.info("Loading document store and rebuilding search index...")
@@ -130,6 +136,20 @@ def _get_route_path_template(request: Request) -> str:
     template = getattr(route, "path", None) if route else None
     return str(template or request.url.path)
 
+def _get_system_memory_mb() -> float:
+    """Return available system memory in megabytes."""
+    return psutil.virtual_memory().available / 1024 / 1024
+
+def _get_memory_limit_mb() -> int:
+    """Return configured memory limit (env REST_MAX_MEMORY_MB/MAX_MEMORY_MB or 75% available)."""
+    env_val = os.getenv("REST_MAX_MEMORY_MB") or os.getenv("MAX_MEMORY_MB")
+    try:
+        return int(env_val) if env_val is not None else int(_get_system_memory_mb() * 0.75)
+    except (TypeError, ValueError):
+        return int(_get_system_memory_mb() * 0.75)
+
+REST_MAX_MEMORY_MB = _get_memory_limit_mb()
+
 def _get_memory_usage_mb() -> float:
     """Return current process RSS in megabytes."""
     return psutil.Process().memory_info().rss / 1024 / 1024
@@ -144,6 +164,7 @@ def refresh_prometheus_metrics():
 
     try:
         REST_MEMORY_USAGE_MB.set(_get_memory_usage_mb())
+        REST_MEMORY_LIMIT_MB.set(REST_MAX_MEMORY_MB)
     except Exception as exc:
         logger.debug("refresh metrics: memory gauge failed: %s", exc)
 
@@ -187,8 +208,7 @@ async def add_prometheus_metrics(request: Request, call_next):
             f'{status_code} {content_length} "-" "{user_agent}" {duration:.4f}s\n'
         )
 
-        with open('log/rest_server_access.log', 'a') as f:
-            f.write(log_entry)
+        _append_access_log(log_entry)
 
         return response
     except Exception:
@@ -199,6 +219,15 @@ async def add_prometheus_metrics(request: Request, call_next):
         HTTP_INFLIGHT.dec()
         HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=status_code).inc()
         HTTP_REQUEST_DURATION.labels(method=method, path=path, status=status_code).observe(duration)
+
+ACCESS_LOG_PATH = LOG_DIR / "rest_server_access.log"
+
+def _append_access_log(log_entry: str) -> None:
+    """Write and flush an access log line for reliable tail/follow."""
+    with open(ACCESS_LOG_PATH, "a", buffering=1) as f:
+        f.write(log_entry)
+        f.flush()
+        os.fsync(f.fileno())
 
 @app.post(f"/{pth}/upsert_document")
 def api_upsert(req: UpsertReq):
