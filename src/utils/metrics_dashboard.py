@@ -13,6 +13,7 @@ import curses
 from pathlib import Path
 import sys
 import time
+import textwrap
 from typing import Dict, Any, Tuple, List
 
 import requests
@@ -25,6 +26,7 @@ DEFAULT_REST_URL = "http://localhost:8001/metrics"
 DEFAULT_REST_LOG_PATH = Path("log/rest_server.log")
 REFRESH_SECONDS = 5
 BAR_WIDTH = 30
+MEMORY_BAR_WIDTH = 18
 
 # Metrics we care about and their friendly labels/units
 SIMPLE_GAUGES = {
@@ -50,6 +52,7 @@ REST_GAUGES = {
     "rest_embedding_dimension": ("REST Embedding Dimension", ""),
     "rest_inflight_requests": ("REST Inflight Requests", ""),
     "rest_memory_usage_megabytes": ("REST Memory Used", "MB"),
+    "rest_memory_limit_megabytes": ("REST Memory Limit", "MB"),
 }
 REST_COUNTERS = {
     "rest_http_requests_total": "REST HTTP Requests",
@@ -100,14 +103,14 @@ def threshold_ratio(value: float, denom: float) -> float:
     return (value / denom) * 100.0
 
 
-def build_bar(value: float, limit: float) -> str:
+def build_bar(value: float, limit: float, width: int = BAR_WIDTH) -> str:
     """Render a bar chart string for value vs. limit."""
     if limit <= 0:
         return f"{value:.1f} MB"
 
     val = max(value, 0)
-    filled = int(min(BAR_WIDTH, (val / limit) * BAR_WIDTH))
-    bar = "#" * filled + "-" * (BAR_WIDTH - filled)
+    filled = int(min(width, (val / limit) * width))
+    bar = "#" * filled + "-" * (width - filled)
     pct = (val / limit) * 100
     return f"[{bar}] {val:.1f} / {limit:.1f} MB ({pct:.1f}%)"
 
@@ -134,17 +137,31 @@ def tail_file(path: Path, max_lines: int) -> List[str]:
     except OSError as exc:
         return [f"[error reading log: {exc}]"]
 
+def wrap_log_lines(lines: List[str], width: int) -> List[str]:
+    """Wrap log lines to fit the column width for proper follow display."""
+    wrapped: List[str] = []
+    effective_width = max(1, width)
+    for line in lines:
+        parts = textwrap.wrap(
+            line,
+            width=effective_width,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        )
+        wrapped.extend(parts or [""])
+    return wrapped
 
-def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
+
+def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
     """Turn metrics into display lines with optional color pair ids."""
-    lines: List[Tuple[str, int]] = []
+    lines: List[Tuple[str, int, str]] = []
     gauges = metrics.get("gauges", {})
 
     mem_limit = gauges.get("mcp_memory_limit_megabytes", 0) or 0
     mem_used = gauges.get("mcp_memory_usage_megabytes", 0) or 0
 
     if "mcp_memory_usage_megabytes" in gauges:
-        bar_text = build_bar(mem_used, mem_limit) if mem_limit else f"{mem_used:.1f} MB"
+        bar_text = build_bar(mem_used, mem_limit, width=MEMORY_BAR_WIDTH) if mem_limit else f"{mem_used:.1f} MB"
         ratio = threshold_ratio(mem_used, mem_limit) if mem_limit else 0
         color = 0
         if mem_limit:
@@ -154,7 +171,7 @@ def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
                 color = 2
             else:
                 color = 3
-        lines.append((f"{'Memory Used':<28} {bar_text}", color))
+        lines.append((f"{'Memory Used':<28} {bar_text}", color, "center"))
 
     for key in (
         "mcp_documents_indexed_total",
@@ -170,23 +187,23 @@ def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
         label, unit = SIMPLE_GAUGES[key]
         value = gauges.get(key, 0) or 0
         suffix = f" {unit}" if unit else ""
-        lines.append((f"{label:<28} {value:>12.0f}{suffix}", 0))
+        lines.append((f"{label:<28} {value:>12.0f}{suffix}", 0, "left"))
 
     running = metrics.get("running_models", {})
     if running:
-        lines.append(("-- Running Models --", 0))
+        lines.append(("-- Running Models --", 0, "left"))
         for model, vals in running.items():
             size_val, size_unit = human_bytes(vals.get("size_bytes", 0) or 0)
             vram_val, vram_unit = human_bytes(vals.get("vram_bytes", 0) or 0)
-            lines.append((f"{(model + ' size'):<28} {size_val:>12.2f} {size_unit}", 0))
-            lines.append((f"{(model + ' vram'):<28} {vram_val:>12.2f} {vram_unit}", 0))
+            lines.append((f"{(model + ' size'):<28} {size_val:>12.2f} {size_unit}", 0, "left"))
+            lines.append((f"{(model + ' vram'):<28} {vram_val:>12.2f} {vram_unit}", 0, "left"))
 
     available = metrics.get("available_models", {})
     if available:
-        lines.append(("-- Available Models --", 0))
+        lines.append(("-- Available Models --", 0, "left"))
         for model, vals in available.items():
             size_val, size_unit = human_bytes(vals.get("size_bytes", 0) or 0)
-            lines.append((f"{(model + ' size'):<28} {size_val:>12.2f} {size_unit}", 0))
+            lines.append((f"{(model + ' size'):<28} {size_val:>12.2f} {size_unit}", 0, "left"))
 
     return lines
 
@@ -251,15 +268,28 @@ def fetch_rest_metrics(url: str) -> Dict[str, Any]:
     return data
 
 
-def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
+def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
     """Format REST metrics for display."""
-    lines: List[Tuple[str, int]] = []
+    lines: List[Tuple[str, int, str]] = []
     gauges = metrics.get("gauges", {})
 
-    # Memory bar (only usage available)
+    # Memory bar (usage vs limit if available)
     mem_used = gauges.get("rest_memory_usage_megabytes")
+    mem_limit = gauges.get("rest_memory_limit_megabytes") or 0
     if mem_used is not None:
-        lines.append((f"{'REST Memory Used':<28} {mem_used:>12.1f} MB", 0))
+        bar_text = build_bar(mem_used, mem_limit or 0, width=MEMORY_BAR_WIDTH) if mem_limit else f"{mem_used:.1f} MB"
+        color = 0
+        if mem_limit:
+            ratio = threshold_ratio(mem_used, mem_limit)
+            if ratio < 75:
+                color = 1
+            elif ratio <= 90:
+                color = 2
+            else:
+                color = 3
+        lines.append((f"{'REST Memory Used':<28} {bar_text}", color, "center"))
+        if mem_limit:
+            lines.append((f"{'REST Memory Limit':<28} {mem_limit:>12.0f} MB", 0, "left"))
 
     for key in (
         "rest_documents_indexed_total",
@@ -273,21 +303,21 @@ def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
         label, unit = REST_GAUGES[key]
         value = gauges.get(key, 0) or 0
         suffix = f" {unit}" if unit else ""
-        lines.append((f"{label:<28} {value:>12.0f}{suffix}", 0))
+        lines.append((f"{label:<28} {value:>12.0f}{suffix}", 0, "left"))
 
     requests_total = metrics.get("requests_total", 0) or 0
     if requests_total:
-        lines.append((f"{'REST HTTP Requests':<28} {requests_total:>12.0f}", 0))
+        lines.append((f"{'REST HTTP Requests':<28} {requests_total:>12.0f}", 0, "left"))
         by_status = metrics.get("requests_by_status", {})
         if by_status:
             for status in sorted(by_status):
-                lines.append((f"  status {status:<17} {by_status[status]:>12.0f}", 0))
+                lines.append((f"  status {status:<17} {by_status[status]:>12.0f}", 0, "left"))
 
     latency_count = metrics.get("latency_count", 0) or 0
     latency_sum = metrics.get("latency_sum", 0) or 0
     if latency_count:
         avg_ms = (latency_sum / latency_count) * 1000
-        lines.append((f"{'HTTP Latency avg':<28} {avg_ms:>11.1f} ms", 0))
+        lines.append((f"{'HTTP Latency avg':<28} {avg_ms:>11.1f} ms", 0, "left"))
 
     # Embedding metrics
     embed_reqs = metrics.get("embed_requests", {})
@@ -295,25 +325,25 @@ def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int]]:
     embed_lat = metrics.get("embed_latency", {})
     if embed_reqs:
         total_embed = sum(embed_reqs.values())
-        lines.append((f"{'Embedding requests':<28} {total_embed:>12.0f}", 0))
+        lines.append((f"{'Embedding requests':<28} {total_embed:>12.0f}", 0, "left"))
         for stage, val in embed_reqs.items():
             err = embed_errs.get(stage, 0)
             lat = embed_lat.get(stage, {})
             avg_ms = ((lat.get("sum", 0) / lat.get("count", 1)) * 1000) if lat.get("count") else 0
-            lines.append((f"  {stage:<22} {val:>12.0f} req", 0))
+            lines.append((f"  {stage:<22} {val:>12.0f} req", 0, "left"))
             if err:
-                lines.append((f"    errors{':':<18} {err:>12.0f}", 0))
+                lines.append((f"    errors{':':<18} {err:>12.0f}", 0, "left"))
             if lat.get("count"):
-                lines.append((f"    avg {avg_ms:>6.1f} ms", 0))
+                lines.append((f"    avg {avg_ms:>6.1f} ms", 0, "left"))
 
     return lines
 
 
-def pad_lines(lines: List[Tuple[str, int]], target: int) -> List[Tuple[str, int]]:
+def pad_lines(lines: List[Tuple[str, int, str]], target: int) -> List[Tuple[str, int, str]]:
     """Pad a lines list to at least target length with empty strings."""
     if len(lines) >= target:
         return lines
-    return lines + [("", 0)] * (target - len(lines))
+    return lines + [("", 0, "left")] * (target - len(lines))
 
 
 def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_path: Path, refresh: int) -> None:
@@ -330,8 +360,8 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
             metrics = fetch_metrics(url)
             rest_metrics = fetch_rest_metrics(rest_url)
         except Exception as exc:
-            metrics_lines = [(f"Failed to fetch metrics from {url}: {exc}", 3)]
-            rest_lines = [(f"Failed to fetch REST metrics from {rest_url}: {exc}", 3)]
+            metrics_lines = [(f"Failed to fetch metrics from {url}: {exc}", 3, "left")]
+            rest_lines = [(f"Failed to fetch REST metrics from {rest_url}: {exc}", 3, "left")]
         else:
             metrics_lines = build_metrics_lines(metrics)
             rest_lines = build_rest_lines(rest_metrics)
@@ -359,15 +389,19 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
             row = 3 + idx
             if row >= top_height:
                 break
-            l_text, l_color = left_lines[idx]
-            r_text, r_color = right_lines[idx]
-            stdscr.addnstr(row, 0, l_text.ljust(mid - 1), mid - 1, curses.color_pair(l_color))
-            stdscr.addnstr(row, mid + 1, r_text.ljust(width - mid - 2), width - mid - 2, curses.color_pair(r_color))
+            l_text, l_color, l_align = left_lines[idx]
+            r_text, r_color, r_align = right_lines[idx]
+            l_render = l_text.center(mid - 1) if l_align == "center" else l_text.ljust(mid - 1)
+            r_render = r_text.center(width - mid - 2) if r_align == "center" else r_text.ljust(width - mid - 2)
+            stdscr.addnstr(row, 0, l_render, mid - 1, curses.color_pair(l_color))
+            stdscr.addnstr(row, mid + 1, r_render, width - mid - 2, curses.color_pair(r_color))
 
         divider_row = top_height
         stdscr.hline(divider_row, 0, "-", width)
-        log_lines_left = tail_file(log_path, max(bottom_height - 1, 1))
-        log_lines_right = tail_file(rest_log_path, max(bottom_height - 1, 1))
+        raw_log_lines_left = tail_file(log_path, max(bottom_height - 1, 1))
+        raw_log_lines_right = tail_file(rest_log_path, max(bottom_height - 1, 1))
+        log_lines_left = wrap_log_lines(raw_log_lines_left, mid - 1)
+        log_lines_right = wrap_log_lines(raw_log_lines_right, width - mid - 2)
         max_log_lines = max(len(log_lines_left), len(log_lines_right))
         stdscr.vline(divider_row + 1, mid, "|", bottom_height - 1)
         for idx in range(min(max_log_lines, bottom_height - 1)):
