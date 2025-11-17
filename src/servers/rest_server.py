@@ -6,6 +6,7 @@ Run with:
 """
 
 import os, sys, logging, time
+from datetime import datetime
 import psutil
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel
@@ -38,10 +39,17 @@ logger = logging.getLogger(__name__)
 # Access logger (HTTP access logs)
 access_logger = logging.getLogger('rest_access')
 access_logger.setLevel(logging.INFO)
-access_handler = logging.FileHandler('log/rest_server_access.log')
-access_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-access_logger.addHandler(access_handler)
-access_logger.propagate = False  # Don't propagate to root logger
+# Clear all handlers and prevent propagation
+access_logger.handlers.clear()
+access_logger.propagate = False
+# Add a NullHandler to prevent any propagation
+access_logger.addHandler(logging.NullHandler())
+
+# Explicitly disable uvicorn's default access logger so access lines don't hit rest_server.log
+uvicorn_access_logger = logging.getLogger("uvicorn.access")
+uvicorn_access_logger.handlers.clear()
+uvicorn_access_logger.propagate = False
+uvicorn_access_logger.disabled = True
 
 # Ensure log file flushes immediately
 sys.stdout.flush()
@@ -171,11 +179,16 @@ async def add_prometheus_metrics(request: Request, call_next):
         content_length = response.headers.get('content-length', '-')
         duration = time.perf_counter() - start
 
-        access_logger.info(
+        # Write directly to access log file instead of using logger
+        log_entry = (
+            f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]} - '
             f'{client_ip} - - [{time.strftime("%d/%b/%Y:%H:%M:%S %z", time.localtime())}] '
             f'"{method} {full_path} HTTP/{request.scope.get("http_version", "1.1")}" '
-            f'{status_code} {content_length} "-" "{user_agent}" {duration:.4f}s'
+            f'{status_code} {content_length} "-" "{user_agent}" {duration:.4f}s\n'
         )
+
+        with open('log/rest_server_access.log', 'a') as f:
+            f.write(log_entry)
 
         return response
     except Exception:
