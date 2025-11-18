@@ -56,7 +56,7 @@ cleanup_on_failure() {
 
         # Check if services are still running
         echo -e "${YELLOW}Checking service status:${NC}"
-        for port in "${OLLAMA_PORT:-11434}" "${MCP_PORT:-8000}" "${REST_PORT:-8001}"; do
+        for port in "${OLLAMA_PORT:-11434}" "${MCP_PORT:-8000}" "${RAG_PORT:-8001}"; do
             if lsof -ti:"$port" > /dev/null 2>&1; then
                 echo "  Port $port: OCCUPIED"
                 lsof -ti:"$port" | xargs ps -p 2>/dev/null || true
@@ -68,7 +68,7 @@ cleanup_on_failure() {
 
         # Show recent log entries if they exist
         echo -e "${YELLOW}Recent log entries:${NC}"
-        for log_file in log/ollama_server.log log/mcp_server.log log/rest_server.log; do
+        for log_file in log/ollama_server.log log/mcp_server.log log/rest_server.log log/ui_server.log; do
             if [[ -f "$log_file" ]]; then
                 echo "--- Last 10 lines of $log_file ---"
                 tail -10 "$log_file" 2>/dev/null || true
@@ -151,6 +151,9 @@ OPTIONS:
         Skip automatic Ollama model pulling
         Useful for offline usage or when models are already available
 
+    --skip-ui
+        Do not start the UI dev server
+
 ENVIRONMENT CONFIGURATION (.env):
     The script reads configuration from a .env file in the current directory.
     If .env is not found, default values are used.
@@ -160,8 +163,9 @@ ENVIRONMENT CONFIGURATION (.env):
         OLLAMA_KEEP_ALIVE     Duration that models stay loaded (-1 = indefinite, 24h = 24 hours, 5m = 5 minutes)
         MCP_HOST              MCP server host (default: 127.0.0.1)
         MCP_PORT              MCP server port (default: 8000)
-        REST_HOST             REST API host (default: 127.0.0.1)
-        REST_PORT             REST API port (default: 8001)
+        RAG_HOST              REST API host (default: 127.0.0.1)
+        RAG_PORT              REST API port (default: 8001)
+        UI_PORT               UI dev server port (default: 5173)
 
     Note: If OLLAMA_API_BASE points to a remote server (not 127.0.0.1 or localhost),
           the script will skip starting Ollama locally and use the remote instance.
@@ -176,8 +180,12 @@ SERVICES STARTED (in order):
        Log: log/mcp_server.log
 
     3. REST API Server - REST API for document search and RAG operations
-       Port: REST_PORT
+       Port: RAG_PORT
        Log: log/rest_server.log
+
+    4. UI Dev Server (Vite) - React UI
+       Port: UI_PORT
+       Log: log/ui_server.log
 
 ERROR HANDLING:
     - The script uses strict error checking (set -euo pipefail)
@@ -215,7 +223,7 @@ EXAMPLES:
 
 STOPPING SERVICES:
     To stop all running services:
-        pkill -f 'ollama serve|mcp_server.py|rest_server'
+        pkill -f 'ollama serve|mcp_server.py|rest_server|npm run dev'
 
 VIEWING LOGS:
     To monitor all service logs in real-time:
@@ -229,6 +237,7 @@ REQUIREMENTS:
     - uv (Python package installer)
     - Ollama (if using local Ollama instance)
     - uvicorn (installed via requirements.txt)
+    - node + npm (for UI dev server, unless --skip-ui)
     - All dependencies listed in requirements.txt
 
 FILES:
@@ -238,6 +247,7 @@ FILES:
     log/ollama_server.log  Ollama service logs
     log/mcp_server.log    MCP server logs
     log/rest_server.log    REST API logs
+    log/ui_server.log      UI dev server logs
 
 EXIT CODES:
     0    Success - all services started
@@ -256,6 +266,7 @@ VENV_NAME=".venv"
 PYTHON_CMD="python3.11"
 RECREATE_VENV=false
 SKIP_MODEL_PULL=false
+START_UI=true
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -283,10 +294,14 @@ while [[ $# -gt 0 ]]; do
             SKIP_MODEL_PULL=true
             shift
             ;;
+        --skip-ui)
+            START_UI=false
+            shift
+            ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
             echo ""
-            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--recreate-venv] [--skip-model-pull]"
+            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--recreate-venv] [--skip-model-pull] [--skip-ui]"
             echo ""
             echo "Run './start.sh --help' for detailed information"
             exit 1
@@ -312,8 +327,10 @@ fi
 OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://127.0.0.1:11434}
 MCP_HOST=${MCP_HOST:-127.0.0.1}
 MCP_PORT=${MCP_PORT:-8000}
-REST_HOST=${REST_HOST:-127.0.0.1}
-REST_PORT=${REST_PORT:-8001}
+RAG_HOST=${RAG_HOST:-${REST_HOST:-127.0.0.1}}
+RAG_PORT=${RAG_PORT:-${REST_PORT:-8001}}
+UI_HOST=${UI_HOST:-0.0.0.0}
+UI_PORT=${UI_PORT:-5173}
 
 # Extract host and port from OLLAMA_API_BASE
 OLLAMA_HOST=$(echo "$OLLAMA_API_BASE" | sed -E 's|https?://([^:/]+).*|\1|')
@@ -334,7 +351,12 @@ echo "Virtual environment: $VENV_NAME"
 echo "Python command: $PYTHON_CMD"
 echo "Ollama API: $OLLAMA_API_BASE (start locally: $START_OLLAMA)"
 echo "MCP Server: http://${MCP_HOST}:${MCP_PORT}"
-echo "REST API: http://${REST_HOST}:${REST_PORT}"
+echo "REST API: http://${RAG_HOST}:${RAG_PORT}"
+if [[ "$START_UI" == true ]]; then
+    echo "UI Dev Server: http://${UI_HOST}:${UI_PORT}"
+else
+    echo "UI Dev Server: skipped (--skip-ui)"
+fi
 echo ""
 
 # Check requirements
@@ -388,6 +410,21 @@ if [[ "$START_OLLAMA" == true ]]; then
     echo "✓ ollama: $OLLAMA_VERSION"
 else
     echo "✓ Using remote Ollama (local installation not required)"
+fi
+
+if [[ "$START_UI" == true ]]; then
+    if ! command -v node &> /dev/null; then
+        echo -e "${RED}Error: node not found (required to start UI)${NC}"
+        echo "Install: https://nodejs.org/ (v18+ recommended)"
+        exit 1
+    fi
+    echo "✓ node: $(node -v)"
+
+    if ! command -v npm &> /dev/null; then
+        echo -e "${RED}Error: npm not found (required to start UI)${NC}"
+        exit 1
+    fi
+    echo "✓ npm: $(npm -v)"
 fi
 
 extract_ollama_model() {
@@ -519,6 +556,14 @@ if ! pip install -r requirements.txt 2>&1; then
     exit 1
 fi
 echo -e "${GREEN}Requirements installed successfully${NC}"
+
+# Verify uv CLI after install (required for process launches)
+if ! command -v uv &> /dev/null; then
+    echo -e "${RED}Error: 'uv' CLI not available after install${NC}"
+    echo "Ensure requirements.txt includes uv or install manually: pip install uv"
+    exit 1
+fi
+echo "uv version: $(uv --version 2>/dev/null | head -1)"
 echo ""
 
 # Function to check if a process is running
@@ -603,22 +648,46 @@ echo ""
 
 # 3. Start REST API Server
 echo -e "${YELLOW}Starting REST API server...${NC}"
-if check_process "$REST_PORT"; then
-    echo -e "${YELLOW}REST API server already running on port $REST_PORT${NC}"
+if check_process "$RAG_PORT"; then
+    echo -e "${YELLOW}REST API server already running on port $RAG_PORT${NC}"
 else
-    nohup uvicorn src.servers.rest_server:app --host "$REST_HOST" --port "$REST_PORT" --no-access-log >> log/rest_server.log 2>&1 &
+    # Run uvicorn directly to avoid the uv wrapper logging twice
+    nohup python -m uvicorn src.servers.rest_server:app --host "$RAG_HOST" --port "$RAG_PORT" --no-access-log >> log/rest_server.log 2>&1 &
     REST_PID=$!
     STARTED_PIDS+=("$REST_PID")
     STARTED_SERVICES+=("REST API Server")
     echo "REST API Server PID: $REST_PID"
 
-    if ! wait_for_service "$REST_PORT" "REST API server"; then
+    if ! wait_for_service "$RAG_PORT" "REST API server"; then
         echo -e "${RED}Failed to start REST API server${NC}"
         echo -e "${RED}Check log/rest_server.log for details${NC}"
         exit 1
     fi
 fi
 echo ""
+
+# 4. Start UI dev server (Vite)
+if [[ "$START_UI" == true ]]; then
+    echo -e "${YELLOW}Starting UI dev server...${NC}"
+    if check_process "$UI_PORT"; then
+        echo -e "${YELLOW}UI dev server already running on port $UI_PORT${NC}"
+    else
+        # Ensure dependencies are installed; npm will no-op if already present
+        (cd ui && npm install >> ../log/ui_server.log 2>&1)
+        PORT="$UI_PORT" VITE_PORT="$UI_PORT" nohup npm --prefix ui run dev -- --host "$UI_HOST" --port "$UI_PORT" --strictPort >> log/ui_server.log 2>&1 &
+        UI_PID=$!
+        STARTED_PIDS+=("$UI_PID")
+        STARTED_SERVICES+=("UI Dev Server")
+        echo "UI Dev Server PID: $UI_PID"
+
+        if ! wait_for_service "$UI_PORT" "UI dev server"; then
+            echo -e "${RED}Failed to start UI dev server${NC}"
+            echo -e "${RED}Check log/ui_server.log for details${NC}"
+            exit 1
+        fi
+    fi
+    echo ""
+fi
 
 # All services started successfully - clear trap so cleanup doesn't run
 trap - EXIT
@@ -633,7 +702,10 @@ else
     echo "  - Ollama: $OLLAMA_API_BASE (remote)"
 fi
 echo "  - HTTP/MCP Server: http://${MCP_HOST}:${MCP_PORT} (log: log/mcp_server.log)"
-echo "  - REST API: http://${REST_HOST}:${REST_PORT} (log: log/rest_server.log)"
+echo "  - REST API: http://${RAG_HOST}:${RAG_PORT} (log: log/rest_server.log)"
+if [[ "$START_UI" == true ]]; then
+    echo "  - UI Dev Server: http://${UI_HOST}:${UI_PORT} (log: log/ui_server.log)"
+fi
 echo ""
-echo "To stop all services, run: pkill -f 'ollama serve|mcp_server.py|rest_server'"
+echo "To stop all services, run: pkill -f 'ollama serve|mcp_server.py|rest_server|npm run dev'"
 echo "To view logs: tail -f log/*.log"

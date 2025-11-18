@@ -11,11 +11,17 @@ import hashlib
 import time
 import asyncio
 import gc
+import zipfile
+import io
+import string
+import threading
 
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
+# Avoid tokenizers parallelism deadlocks after fork
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from sentence_transformers import SentenceTransformer  # type: ignore
 from ollama import AsyncClient  # type: ignore
 
@@ -100,6 +106,7 @@ _INDEX: Optional[Any] = None
 _INDEX_TO_META: Optional[Dict[int, Tuple[str, str]]] = None
 _EMBED_DIM: Optional[int] = None
 _STORE: Optional['Store'] = None
+_REBUILD_LOCK = threading.Lock()
 
 # Embedding metrics (shared by servers)
 EMBEDDING_REQUESTS = Counter("embedding_requests_total", "Embedding encode invocations.", ["stage"]) if Counter else None
@@ -319,17 +326,21 @@ def _chunk_document(text: str, uri: str) -> Tuple[List[str], List[str]]:
 
     return all_chunks, chunk_metadata
 
+def _should_skip_uri(uri: str) -> bool:
+    """Skip hidden/system files that should never be indexed."""
+    name = pathlib.Path(uri).name
+    if not name:
+        return False
+    if name.startswith("."):
+        return True
+    if name.lower() in ("thumbs.db",):
+        return True
+    return False
+
 
 def _rebuild_faiss_index():
     """Rebuild the FAISS index from store documents."""
-    # Prevent recursive calls
-    if hasattr(_rebuild_faiss_index, 'in_progress') and _rebuild_faiss_index.in_progress:
-        logger.warning("_rebuild_faiss_index already in progress, skipping recursive call")
-        return
-
-    _rebuild_faiss_index.in_progress = True
-
-    try:
+    with _REBUILD_LOCK:
         if DEBUG_MODE:
             logger.debug("Debug mode: skipping FAISS index rebuild")
             return
@@ -352,7 +363,7 @@ def _rebuild_faiss_index():
         batch_size = 8
 
         # Process each document separately to avoid accumulating all chunks in memory
-        for uri, text in _STORE.docs.items():
+        for uri, text in list(_STORE.docs.items()):
             logger.debug("Document %s: %d chars", uri, len(text))
             chunks, metadata = _chunk_document(text, uri)
             logger.debug("Created %d chunks from %s", len(chunks), uri)
@@ -393,8 +404,6 @@ def _rebuild_faiss_index():
         else:
             logger.warning("No FAISS index available")
 
-    finally:
-        _rebuild_faiss_index.in_progress = False
 
 
 def load_store():
@@ -435,6 +444,10 @@ def load_store():
 def upsert_document(uri: str, text: str) -> Dict[str, Any]:
     """Upsert a single document into the store."""
     global _STORE
+
+    if _should_skip_uri(uri):
+        logger.warning("Skipping hidden/system file: %s", uri)
+        return {"skipped": True, "reason": "hidden/system file", "uri": uri}
 
     index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
@@ -494,9 +507,9 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     resolved = resolve_input_path(path)
     logger.debug("Collecting files from %s with glob %s", resolved, glob)
     if resolved.is_file():
-        files = [resolved]
+        files = [resolved] if not _should_skip_uri(str(resolved)) else []
     else:
-        files = list(resolved.rglob(glob))
+        files = [p for p in resolved.rglob(glob) if not _should_skip_uri(str(p))]
     return files, resolved
 
 
@@ -525,10 +538,42 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
+    if file_path.name in {".DS_Store"}:
+        return ""
+
+    def _read_head(path: pathlib.Path, size: int = 512) -> bytes:
+        try:
+            with open(path, "rb") as f:
+                return f.read(size)
+        except Exception:
+            return b""
+
+    def _is_probably_text_bytes(buf: bytes) -> bool:
+        if not buf:
+            return False
+        printable = sum((chr(b).isprintable() or chr(b).isspace()) for b in buf)
+        density = printable / max(1, len(buf))
+        return density >= 0.8
+
+    head = None
+    if not file_str.startswith(("http://", "https://")):
+        head = _read_head(file_path, 512)
     if file_str.startswith('http:/') and not file_str.startswith('http://'):
         file_str = file_str.replace('http:/', 'http://', 1)
     elif file_str.startswith('https:/') and not file_str.startswith('https://'):
         file_str = file_str.replace('https:/', 'https://', 1)
+
+    def _normalize_suffix_from_head(default_suffix: str, head_bytes: Optional[bytes]) -> str:
+        if head_bytes is None:
+            return default_suffix
+        if head_bytes.startswith(b"%PDF-"):
+            return ".pdf"
+        if head_bytes.startswith(b"PK"):
+            # could be zip-based formats: docx, pages, ods, etc.
+            if default_suffix.lower() in (".docx", ".pages"):
+                return default_suffix.lower()
+            return ".zip"
+        return default_suffix
 
     if file_str.startswith(('http://', 'https://')):
         content = _download_from_url(file_str)
@@ -553,7 +598,7 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
                 suffix = '.txt'
     else:
         content = None
-        suffix = file_path.suffix.lower()
+        suffix = _normalize_suffix_from_head(file_path.suffix.lower(), head)
 
     if suffix == '.pdf':
         if PdfReader is None:
@@ -569,11 +614,64 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
                 reader = PdfReader(str(file_path))
             text_parts = []
             for page in reader.pages:
-                text_parts.append(page.extract_text())
-            return "\n".join(text_parts)
+                page_text = page.extract_text() or ""
+                if page_text:
+                    text_parts.append(page_text)
+            joined = "\n".join(text_parts).strip()
+            if not joined:
+                logger.warning("No text extracted from PDF %s", file_path)
+                return ""
+            return joined
         except Exception as exc:
             logger.error("Failed to read PDF %s: %s", file_path, exc)
             return ""
+
+    elif suffix == '.pages':
+        # Pages files are zip archives that usually contain a PDF preview
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                names = zf.namelist()
+                # Prefer QuickLook/Preview.pdf if present
+                pdf_candidates = []
+                for name in names:
+                    lower = name.lower()
+                    if lower.endswith(".pdf"):
+                        # Weight QuickLook/Preview higher
+                        priority = 0 if "quicklook/preview.pdf" in lower else 1
+                        pdf_candidates.append((priority, name))
+                pdf_candidates.sort()
+                for _, pdf_name in pdf_candidates:
+                    try:
+                        pdf_bytes = zf.read(pdf_name)
+                        reader = PdfReader(io.BytesIO(pdf_bytes)) if PdfReader else None
+                        if reader is None:
+                            logger.warning("PDF support not available to read %s inside %s", pdf_name, file_path)
+                            break
+                        pages = []
+                        for page in reader.pages:
+                            page_text = page.extract_text() or ""
+                            if page_text:
+                                pages.append(page_text)
+                        joined = "\n".join(pages).strip()
+                        if joined:
+                            return joined
+                    except Exception as exc:
+                        logger.debug("Failed to read embedded PDF %s in %s: %s", pdf_name, file_path, exc)
+                        continue
+
+                # Fallback to any XML/HTML/text files inside the archive
+                text_candidates = [n for n in names if n.lower().endswith((".xml", ".html", ".htm", ".txt"))]
+                for name in text_candidates:
+                    try:
+                        raw = zf.read(name)
+                        text = raw.decode("utf-8", errors="ignore").strip()
+                        if text:
+                            return text
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.error("Failed to read Pages file %s: %s", file_path, exc)
+        return ""
 
     elif suffix in ['.docx', '.doc']:
         if Document is None:
@@ -620,14 +718,21 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
             return ""
 
     else:
-        # Default to plain text
+        # Default to plain text, but guard against binaries by header and printable ratio
         try:
             if content:
                 # Text from URL
-                return content.decode('utf-8', errors='ignore')
+                text = content.decode('utf-8', errors='ignore')
             else:
                 # Text from file
-                return file_path.read_text(encoding="utf-8", errors="ignore")
+                if head is not None and not _is_probably_text_bytes(head):
+                    return ""
+                text = file_path.read_text(encoding="utf-8", errors="ignore")
+            # Quick binary guard: PDFs, zips, binaries often leave telltale headers
+            lower_text = text[:8]
+            if lower_text.startswith("%PDF-") or lower_text.startswith("PK"):
+                return ""
+            return text
         except Exception as exc:
             logger.error("Failed to read file %s: %s", file_path, exc)
             return ""
@@ -636,9 +741,28 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
 def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
                   embedder: Optional[SentenceTransformer]) -> str:
     """Process a single file and add to index."""
+    def _is_meaningful_text(text: str) -> bool:
+        """Heuristic filter to skip binary/empty payloads regardless of extension."""
+        if file_path.name == ".DS_Store":
+            return False
+        if not text:
+            return False
+        stripped = text.strip()
+        if len(stripped) < 40:  # too short
+            return False
+        printable = sum(ch.isprintable() for ch in stripped)
+        density = printable / max(1, len(stripped))
+        if density < 0.85:
+            return False
+        # Reject obvious binary headers
+        head = stripped[:8]
+        if head.startswith(("%PDF-", "PK", "\u0000", "\ufffd")):
+            return False
+        return True
+
     text = _extract_text_from_file(file_path)
-    if not text:
-        logger.warning("No text extracted from %s", file_path)
+    if not _is_meaningful_text(text):
+        logger.warning("Skipping non-text or empty content from %s", file_path)
         return ""
 
     store = get_store()
@@ -817,11 +941,17 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
     """Search the indexed documents and ask the LLM using only those documents as context."""
     logger.info("Vector searching for: %s", query)
     candidates = _vector_search(query, k=top_k)
-    sources = [c.get("uri", "") for c in candidates if c.get("uri")]
-
     if not candidates:
-        logger.info("No vector hits; refusing to answer from outside sources.")
-        return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
+        # If we have docs but no vectors, force a rebuild once
+        store = get_store()
+        if len(getattr(store, "docs", {})) > 0:
+            logger.info("No vector hits but store has docs; rebuilding index and retrying...")
+            _rebuild_faiss_index()
+            candidates = _vector_search(query, k=top_k)
+        if not candidates:
+            logger.info("No vector hits; refusing to answer from outside sources.")
+            return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
+    sources = [c.get("uri", "") for c in candidates if c.get("uri")]
 
     context_parts, total_chars = [], 0
     for entry in candidates:
@@ -856,12 +986,16 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
         if isinstance(resp, dict):
             resp.setdefault("sources", sources)
         return resp
-    except (ValueError, OllamaError) as exc:  # type: ignore
+    except (ValueError, OllamaError, APIConnectionError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)
-        return {"error": str(exc), "sources": sources}  # type: ignore
     except (OSError, RuntimeError) as exc:  # type: ignore
         logger.error("Unexpected error in completion: %s", exc)
-        return {"error": str(exc), "sources": sources}  # type: ignore
+
+    # Graceful fallback: synthesize answer from retrieved passages
+    fallback = synthesize_answer(query, candidates)
+    fallback["warning"] = "LLM unavailable; reply synthesized from retrieved passages."
+    fallback["sources"] = sources
+    return fallback
 
 
 # --- Lightweight rerank/ground/verify utilities used by MCP tools ---
