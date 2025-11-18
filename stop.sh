@@ -37,6 +37,7 @@ DESCRIPTION:
     - Ollama server (if running locally)
     - HTTP/MCP server
     - REST API server
+    - UI dev server
 
     The script will verify each service is fully stopped before completing.
 
@@ -63,7 +64,8 @@ fi
 # Set default ports
 OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://127.0.0.1:11434}
 MCP_PORT=${MCP_PORT:-8000}
-REST_PORT=${REST_PORT:-8001}
+RAG_PORT=${RAG_PORT:-${REST_PORT:-8001}}
+UI_PORT=${UI_PORT:-5173}
 
 # Extract Ollama host and port
 OLLAMA_HOST=$(echo "$OLLAMA_API_BASE" | sed -E 's|https?://([^:/]+).*|\1|')
@@ -84,7 +86,7 @@ echo ""
 # Function to get PID on port
 get_pid_on_port() {
     local port=$1
-    lsof -ti:"$port" 2>/dev/null || echo ""
+    lsof -ti:"$port" -s TCP:LISTEN 2>/dev/null || echo ""
 }
 
 # Function to get process name
@@ -144,8 +146,11 @@ stop_service_on_port() {
 # Stop services
 failed=0
 
+# Stop UI dev server
+stop_service_on_port "$UI_PORT" "UI Dev Server" || failed=$((failed + 1))
+
 # Stop REST API Server
-stop_service_on_port "$REST_PORT" "REST API Server" || failed=$((failed + 1))
+stop_service_on_port "$RAG_PORT" "REST API Server" || failed=$((failed + 1))
 
 # Stop HTTP/MCP Server
 stop_service_on_port "$MCP_PORT" "HTTP/MCP Server" || failed=$((failed + 1))
@@ -167,7 +172,7 @@ else
     echo -e "${RED}=== Failed to stop $failed service(s) ===${NC}"
     echo ""
     echo "You may need to manually kill processes:"
-    echo "  ps aux | grep -E 'ollama|mcp_server|rest_server'"
+    echo "  ps aux | grep -E 'ollama|mcp_server|rest_server|npm run dev'"
     echo "  kill -9 <PID>"
     exit 1
 fi

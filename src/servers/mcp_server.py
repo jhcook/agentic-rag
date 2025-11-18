@@ -22,16 +22,22 @@ import atexit
 import gc
 import os
 from pathlib import Path
+import base64
+import tempfile
 import resource
 import signal
 import sys
 import threading
 import time
 import logging
+import multiprocessing
+import queue
 from typing import Dict, Any, Optional, List
 import re
+import uuid
 
 import psutil
+import json
 import requests
 from mcp.server.fastmcp import FastMCP
 from prometheus_client import (
@@ -40,7 +46,13 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.routing import Mount
+from starlette.applications import Starlette
+from fastapi import FastAPI, Request
+import anyio
 from dotenv import load_dotenv
 
 # Import shared logic
@@ -57,6 +69,8 @@ from src.core.rag_core import (
     verify_grounding,
     get_faiss_globals,
     OLLAMA_API_BASE,
+    _rebuild_faiss_index,
+    DB_PATH,
 )
 
 # Set up logging
@@ -76,11 +90,18 @@ logger = logging.getLogger(__name__)
 # Access logger (HTTP access logs)
 access_logger = logging.getLogger('mcp_access')
 access_logger.setLevel(logging.INFO)
-# Clear all handlers and prevent propagation
 access_logger.handlers.clear()
 access_logger.propagate = False
-# Add a NullHandler to prevent any propagation
-access_logger.addHandler(logging.NullHandler())
+_access_formatter = logging.Formatter(
+    fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_access_handlers = [
+    logging.FileHandler('log/mcp_access.log'),
+]
+for _h in _access_handlers:
+    _h.setFormatter(_access_formatter)
+    access_logger.addHandler(_h)
 
 # Disable uvicorn's default access logger to keep access lines out of mcp_server.log
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
@@ -125,6 +146,45 @@ async def _run_streamable_http_no_access(self):
 from mcp.server.fastmcp import FastMCP as _FastMCP
 _FastMCP.run_streamable_http_async = _run_streamable_http_no_access
 
+# Replace inner Starlette app with one that mounts REST routes at /rest and prefixed path
+# Access logging middleware for MCP/REST Starlette apps
+class AccessLogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        start = time.time()
+        response = await call_next(request)
+        duration_ms = int((time.time() - start) * 1000)
+        access_logger.info(
+            "%s %s %s %s %dms",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "-",
+            response.status_code,
+            duration_ms,
+        )
+        return response
+
+_orig_streamable_http_app = _FastMCP.streamable_http_app
+def _streamable_http_app_with_rest(self):
+    """Wrap FastMCP's app to expose REST-style routes."""
+    base_app = _orig_streamable_http_app(self)
+    try:
+        base_app.add_middleware(AccessLogMiddleware)
+    except Exception:
+        pass
+    prefix = getattr(self.settings, "streamable_http_path", "/")
+    routes = [Mount("/rest", rest_api)]
+    if prefix and prefix != "/":
+        if not prefix.startswith("/"):
+            prefix = f"/{prefix}"
+        if prefix.endswith("/"):
+            prefix = prefix[:-1]
+        routes.append(Mount(f"{prefix}/rest", rest_api))
+    routes.append(Mount("/", base_app))
+    combined = Starlette(routes=routes)
+    return combined
+
+_FastMCP.streamable_http_app = _streamable_http_app_with_rest
+
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
 
@@ -133,6 +193,14 @@ mcp = FastMCP("retrieval-server")
 
 # Track if we're already shutting down to prevent duplicate saves
 SHUTTING_DOWN = False
+STORE_LOADING = False
+STORE_LOADED = False
+STORE_LOAD_THREAD: Optional[threading.Thread] = None
+INDEX_JOB_QUEUE: Optional[multiprocessing.Queue] = None
+INDEX_RESULT_QUEUE: Optional[multiprocessing.Queue] = None
+INDEX_JOBS: Dict[str, Dict[str, Any]] = {}
+INDEX_JOBS_LOCK = threading.Lock()
+INDEX_RESULT_THREAD: Optional[threading.Thread] = None
 
 # Memory management settings
 MEMORY_CHECK_INTERVAL = 30  # seconds
@@ -228,6 +296,325 @@ def get_max_memory_mb():
         return int(system_memory_mb * 0.75)  # 75% of system memory
 
 MAX_MEMORY_MB = get_max_memory_mb()
+
+#
+# REST shim (mounts under /rest and <MCP_PATH>/rest)
+#
+rest_api = FastAPI(title="mcp-rest-shim")
+
+rest_api.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+rest_api.add_middleware(AccessLogMiddleware)
+
+
+@rest_api.post("/upsert_document")
+async def rest_upsert_document(request: Request):
+    body = await request.json()
+    uri = body.get("uri", "")
+    text = body.get("text")
+    binary_b64 = body.get("binary_base64")
+    if not uri:
+        return JSONResponse({"error": "uri is required"}, status_code=422)
+    if text is None and binary_b64 is None:
+        return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
+    try:
+        Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(DB_PATH).touch(exist_ok=True)
+    except Exception:
+        pass
+    try:
+        job_payload = {"uri": uri, "text": text, "binary_base64": binary_b64}
+        job_id = _enqueue_index_job("upsert_document", job_payload)
+        return JSONResponse({"job_id": job_id, "status": "queued"})
+    except Exception as exc:
+        logger.error("rest_upsert_document failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@rest_api.post("/index_path")
+async def rest_index_path(request: Request):
+    body = await request.json()
+    path = body.get("path", "")
+    glob = body.get("glob", "**/*.txt")
+    try:
+        job_id = _enqueue_index_job("index_path", {"path": path, "glob": glob or "**/*.txt"})
+        return JSONResponse({"job_id": job_id, "status": "queued"})
+    except Exception as exc:
+        logger.error("rest_index_path failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+@rest_api.post("/search")
+async def rest_search(request: Request):
+    body = await request.json()
+    query = body.get("query", "")
+    try:
+        # Offload embedding + FAISS lookup to a worker thread to keep the event loop responsive
+        result = await anyio.to_thread.run_sync(search, query)
+        # Normalize litellm ModelResponse to a simple JSON shape the UI expects
+        normalized: Dict[str, Any] = {}
+        if isinstance(result, dict):
+            normalized = result
+        elif hasattr(result, "choices"):
+            try:
+                choices = getattr(result, "choices") or []
+                msg = choices[0].message if choices else None  # type: ignore[attr-defined]
+                content = getattr(msg, "content", None) if msg else None
+                if content:
+                    normalized = {"answer": content, "sources": []}
+            except Exception:
+                normalized = {}
+        if not normalized:
+            # Fallback to string form
+            normalized = {"answer": str(result)}
+        # Ensure JSON-serializable
+        normalized = json.loads(json.dumps(normalized, default=str))
+        return JSONResponse(normalized)
+    except Exception as exc:
+        logger.error("rest_search failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@rest_api.get("/documents")
+async def rest_documents(_request: Request):
+    try:
+        store = get_store()
+        docs = []
+        for uri, text in getattr(store, "docs", {}).items():
+            try:
+                size = len(str(text).encode("utf-8", errors="ignore"))
+            except Exception:
+                size = 0
+            docs.append({"uri": uri, "size_bytes": size})
+        return JSONResponse({"documents": docs})
+    except Exception as exc:
+        logger.error("rest_documents failed: %s", exc, exc_info=True)
+        return JSONResponse({"documents": []})
+
+@rest_api.get("/jobs/{job_id}")
+async def rest_job_status(job_id: str):
+    with INDEX_JOBS_LOCK:
+        job = INDEX_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(job)
+
+@rest_api.get("/jobs")
+async def rest_jobs():
+    with INDEX_JOBS_LOCK:
+        jobs = list(INDEX_JOBS.values())
+    return JSONResponse({"jobs": jobs})
+
+
+@rest_api.post("/documents/delete")
+async def rest_documents_delete(request: Request):
+    try:
+        body = await request.json()
+        uris = body.get("uris", [])
+        store = get_store()
+        deleted = 0
+        for uri in uris:
+            if uri in store.docs:
+                del store.docs[uri]
+                deleted += 1
+        save_store()
+        _rebuild_faiss_index()
+        refresh_prometheus_metrics()
+        return JSONResponse({"deleted": deleted})
+    except Exception as exc:
+        logger.error("rest_documents_delete failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@rest_api.post("/flush_cache")
+async def rest_flush_cache(_request: Request):
+    try:
+        store = get_store()
+        store.docs.clear()
+        removed = False
+        if DB_PATH and Path(DB_PATH).exists():
+            try:
+                Path(DB_PATH).unlink()
+                removed = True
+            except OSError:
+                removed = False
+        save_store()
+        _rebuild_faiss_index()
+        refresh_prometheus_metrics()
+        return JSONResponse({"status": "flushed", "db_removed": removed, "documents": len(store.docs)})
+    except Exception as exc:
+        logger.error("rest_flush_cache failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@rest_api.get("/health")
+async def rest_health(_request: Request):
+    try:
+        store = get_store()
+        index, _, _ = get_faiss_globals()
+        docs = len(getattr(store, "docs", {}))
+        vectors = index.ntotal if index is not None else 0  # type: ignore[attr-defined]
+        return JSONResponse({
+            "status": "ok",
+            "documents": docs,
+            "vectors": vectors,
+            "memory_mb": get_memory_usage(),
+            "memory_limit_mb": MAX_MEMORY_MB,
+            "total_size_bytes": sum(len(str(t).encode("utf-8", errors="ignore")) for t in getattr(store, "docs", {}).values())
+        })
+    except Exception as exc:
+        logger.error("rest_health failed: %s", exc, exc_info=True)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# -------------------------
+# Indexing worker (separate process)
+# -------------------------
+def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiprocessing.Queue, env: Dict[str, str]):
+    """Run indexing jobs in an isolated process to keep the main server responsive."""
+    for k, v in env.items():
+        os.environ[k] = v
+    from dotenv import load_dotenv as _ld
+    _ld()
+    from src.core.rag_core import (
+        index_path as _worker_index_path,
+        upsert_document as _worker_upsert,
+        load_store as _worker_load_store,
+        save_store as _worker_save_store,
+        _rebuild_faiss_index as _worker_rebuild,
+    )
+    while True:
+        job = job_queue.get()
+        if not job:
+            continue
+        if job.get("type") == "stop":
+            break
+        job_id = job.get("id")
+        try:
+            _worker_load_store()
+            if job["type"] == "index_path":
+                res = _worker_index_path(job["path"], job.get("glob", "**/*.txt"))
+            elif job["type"] == "upsert_document":
+                uri = job["uri"]
+                text = job.get("text") or ""
+                binary_b64 = job.get("binary_base64")
+                uri_suffix = Path(uri).suffix.lower()
+                binary_exts = {".pdf", ".doc", ".docx", ".pages"}
+                if binary_b64:
+                    try:
+                        data = base64.b64decode(binary_b64)
+                        suffix = uri_suffix or ".tmp"
+                        with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
+                            tmp.write(data)
+                            tmp.flush()
+                            extracted = _extract_text_from_file(Path(tmp.name))
+                            text = extracted or text
+                    except Exception as exc:
+                        logger.error("Failed to extract text from binary upload %s: %s", uri, exc)
+                if not text:
+                    # For known binary doc types, fail fast instead of indexing binary noise
+                    if binary_b64 and uri_suffix in binary_exts:
+                        result_queue.put({"id": job_id, "status": "failed", "error": "no text extracted", "uri": uri})
+                        continue
+                    # Last resort: try to decode as utf-8 text for unknown binaries
+                    try:
+                        if binary_b64:
+                            raw = base64.b64decode(binary_b64)
+                            text = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                if not text:
+                    result_queue.put({"id": job_id, "status": "failed", "error": "empty or non-text content", "uri": uri})
+                    continue
+                res = _worker_upsert(uri, text)
+            else:
+                res = {"error": f"unknown job type {job['type']}"}
+            _worker_rebuild()
+            _worker_save_store()
+            result_queue.put({"id": job_id, "status": "completed", "result": res})
+        except Exception as exc:
+            result_queue.put({"id": job_id, "status": "failed", "error": str(exc)})
+
+
+def _start_index_worker_if_needed():
+    global INDEX_JOB_QUEUE, INDEX_RESULT_QUEUE, INDEX_RESULT_THREAD
+    if INDEX_JOB_QUEUE is not None:
+        return
+    INDEX_JOB_QUEUE = multiprocessing.Queue()
+    INDEX_RESULT_QUEUE = multiprocessing.Queue()
+    env_copy = {k: v for k, v in os.environ.items() if k.startswith(("RAG_", "EMBED_", "LLM_", "MCP_", "OLLAMA_"))}
+    proc = multiprocessing.Process(
+        target=_index_worker_loop,
+        args=(INDEX_JOB_QUEUE, INDEX_RESULT_QUEUE, env_copy),
+        daemon=True,
+    )
+    proc.start()
+
+    def _result_listener():
+        while True:
+            try:
+                msg = INDEX_RESULT_QUEUE.get()
+            except (EOFError, OSError):
+                break
+            if not msg:
+                continue
+            job_id = msg.get("id")
+            with INDEX_JOBS_LOCK:
+                job = INDEX_JOBS.get(job_id, {"id": job_id})
+                job.update(msg)
+                INDEX_JOBS[job_id] = job
+            try:
+                load_store()
+                _rebuild_faiss_index()
+                refresh_prometheus_metrics()
+            except Exception as exc:  # pragma: no cover
+                logger.error("Failed to refresh store after job %s: %s", job_id, exc, exc_info=True)
+            # Ensure store persists even if background load had emptied it
+            try:
+                save_store()
+            except Exception as exc:  # pragma: no cover
+                logger.error("Failed to save store after job %s: %s", job_id, exc, exc_info=True)
+
+    INDEX_RESULT_THREAD = threading.Thread(target=_result_listener, daemon=True)
+    INDEX_RESULT_THREAD.start()
+
+
+def _enqueue_index_job(job_type: str, payload: Dict[str, Any]) -> str:
+    _start_index_worker_if_needed()
+    job_id = str(uuid.uuid4())
+    job = {"id": job_id, "type": job_type, **payload, "status": "queued"}
+    with INDEX_JOBS_LOCK:
+        INDEX_JOBS[job_id] = job
+    INDEX_JOB_QUEUE.put(job)
+    return job_id
+
+
+def _background_load_store():
+    global STORE_LOADING, STORE_LOADED
+    if STORE_LOADING or STORE_LOADED:
+        return
+    STORE_LOADING = True
+    try:
+        load_store()
+        refresh_prometheus_metrics()
+        STORE_LOADED = True
+        logger.info("Background store load complete")
+    except Exception as exc:
+        logger.error("Background store load failed: %s", exc, exc_info=True)
+    finally:
+        STORE_LOADING = False
+
+
+def start_background_store_load():
+    """Kick off store load/rebuild in a background thread so startup is fast."""
+    global STORE_LOAD_THREAD
+    if STORE_LOAD_THREAD and STORE_LOAD_THREAD.is_alive():
+        return
+    STORE_LOAD_THREAD = threading.Thread(target=_background_load_store, daemon=True)
+    STORE_LOAD_THREAD.start()
 
 def _safe_int(value: Any) -> Optional[int]:
     """Convert a value to int when possible, otherwise None."""
@@ -819,14 +1206,23 @@ def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> D
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics_endpoint(_request) -> Response:
     """Expose Prometheus metrics for the MCP server and Ollama backend."""
+    refresh_error = None
     try:
         refresh_prometheus_metrics()
+    except Exception as exc:
+        refresh_error = exc
+        logger.error("Metrics refresh failed (serving last known values): %s", exc, exc_info=True)
+
+    try:
         payload = generate_latest(METRICS_REGISTRY)
+        if refresh_error:
+            # Keep HTTP 200 but annotate the payload for visibility
+            payload += f"# metrics refresh error: {refresh_error}\n".encode()
         return Response(payload, media_type=CONTENT_TYPE_LATEST)
     except Exception as exc:
-        logger.error("Failed to generate metrics: %s", exc, exc_info=True)
+        logger.error("Failed to render metrics: %s", exc, exc_info=True)
         return Response(
-            f"# metrics unavailable: {exc}\n", status_code=500, media_type="text/plain"
+            f"# metrics unavailable: {exc}\n", status_code=200, media_type="text/plain"
         )
 
 # Add access logging middleware
@@ -872,15 +1268,6 @@ class AccessLoggingMiddleware(BaseHTTPMiddleware):
 # Patch FastMCP to ensure every streamable HTTP app instance includes our middleware
 # and metrics endpoint; FastMCP builds a fresh Starlette app on each call, so we
 # wrap the constructor rather than mutating a one-off instance.
-_orig_streamable_http_app = _FastMCP.streamable_http_app
-
-def _streamable_http_app_with_access_logging(self):
-    app = _orig_streamable_http_app(self)
-    app.add_middleware(AccessLoggingMiddleware)
-    app.add_route("/metrics", metrics_endpoint, methods=["GET"])
-    return app
-
-_FastMCP.streamable_http_app = _streamable_http_app_with_access_logging
 
 if __name__ == "__main__":
     try:
@@ -896,10 +1283,9 @@ if __name__ == "__main__":
         # Start memory monitoring
         start_memory_monitor()
 
-        # Load store
-        logger.info("Loading document store...")
-        load_store()
-        logger.info("Document store loaded successfully")
+        # Load store asynchronously to speed startup
+        logger.info("Starting background store load...")
+        start_background_store_load()
 
         # Log server configuration and memory info
         memory_mb = get_memory_usage()
@@ -909,6 +1295,13 @@ if __name__ == "__main__":
         )
         logger.info("Current memory usage: %.1fMB (limit: %dMB)", memory_mb, MAX_MEMORY_MB)
         logger.info("Press Ctrl+C to gracefully shutdown")
+
+        # Ensure index is rebuilt at startup so searches work immediately
+        try:
+            _rebuild_faiss_index()
+            logger.info("FAISS index rebuild complete at startup")
+        except Exception as exc:
+            logger.error("Startup index rebuild failed: %s", exc, exc_info=True)
 
         # Start server
         mcp.run(transport="streamable-http")
