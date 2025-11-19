@@ -962,6 +962,8 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
 
     system_msg = (
         "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
+        "Only use the document's name and file metadata for citation purposes. "
+        "Do NOT offer any personal information other than name, role, and employer unless specifically asked. "
         "Cite the exact source URI for each fact. Include a final 'Sources:' section listing the URIs you used. "
         "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
         "any external knowledge or make assumptions."
