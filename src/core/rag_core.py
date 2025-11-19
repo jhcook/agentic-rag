@@ -20,24 +20,15 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
-# Avoid tokenizers parallelism deadlocks after fork
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from sentence_transformers import SentenceTransformer  # type: ignore
 from ollama import AsyncClient  # type: ignore
 
-try:
-    import faiss  # type: ignore
-except ImportError:
-    if os.getenv("RAG_DEBUG_MODE", "false").lower() != "true":
-        raise
-    faiss = None
-
-# Disable PyTorch multiprocessing to avoid segfaults on macOS
-os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['MKL_NUM_THREADS'] = '1'
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
-os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
-os.environ['NUMEXPR_NUM_THREADS'] = '1'
+# Shared helpers
+from src.core.embeddings import get_embedder as _get_embedder
+from src.core.faiss_index import (
+    get_faiss_globals as _get_faiss_globals,
+    get_rebuild_lock,
+)
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -68,10 +59,12 @@ except ImportError:
     Histogram = None  # type: ignore
 
 # Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Avoid adding duplicate handlers when imported by servers that configure logging.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
@@ -83,14 +76,12 @@ ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
+SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))
+SEARCH_MAX_CONTEXT_CHARS = int(os.getenv("SEARCH_MAX_CONTEXT_CHARS", "8000"))
+EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
 
 # Lazy-initialized global state
-_EMBEDDER: Optional[SentenceTransformer] = None
-_INDEX: Optional[Any] = None
-_INDEX_TO_META: Optional[Dict[int, Tuple[str, str]]] = None
-_EMBED_DIM: Optional[int] = None
 _STORE: Optional['Store'] = None
-_REBUILD_LOCK = threading.Lock()
 
 # Embedding metrics (shared by servers)
 EMBEDDING_REQUESTS = Counter("embedding_requests_total", "Embedding encode invocations.", ["stage"]) if Counter else None
@@ -107,75 +98,29 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
 
 
 def get_embedder() -> Optional[SentenceTransformer]:
-    """Get the embedding model, loading it lazily if needed. Returns None in debug mode."""
-    global _EMBEDDER
-
-    if DEBUG_MODE:
-        logger.info("Debug mode enabled - skipping embedding model loading")
-        return None
-
-    if _EMBEDDER is None:
-        try:
-            logger.info("Loading embedding model: %s", EMBED_MODEL_NAME)
-            _EMBEDDER = SentenceTransformer(
-                EMBED_MODEL_NAME,
-                device='cpu',
-                backend='torch'
-            )
-            # Disable multiprocessing to avoid segfaults on macOS
-            import torch
-            torch.set_num_threads(1)
-        except Exception as exc:
-            # Prefer to keep running with a smaller, local model rather than crash on meta-tensor/device errors
-            fallback = "all-MiniLM-L6-v2"
-            logger.warning(
-                "Embedding model '%s' failed to load (%s). Falling back to '%s'.",
-                EMBED_MODEL_NAME, exc, fallback
-            )
-            try:
-                _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch')
-                import torch
-                torch.set_num_threads(1)
-                logger.info("Fallback embedding model '%s' loaded successfully", fallback)
-            except Exception as inner_exc:
-                logger.critical(
-                    "Fallback embedding model '%s' also failed to load: %s", fallback, inner_exc
-                )
-                raise
-    return _EMBEDDER
+    """Get the embedding model via the shared embeddings module."""
+    return _get_embedder(EMBED_MODEL_NAME, DEBUG_MODE, logger)
 
 
 def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, str]], int]:
     """Get FAISS-related globals, initializing them lazily if needed."""
-    global _INDEX, _INDEX_TO_META, _EMBED_DIM
-
-    if _INDEX is None:
-        if DEBUG_MODE:
-            logger.info("Debug mode enabled - skipping FAISS and embedding initialization")
-            _EMBED_DIM = 384  # Dummy dimension
-            _INDEX = None
-            _INDEX_TO_META = {}
+    embedder = get_embedder()
+    embed_dim = 384
+    if embedder is not None and not DEBUG_MODE:
+        try:
+            embed_dim = embedder.get_sentence_embedding_dimension()
+        except Exception:
+            embed_dim = 384
+    if EMBED_DIM_OVERRIDE:
+        if embedder is not None and not DEBUG_MODE and embed_dim != EMBED_DIM_OVERRIDE:
+            logger.warning(
+                "EMBED_DIM_OVERRIDE=%s does not match embedder dimension %s; using embedder dimension",
+                EMBED_DIM_OVERRIDE,
+                embed_dim,
+            )
         else:
-            # Initialize embedding dimension
-            embedder = get_embedder()
-            if embedder is not None:
-                _EMBED_DIM = embedder.get_sentence_embedding_dimension()
-
-                # Initialize FAISS index
-                if faiss is not None:
-                    _INDEX = faiss.IndexFlatIP(_EMBED_DIM)  # type: ignore
-                    _INDEX_TO_META = {}
-                else:
-                    _INDEX = None  # type: ignore
-                    _INDEX_TO_META = {}
-            else:
-                _EMBED_DIM = 384  # Default dimension
-                _INDEX = None
-                _INDEX_TO_META = {}
-
-        logger.debug("Initialized FAISS globals with embedding dimension %s", _EMBED_DIM)
-
-    return _INDEX, _INDEX_TO_META, _EMBED_DIM
+            embed_dim = EMBED_DIM_OVERRIDE
+    return _get_faiss_globals(embed_dim, DEBUG_MODE, logger)
 
 
 from dataclasses import dataclass, field
@@ -330,7 +275,7 @@ def _should_skip_uri(uri: str) -> bool:
 
 def _rebuild_faiss_index():
     """Rebuild the FAISS index from store documents."""
-    with _REBUILD_LOCK:
+    with get_rebuild_lock():
         logger.info("Beginning FAISS rebuild")
         if DEBUG_MODE:
             logger.debug("Debug mode: skipping FAISS index rebuild")
@@ -902,7 +847,7 @@ def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
     return out
 
 
-def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
+def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
     """Perform vector similarity search using FAISS."""
     index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
@@ -923,19 +868,15 @@ def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
     scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore
 
     hits = []
-    seen_uris = set()
-
     for score, idx in zip(scores[0], indices[0]):
         if idx in index_to_meta:
             uri, text = index_to_meta[idx]
-            if uri not in seen_uris:
-                hits.append({"score": float(score), "uri": uri, "text": text})
-                seen_uris.add(uri)
+            hits.append({"score": float(score), "uri": uri, "text": text})
 
     return hits
 
 
-def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
+def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
     """Search the indexed documents and ask the LLM using only those documents as context."""
     logger.info("Vector searching for: %s", query)
     candidates = _vector_search(query, k=top_k)
@@ -949,6 +890,8 @@ def search(query: str, top_k: int = 5, max_context_chars: int = 4000):
         if not candidates:
             logger.info("No vector hits; refusing to answer from outside sources.")
             return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
+    # Re-rank to downweight signatures/short snippets and prioritize query overlap
+    candidates = rerank(query, candidates)[:top_k]
     sources = [c.get("uri", "") for c in candidates if c.get("uri")]
 
     context_parts, total_chars = [], 0
@@ -1006,13 +949,35 @@ def rerank(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     lightweight heuristic so we avoid an additional model dependency.
     """
     lowered_terms = [t for t in query.lower().split() if t]
+    signature_phrases = (
+        "regards",
+        "warm regards",
+        "best,",
+        "best regards",
+        "thanks",
+        "thank you",
+        "cheers",
+        "sincerely",
+    )
 
     def _score(p: Dict[str, Any]) -> float:
         """Heuristic score combining existing score with query term hits."""
         base = float(p.get("score", 0.0) or 0.0)
-        text = str(p.get("text", "")).lower()
+        text_raw = str(p.get("text", ""))
+        text = text_raw.lower()
         term_hits = sum(text.count(term) for term in lowered_terms) if lowered_terms else 0
-        return base + term_hits * 0.1
+
+        # Penalize low-signal passages (e.g., email signatures or very short snippets)
+        penalty = 0.0
+        word_count = len(text.split())
+        if word_count < 20:
+            penalty += 0.7
+        elif word_count < 40:
+            penalty += 0.3
+        if any(phrase in text for phrase in signature_phrases):
+            penalty += 0.5
+
+        return base + term_hits * 0.1 - penalty
 
     ranked = sorted(passages, key=_score, reverse=True)
     # Attach heuristic scores for downstream consumers
@@ -1036,13 +1001,105 @@ def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str
     return {"answer": answer or "I don't know.", "citations": citations}
 
 
-def grounded_answer(question: str, k: int = 3) -> Dict[str, Any]:
+def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
     """
-    Retrieve top-k passages via vector search and synthesize a grounded answer.
+    Grounded career-centric answer: retrieve, rerank, filter signatures/boilerplate,
+    and synthesize with citations; falls back gracefully when no signal.
     """
-    hits = _vector_search(question, k=k)
+    signature_phrases = (
+        "regards",
+        "warm regards",
+        "best,",
+        "best regards",
+        "thanks",
+        "thank you",
+        "cheers",
+        "sincerely",
+    )
+
+    def _is_low_signal(passage: Dict[str, Any]) -> bool:
+        text = str(passage.get("text", "")).strip()
+        if not text:
+            return True
+        lowered = text.lower()
+        words = lowered.split()
+        if len(words) < 12:
+            return True
+        if any(phrase in lowered for phrase in signature_phrases):
+            return True
+        return False
+
+    # Retrieve and rerank candidates
+    hits = _vector_search(question, k=k or SEARCH_TOP_K)
+    if not hits:
+        return {"answer": "I don't know.", "sources": []}
     reranked = rerank(question, hits)
-    return synthesize_answer(question, reranked)
+
+    # Filter out signatures/boilerplate and keep top-k unique URIs
+    filtered: List[Dict[str, Any]] = []
+    seen = set()
+    for p in reranked:
+        uri = p.get("uri")
+        if uri and uri in seen:
+            continue
+        if _is_low_signal(p):
+            continue
+        filtered.append(p)
+        if uri:
+            seen.add(uri)
+        if len(filtered) >= (k or SEARCH_TOP_K):
+            break
+
+    if not filtered:
+        return {"answer": "I don't know.", "sources": []}
+
+    # Build context within limits
+    sources = [p.get("uri", "") for p in filtered if p.get("uri")]
+    context_parts = []
+    total_chars = 0
+    max_chars = SEARCH_MAX_CONTEXT_CHARS
+    for entry in filtered:
+        part = "Source: %s\nContent:\n%s\n" % (entry.get("uri", ""), entry.get("text", ""))
+        if total_chars + len(part) > max_chars:
+            break
+        context_parts.append(part)
+        total_chars += len(part)
+    context = "\n".join(context_parts)
+
+    # If no LLM available, deterministic synthesis
+    if completion is None:
+        synthesized = synthesize_answer(question, filtered)
+        synthesized["sources"] = sources
+        return synthesized
+
+    system_msg = (
+        "You are a careful assistant. Write a concise professional summary using ONLY the provided documents. "
+        "Capture roles, companies, key achievements, and timelines when present. "
+        "Strictly exclude greetings, sign-offs, and speculative content. "
+        "If the documents do not clearly support the answer, reply exactly: \"I don't know.\" "
+        "End with a 'Sources:' section listing the URIs you used."
+    )
+    user_msg = f"Documents:\n{context}\n\nQuestion: {question}"
+
+    try:
+        resp = completion(  # type: ignore
+            model=LLM_MODEL_NAME,
+            messages=[{"role": "system", "content": system_msg},
+                      {"role": "user", "content": user_msg}],
+            api_base=OLLAMA_API_BASE,
+            temperature=LLM_TEMPERATURE,
+            stream=False,
+            timeout=90,
+        )
+        if isinstance(resp, dict):
+            resp.setdefault("sources", sources)
+        return resp
+    except Exception as exc:  # pragma: no cover
+        logger.error("grounded_answer completion failed: %s", exc)
+        synthesized = synthesize_answer(question, filtered)
+        synthesized["warning"] = "LLM unavailable; reply synthesized from retrieved passages."
+        synthesized["sources"] = sources
+        return synthesized
 
 
 def verify_grounding_simple(question: str, draft_answer: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
