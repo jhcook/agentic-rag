@@ -26,26 +26,6 @@ from sentence_transformers import SentenceTransformer  # type: ignore
 from ollama import AsyncClient  # type: ignore
 
 try:
-    from pypdf import PdfReader  # type: ignore
-except ImportError:
-    PdfReader = None
-
-try:
-    from docx import Document  # type: ignore
-except ImportError:
-    Document = None
-
-try:
-    from bs4 import BeautifulSoup  # type: ignore
-except ImportError:
-    BeautifulSoup = None
-
-try:
-    import requests  # type: ignore
-except ImportError:
-    requests = None
-
-try:
     import faiss  # type: ignore
 except ImportError:
     if os.getenv("RAG_DEBUG_MODE", "false").lower() != "true":
@@ -61,6 +41,9 @@ os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
+
+# Shared extractors
+from src.core.extractors import _extract_text_from_file, _download_from_url
 
 try:
     from litellm import completion  # type: ignore
@@ -99,6 +82,7 @@ LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
+MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 
 # Lazy-initialized global state
 _EMBEDDER: Optional[SentenceTransformer] = None
@@ -141,14 +125,23 @@ def get_embedder() -> Optional[SentenceTransformer]:
             # Disable multiprocessing to avoid segfaults on macOS
             import torch
             torch.set_num_threads(1)
-        except OSError as exc:
-            message = (
-                "Failed to load embedding model '%s'. "
-                "Confirm the identifier exists on Hugging Face or run `hf auth login` "
-                "to provide credentials."
-            ) % EMBED_MODEL_NAME
-            logger.critical(message)
-            raise SystemExit(message) from exc
+        except Exception as exc:
+            # Prefer to keep running with a smaller, local model rather than crash on meta-tensor/device errors
+            fallback = "all-MiniLM-L6-v2"
+            logger.warning(
+                "Embedding model '%s' failed to load (%s). Falling back to '%s'.",
+                EMBED_MODEL_NAME, exc, fallback
+            )
+            try:
+                _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch')
+                import torch
+                torch.set_num_threads(1)
+                logger.info("Fallback embedding model '%s' loaded successfully", fallback)
+            except Exception as inner_exc:
+                logger.critical(
+                    "Fallback embedding model '%s' also failed to load: %s", fallback, inner_exc
+                )
+                raise
     return _EMBEDDER
 
 
@@ -185,20 +178,17 @@ def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, str]], int]:
     return _INDEX, _INDEX_TO_META, _EMBED_DIM
 
 
+from dataclasses import dataclass, field
+
 # -------- In-memory store --------
+@dataclass
 class Store:
     """Optimized document store - single source of truth for text."""
-    def __init__(self):
-        """Initialize an empty in-memory store."""
-        self.docs: Dict[str, str] = {}
-        self.last_loaded: float = 0.0
-        logger.debug("Initialized new Store instance")
+    docs: Dict[str, str] = field(default_factory=dict)
+    last_loaded: float = 0.0
 
-    def add(self, uri: str, text: str):
-        """Add a document to the store."""
-        logger.debug("Adding document: %s", uri)
+    def add(self, uri: str, text: str) -> None:
         self.docs[uri] = text
-        logger.debug("Store now contains %d documents", len(self.docs))
 
 
 def _encode_with_metrics(embedder: SentenceTransformer, inputs: Any, stage: str, **kwargs):
@@ -341,12 +331,21 @@ def _should_skip_uri(uri: str) -> bool:
 def _rebuild_faiss_index():
     """Rebuild the FAISS index from store documents."""
     with _REBUILD_LOCK:
+        logger.info("Beginning FAISS rebuild")
         if DEBUG_MODE:
             logger.debug("Debug mode: skipping FAISS index rebuild")
             return
 
+        # Ensure store is loaded before rebuilding
+        try:
+            load_store()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to load store before rebuild: %s", exc)
+
         index, index_to_meta, _ = get_faiss_globals()
+        logger.info("FAISS globals ready (index=%s)", "present" if index is not None else "none")
         embedder = get_embedder()
+        logger.info("Embedder ready")
 
         logger.info("Rebuilding FAISS index from store documents")
         index_to_meta.clear()
@@ -434,7 +433,6 @@ def load_store():
         logger.info("Successfully loaded %d documents", len(_STORE.docs))
 
         _STORE.last_loaded = time.time()
-        _rebuild_faiss_index()
 
     except (OSError, ValueError) as exc:
         logger.error("Error loading store: %s", str(exc))
@@ -875,7 +873,7 @@ def send_store_to_llm() -> str:
 
             if running_loop and running_loop.is_running():
                 future = asyncio.run_coroutine_threadsafe(send_to_llm(texts), running_loop)
-                resp = future.result(timeout=120)
+                resp = future.result(timeout=60)
             else:
                 resp = asyncio.run(send_to_llm(texts))
 
