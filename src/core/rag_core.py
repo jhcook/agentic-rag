@@ -924,7 +924,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
             api_base=OLLAMA_API_BASE,
             temperature=LLM_TEMPERATURE,
             stream=False,
-            timeout=120,
+            timeout=300,
         )
         if isinstance(resp, dict):
             resp.setdefault("sources", sources)

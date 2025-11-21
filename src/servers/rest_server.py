@@ -22,6 +22,13 @@ from prometheus_client import (
     generate_latest,
 )
 
+from src.core.rag_core import (
+    grounded_answer,
+    rerank,
+    verify_grounding,
+    verify_grounding_simple,
+)
+
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
