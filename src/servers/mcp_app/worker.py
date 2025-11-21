@@ -2,7 +2,6 @@ import base64
 import multiprocessing
 import tempfile
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -10,8 +9,6 @@ import logging
 import os
 
 from src.core.extractors import _extract_text_from_file
-from src.core.indexer import index_path, upsert_document
-from src.core.store import load_store, save_store
 from src.core.rag_core import _ensure_store_synced, _rebuild_faiss_index
 
 logger = logging.getLogger(__name__)

@@ -18,7 +18,7 @@ from src.core.rag_core import (
 )
 from src.core.indexer import index_path, upsert_document
 from src.core.extractors import _extract_text_from_file
-from src.core.store import DB_PATH
+from src.core.rag_core import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
 
 rest_api = FastAPI(title="mcp-rest-shim")

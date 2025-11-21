@@ -1,0 +1,338 @@
+openapi: 3.1.0
+info:
+  title: Agentic RAG REST Shim
+  version: "1.0.0"
+  description: |
+    REST facade for the Agentic RAG retrieval server. All endpoints return JSON
+    and do not require authentication.
+servers:
+  - url: http://127.0.0.1:8000
+    description: Default MCP/REST shim host
+tags:
+  - name: Documents
+    description: Manage stored documents and indexing jobs
+  - name: Search
+    description: Query the RAG index
+  - name: Operations
+    description: Health checks and background job monitoring
+paths:
+  /upsert_document:
+    post:
+      tags: [Documents]
+      operationId: upsertDocument
+      summary: Queue a job to upsert a single document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertDocumentRequest'
+      responses:
+        '200':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobQueuedResponse'
+        '422':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /index_path:
+    post:
+      tags: [Documents]
+      operationId: indexPath
+      summary: Queue a recursive indexing job for a path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexPathRequest'
+      responses:
+        '200':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobQueuedResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /search:
+    post:
+      tags: [Search]
+      operationId: search
+      summary: Search indexed documents
+      description: |
+        Executes a similarity search. When `async` is true the request queues a background
+        job and returns immediately; otherwise it blocks until the answer (or timeout) is ready.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search response or async job token
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SearchResponse'
+                  - $ref: '#/components/schemas/JobQueuedResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /documents:
+    get:
+      tags: [Documents]
+      operationId: listDocuments
+      summary: List all stored documents
+      responses:
+        '200':
+          description: List of documents with approximate sizes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentsResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /documents/delete:
+    post:
+      tags: [Documents]
+      operationId: deleteDocuments
+      summary: Delete specific documents from the store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteDocumentsRequest'
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteDocumentsResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /flush_cache:
+    post:
+      tags: [Documents]
+      operationId: flushCache
+      summary: Clear the in-memory store and delete the on-disk cache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlushCacheResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /health:
+    get:
+      tags: [Operations]
+      operationId: health
+      summary: Report index and memory status
+      responses:
+        '200':
+          description: Health metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /jobs:
+    get:
+      tags: [Operations]
+      operationId: listJobs
+      summary: List background indexing/search jobs
+      responses:
+        '200':
+          description: Job queue snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobsResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    UpsertDocumentRequest:
+      type: object
+      required: [uri]
+      properties:
+        uri:
+          type: string
+          description: Document identifier or file path
+        text:
+          type: string
+        binary_base64:
+          type: string
+          format: byte
+          description: Base64 encoded binary payload (PDF/DOC/etc.)
+    IndexPathRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Directory or file path to index
+        glob:
+          type: string
+          default: "**/*.txt"
+          description: Glob pattern for recursive file selection
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        async:
+          type: boolean
+          default: false
+        timeout_seconds:
+          type: integer
+          format: int32
+          default: 300
+          description: Only used in async mode to cap the background search duration
+    SearchResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            type: string
+        warning:
+          type: string
+        error:
+          type: string
+    DocumentsResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentItem'
+    DocumentItem:
+      type: object
+      properties:
+        uri:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+    DeleteDocumentsRequest:
+      type: object
+      properties:
+        uris:
+          type: array
+          items:
+            type: string
+    DeleteDocumentsResponse:
+      type: object
+      properties:
+        deleted:
+          type: integer
+    FlushCacheResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [flushed]
+        db_removed:
+          type: boolean
+        documents:
+          type: integer
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        documents:
+          type: integer
+        vectors:
+          type: integer
+        memory_mb:
+          type: number
+          format: float
+        memory_limit_mb:
+          type: number
+          format: float
+    JobsResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobStatus'
+    JobStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+        result:
+          description: Job-specific result payload
+        error:
+          type: string
+    JobQueuedResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          example: queued
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string

@@ -1,34 +1,65 @@
+from typing import Any, Dict
+
 import pytest
 from fastapi.testclient import TestClient
-from http_server import app
 
-client = TestClient(app)
+from src.servers.mcp_app import api as rest_module
 
-def test_index_documents_tool():
-    response = client.post("/mcp", json={
-        "tool": "index_documents_tool",
-        "args": {"path": "docs", "glob": "*.txt"}
-    })
+
+@pytest.fixture(name="client")
+def client_fixture():
+    return TestClient(rest_module.rest_api)
+
+
+def test_upsert_document_returns_job_id(monkeypatch, client):
+    captured: Dict[str, Any] = {}
+
+    def fake_enqueue(payload, job_type):
+        captured["payload"] = payload
+        captured["job_type"] = job_type
+        return "job-123"
+
+    monkeypatch.setattr(rest_module.worker_mod, "enqueue_job", fake_enqueue)
+    response = client.post(
+        "/upsert_document",
+        json={"uri": "docs/roadmap.md", "text": "Launch goals"},
+    )
     assert response.status_code == 200
-    data = response.json()
-    assert "indexed" in data
+    assert response.json() == {"job_id": "job-123", "status": "queued"}
+    assert captured["job_type"] == "upsert_document"
+    assert captured["payload"]["uri"] == "docs/roadmap.md"
 
 
-def test_index_url_tool():
-    response = client.post("/mcp", json={
-        "tool": "index_url_tool",
-        "args": {"url": "http://example.com/test.txt", "doc_id": "test_url_doc"}
-    })
+def test_index_path_queues_job(monkeypatch, client):
+    captured: Dict[str, Any] = {}
+
+    def fake_enqueue(payload, job_type):
+        captured["payload"] = payload
+        captured["job_type"] = job_type
+        return "job-456"
+
+    monkeypatch.setattr(rest_module.worker_mod, "enqueue_job", fake_enqueue)
+    response = client.post(
+        "/index_path",
+        json={"path": "./docs", "glob": "**/*.md"},
+    )
     assert response.status_code == 200
-    data = response.json()
-    assert "indexed" in data
+    assert response.json()["job_id"] == "job-456"
+    assert captured["payload"] == {"path": "./docs", "glob": "**/*.md"}
+    assert captured["job_type"] == "index_path"
 
 
-def test_search_tool():
-    response = client.post("/mcp", json={
-        "tool": "search_tool",
-        "args": {"query": "test", "top_k": 5}
-    })
+def test_search_sync_returns_answer(monkeypatch, client):
+    async def fake_run_sync(func, *args, **kwargs):  # pylint: disable=unused-argument
+        return {"answer": "done", "sources": ["docs/roadmap.md"]}
+
+    monkeypatch.setattr(
+        rest_module.anyio.to_thread,
+        "run_sync",
+        lambda func, *args, **kwargs: fake_run_sync(func, *args, **kwargs),
+    )
+    response = client.post("/search", json={"query": "anything"})
     assert response.status_code == 200
-    data = response.json()
-    assert "answer" in data or "choices" in data
+    payload = response.json()
+    assert payload["answer"] == "done"
+    assert "sources" in payload

@@ -7,15 +7,9 @@ import logging
 import pathlib
 import json
 import os
-import hashlib
 import time
 import asyncio
 import gc
-import zipfile
-import io
-import string
-import threading
-
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
@@ -29,12 +23,12 @@ from src.core.faiss_index import (
     get_faiss_globals as _get_faiss_globals,
     get_rebuild_lock,
 )
+from src.core.store import StoreManager, Store
+from src.core.retrieval_utils import rerank, synthesize_answer, is_low_signal
+from src.core import extractors as _extractors
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
-
-# Shared extractors
-from src.core.extractors import _extract_text_from_file, _download_from_url
 
 try:
     from litellm import completion  # type: ignore
@@ -74,14 +68,33 @@ OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
+LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "120"))
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))
 SEARCH_MAX_CONTEXT_CHARS = int(os.getenv("SEARCH_MAX_CONTEXT_CHARS", "8000"))
 EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
 
-# Lazy-initialized global state
-_STORE: Optional['Store'] = None
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a knowledgeable librarian designed to search and summarise documents. "
+    "Answer the user's question using ONLY the documents provided. "
+    "Only use the document's name and file metadata for citation purposes. "
+    "Do not use first person terminology like 'I', 'me', 'my', or 'we'. "
+    "Do NOT offer any personal information other than name, role, and employer unless specifically asked. "
+    "Cite the exact source URI for each fact. Include a final 'Sources:' section listing the URIs you used. "
+    "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
+    "any external knowledge or make assumptions."
+)
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+
+DEFAULT_GROUNDED_PROMPT = (
+    "You are a careful assistant. Write a concise professional summary using ONLY the provided documents. "
+    "Capture roles, companies, key achievements, and timelines when present. "
+    "Strictly exclude greetings, sign-offs, and speculative content. "
+    "If the documents do not clearly support the answer, reply exactly: \"I don't know.\" "
+    "End with a 'Sources:' section listing the URIs you used."
+)
+GROUNDING_SYSTEM_PROMPT = os.getenv("GROUNDING_SYSTEM_PROMPT", DEFAULT_GROUNDED_PROMPT)
 
 # Embedding metrics (shared by servers)
 EMBEDDING_REQUESTS = Counter("embedding_requests_total", "Embedding encode invocations.", ["stage"]) if Counter else None
@@ -95,6 +108,7 @@ EMBEDDING_DURATION = Histogram(
 
 # Absolute path to the repository so relative inputs resolve consistently
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent
+_STORE_MANAGER = StoreManager(DB_PATH, PROJECT_ROOT, logger)
 
 
 def get_embedder() -> Optional[SentenceTransformer]:
@@ -123,19 +137,6 @@ def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, str]], int]:
     return _get_faiss_globals(embed_dim, DEBUG_MODE, logger)
 
 
-from dataclasses import dataclass, field
-
-# -------- In-memory store --------
-@dataclass
-class Store:
-    """Optimized document store - single source of truth for text."""
-    docs: Dict[str, str] = field(default_factory=dict)
-    last_loaded: float = 0.0
-
-    def add(self, uri: str, text: str) -> None:
-        self.docs[uri] = text
-
-
 def _encode_with_metrics(embedder: SentenceTransformer, inputs: Any, stage: str, **kwargs):
     """Wrap embedder.encode to record metrics when available."""
     if embedder is None:  # Defensive: should already be handled by callers
@@ -158,119 +159,37 @@ def _encode_with_metrics(embedder: SentenceTransformer, inputs: Any, stage: str,
 
 def _ensure_store_synced():
     """Ensure the store is synchronized with disk if modified externally."""
-    if not os.path.exists(DB_PATH):
-        return
-
-    try:
-        file_mtime = os.path.getmtime(DB_PATH)
-        store = get_store()
-
-        if file_mtime > store.last_loaded:
-            logger.info("Detected external changes, reloading store from disk")
-            load_store()
-            store.last_loaded = time.time()
-    except OSError as exc:
-        logger.warning("Error checking store sync: %s", exc)
+    _STORE_MANAGER.ensure_synced()
 
 
 def get_store() -> Store:
     """Return the global Store instance, creating it if necessary."""
-    global _STORE
-    if _STORE is None:
-        _STORE = Store()
-        try:
-            load_store()
-        except (OSError, ValueError) as exc:
-            logger.debug("No existing store to load: %s", exc)
-    return _STORE
+    return _STORE_MANAGER.get_store()
 
 
-def _hash_uri(uri: str) -> str:
-    """Hash a URI for storage."""
-    return hashlib.sha1(uri.encode()).hexdigest()
+def reset_store(store: Optional[Store] = None, db_path: Optional[str] = None) -> Store:
+    """Replace the in-memory store (primarily for tests)."""
+    return _STORE_MANAGER.reset(store, db_path=db_path)
 
 
 def resolve_input_path(path: str) -> pathlib.Path:
     """Resolve a user-supplied path, trying common fallbacks."""
-    raw = pathlib.Path(path).expanduser()
-    candidates = []
-
-    def _add_candidate(p: pathlib.Path):
-        """Track a candidate path if not already present."""
-        candidate = p.resolve()
-        if candidate not in candidates:
-            candidates.append(candidate)
-
-    _add_candidate(raw)
-
-    if not raw.is_absolute():
-        _add_candidate(PROJECT_ROOT / raw)
-        env_base = os.getenv("RAG_WORKDIR")
-        if env_base:
-            _add_candidate(pathlib.Path(env_base).expanduser() / raw)
-
-    for candidate in candidates:
-        if candidate.exists():
-            logger.debug("Resolved path '%s' to '%s'", path, candidate)
-            return candidate
-
-    attempted = ", ".join(str(c) for c in candidates)
-    raise FileNotFoundError("Path '%s' not found (tried: %s)" % (path, attempted))
+    return _STORE_MANAGER.resolve_input_path(path)
 
 
 def save_store():
     """Save the store to disk."""
-    try:
-        store = get_store()
-        logger.info("Saving store to %s", DB_PATH)
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        with open(DB_PATH, "w", encoding="utf-8") as f:
-            for uri, text in store.docs.items():
-                rec: Dict[str, Any] = {
-                    "uri": uri,
-                    "id": _hash_uri(uri),
-                    "text": text,
-                    "ts": int(time.time())
-                }
-                f.write(json.dumps(rec) + "\n")
-        logger.info("Successfully saved %d documents", len(get_store().docs))
-        get_store().last_loaded = time.time()
-    except (OSError, ValueError) as exc:
-        logger.error("Error saving store: %s", str(exc))
-        raise
+    _STORE_MANAGER.save_store()
 
 
 def _chunk_document(text: str, uri: str) -> Tuple[List[str], List[str]]:
     """Chunk a single document and return chunks with metadata."""
-    all_chunks = []
-    chunk_metadata = []
+    return _STORE_MANAGER.chunk_document(text, uri)
 
-    max_chars = 800
-    overlap = 120
-    i = 0
-    n = len(text)
-
-    while i < n:
-        j = min(n, i + max_chars)
-        chunk = text[i:j]
-        all_chunks.append(chunk)
-        chunk_metadata.append(uri)
-        i += max_chars - overlap
-        if i >= n:
-            break
-
-    return all_chunks, chunk_metadata
 
 def _should_skip_uri(uri: str) -> bool:
     """Skip hidden/system files that should never be indexed."""
-    name = pathlib.Path(uri).name
-    if not name:
-        return False
-    if name.startswith("."):
-        return True
-    if name.lower() in ("thumbs.db",):
-        return True
-    return False
+    return _STORE_MANAGER.should_skip_uri(uri)
 
 
 def _rebuild_faiss_index():
@@ -297,17 +216,18 @@ def _rebuild_faiss_index():
         if index is not None:
             index.reset()  # type: ignore
 
-        if _STORE is None:
+        store = get_store()
+        if not store.docs:
             logger.warning("No store available to rebuild index from")
             return
 
-        logger.info("Processing %d documents for FAISS indexing", len(_STORE.docs))
+        logger.info("Processing %d documents for FAISS indexing", len(store.docs))
 
         total_vectors = 0
         batch_size = 8
 
         # Process each document separately to avoid accumulating all chunks in memory
-        for uri, text in list(_STORE.docs.items()):
+        for uri, text in list(store.docs.items()):
             logger.debug("Document %s: %d chars", uri, len(text))
             chunks, metadata = _chunk_document(text, uri)
             logger.debug("Created %d chunks from %s", len(chunks), uri)
@@ -352,42 +272,11 @@ def _rebuild_faiss_index():
 
 def load_store():
     """Load the store from disk and rebuild FAISS index."""
-    global _STORE
-
-    if not os.path.exists(DB_PATH):
-        logger.warning("Store file not found at %s", DB_PATH)
-        return
-
-    try:
-        logger.info("Loading store from %s", DB_PATH)
-        new_store = Store()
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line.strip())
-                    if "uri" in rec and "text" in rec:
-                        new_store.add(rec["uri"], rec["text"])
-                except json.JSONDecodeError as exc:
-                    logger.warning("load_store: %s", exc)
-                    continue
-
-        if _STORE is None:
-            _STORE = Store()
-        _STORE.docs.clear()
-        _STORE.docs.update(new_store.docs)
-        logger.info("Successfully loaded %d documents", len(_STORE.docs))
-
-        _STORE.last_loaded = time.time()
-
-    except (OSError, ValueError) as exc:
-        logger.error("Error loading store: %s", str(exc))
-        raise
+    _STORE_MANAGER.load_store()
 
 
 def upsert_document(uri: str, text: str) -> Dict[str, Any]:
     """Upsert a single document into the store."""
-    global _STORE
-
     if _should_skip_uri(uri):
         logger.warning("Skipping hidden/system file: %s", uri)
         return {"skipped": True, "reason": "hidden/system file", "uri": uri}
@@ -397,11 +286,9 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
 
     _ensure_store_synced()
 
-    if _STORE is None:
-        _STORE = Store()
-
-    existed = uri in _STORE.docs
-    _STORE.add(uri, text)
+    store = get_store()
+    existed = uri in store.docs
+    store.add(uri, text)
 
     if DEBUG_MODE:
         logger.debug("Debug mode: skipping embeddings for %s", uri)
@@ -456,255 +343,39 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     return files, resolved
 
 
-def _download_from_url(url: str) -> bytes:
-    """Download content from a URL."""
-    if requests is None:
-        logger.warning("URL support not available. Install requests: pip install requests")
-        return b""
-    try:
-        logger.info("Downloading from %s", url)
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.SSLError as ssl_exc:
-        logger.error("SSL error downloading %s: %s", url, ssl_exc)
-        return b"[SSL ERROR: Could not connect to %s]" % url.encode()
-    except requests.exceptions.ConnectionError as conn_exc:
-        logger.error("Connection error downloading %s: %s", url, conn_exc)
-        return b"[CONNECTION ERROR: Could not connect to %s]" % url.encode()
-    except Exception as exc:
-        logger.error("Failed to download %s: %s", url, exc)
-        return b"[ERROR: Could not download %s: %s]" % (url.encode(), str(exc).encode())
-
-
 def _extract_text_from_file(file_path: pathlib.Path) -> str:
-    """Extract text from various file types (txt, pdf, docx, html) or URLs."""
-    # Check if it's a URL and normalize single-slash URLs
-    file_str = str(file_path)
-    if file_path.name in {".DS_Store"}:
-        return ""
-
-    def _read_head(path: pathlib.Path, size: int = 512) -> bytes:
-        try:
-            with open(path, "rb") as f:
-                return f.read(size)
-        except Exception:
-            return b""
-
-    def _is_probably_text_bytes(buf: bytes) -> bool:
-        if not buf:
-            return False
-        printable = sum((chr(b).isprintable() or chr(b).isspace()) for b in buf)
-        density = printable / max(1, len(buf))
-        return density >= 0.8
-
-    head = None
-    if not file_str.startswith(("http://", "https://")):
-        head = _read_head(file_path, 512)
-    if file_str.startswith('http:/') and not file_str.startswith('http://'):
-        file_str = file_str.replace('http:/', 'http://', 1)
-    elif file_str.startswith('https:/') and not file_str.startswith('https://'):
-        file_str = file_str.replace('https:/', 'https://', 1)
-
-    def _normalize_suffix_from_head(default_suffix: str, head_bytes: Optional[bytes]) -> str:
-        if head_bytes is None:
-            return default_suffix
-        if head_bytes.startswith(b"%PDF-"):
-            return ".pdf"
-        if head_bytes.startswith(b"PK"):
-            # could be zip-based formats: docx, pages, ods, etc.
-            if default_suffix.lower() in (".docx", ".pages"):
-                return default_suffix.lower()
-            return ".zip"
-        return default_suffix
-
-    if file_str.startswith(('http://', 'https://')):
-        content = _download_from_url(file_str)
-        if not content:
-            return ""
-        # Determine file type from URL or content
-        if file_str.endswith('.pdf'):
-            suffix = '.pdf'
-        elif file_str.endswith(('.docx', '.doc')):
-            suffix = '.docx'
-        elif file_str.endswith(('.html', '.htm')):
-            suffix = '.html'
-        else:
-            # Try to detect HTML
-            try:
-                decoded = content.decode('utf-8', errors='ignore')
-                if decoded.strip().startswith(('<html', '<!DOCTYPE', '<!doctype')):
-                    suffix = '.html'
-                else:
-                    suffix = '.txt'
-            except Exception:
-                suffix = '.txt'
-    else:
-        content = None
-        suffix = _normalize_suffix_from_head(file_path.suffix.lower(), head)
-
-    if suffix == '.pdf':
-        if PdfReader is None:
-            logger.warning("PDF support not available. Install pypdf: pip install pypdf")
-            return ""
-        try:
-            if content:
-                # PDF from URL
-                import io
-                reader = PdfReader(io.BytesIO(content))
-            else:
-                # PDF from file
-                reader = PdfReader(str(file_path))
-            text_parts = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text:
-                    text_parts.append(page_text)
-            joined = "\n".join(text_parts).strip()
-            if not joined:
-                logger.warning("No text extracted from PDF %s", file_path)
-                return ""
-            return joined
-        except Exception as exc:
-            logger.error("Failed to read PDF %s: %s", file_path, exc)
-            return ""
-
-    elif suffix == '.pages':
-        # Pages files are zip archives that usually contain a PDF preview
-        try:
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                names = zf.namelist()
-                # Prefer QuickLook/Preview.pdf if present
-                pdf_candidates = []
-                for name in names:
-                    lower = name.lower()
-                    if lower.endswith(".pdf"):
-                        # Weight QuickLook/Preview higher
-                        priority = 0 if "quicklook/preview.pdf" in lower else 1
-                        pdf_candidates.append((priority, name))
-                pdf_candidates.sort()
-                for _, pdf_name in pdf_candidates:
-                    try:
-                        pdf_bytes = zf.read(pdf_name)
-                        reader = PdfReader(io.BytesIO(pdf_bytes)) if PdfReader else None
-                        if reader is None:
-                            logger.warning("PDF support not available to read %s inside %s", pdf_name, file_path)
-                            break
-                        pages = []
-                        for page in reader.pages:
-                            page_text = page.extract_text() or ""
-                            if page_text:
-                                pages.append(page_text)
-                        joined = "\n".join(pages).strip()
-                        if joined:
-                            return joined
-                    except Exception as exc:
-                        logger.debug("Failed to read embedded PDF %s in %s: %s", pdf_name, file_path, exc)
-                        continue
-
-                # Fallback to any XML/HTML/text files inside the archive
-                text_candidates = [n for n in names if n.lower().endswith((".xml", ".html", ".htm", ".txt"))]
-                for name in text_candidates:
-                    try:
-                        raw = zf.read(name)
-                        text = raw.decode("utf-8", errors="ignore").strip()
-                        if text:
-                            return text
-                    except Exception:
-                        continue
-        except Exception as exc:
-            logger.error("Failed to read Pages file %s: %s", file_path, exc)
-        return ""
-
-    elif suffix in ['.docx', '.doc']:
-        if Document is None:
-            logger.warning("DOCX support not available. Install python-docx: pip install python-docx")
-            return ""
-        try:
-            if content:
-                # DOCX from URL
-                import io
-                doc = Document(io.BytesIO(content))
-            else:
-                # DOCX from file
-                doc = Document(str(file_path))
-            text_parts = [paragraph.text for paragraph in doc.paragraphs]
-            return "\n".join(text_parts)
-        except Exception as exc:
-            logger.error("Failed to read DOCX %s: %s", file_path, exc)
-            return ""
-
-    elif suffix in ['.html', '.htm']:
-        if BeautifulSoup is None:
-            logger.warning("HTML support not available. Install beautifulsoup4: pip install beautifulsoup4")
-            return ""
-        try:
-            if content:
-                # HTML from URL
-                html_content = content.decode('utf-8', errors='ignore')
-            else:
-                # HTML from file
-                html_content = file_path.read_text(encoding="utf-8", errors="ignore")
-            soup = BeautifulSoup(html_content, 'html.parser')
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-            # Get text
-            text = soup.get_text(separator='\n')
-            # Clean up whitespace
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            return text
-        except Exception as exc:
-            logger.error("Failed to read HTML %s: %s", file_path, exc)
-            return ""
-
-    else:
-        # Default to plain text, but guard against binaries by header and printable ratio
-        try:
-            if content:
-                # Text from URL
-                text = content.decode('utf-8', errors='ignore')
-            else:
-                # Text from file
-                if head is not None and not _is_probably_text_bytes(head):
-                    return ""
-                text = file_path.read_text(encoding="utf-8", errors="ignore")
-            # Quick binary guard: PDFs, zips, binaries often leave telltale headers
-            lower_text = text[:8]
-            if lower_text.startswith("%PDF-") or lower_text.startswith("PK"):
-                return ""
-            return text
-        except Exception as exc:
-            logger.error("Failed to read file %s: %s", file_path, exc)
-            return ""
+    """Delegate to shared extractor implementation."""
+    return _extractors._extract_text_from_file(file_path)
 
 
-def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
-                  embedder: Optional[SentenceTransformer]) -> str:
+def _is_meaningful_text(text: str, file_name: str = "") -> bool:
+    """Heuristic filter to skip binary/empty payloads regardless of extension."""
+    if file_name == ".DS_Store":
+        return False
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) < 40:
+        return False
+    printable = sum(ch.isprintable() for ch in stripped)
+    density = printable / max(1, len(stripped))
+    if density < 0.85:
+        return False
+    head = stripped[:8]
+    if head.startswith(("%PDF-", "PK", "\u0000", "\ufffd")):
+        return False
+    return True
+
+
+def _process_file(
+    file_path: pathlib.Path,
+    index: Any,
+    index_to_meta: Dict,
+    embedder: Optional[SentenceTransformer],
+) -> str:
     """Process a single file and add to index."""
-    def _is_meaningful_text(text: str) -> bool:
-        """Heuristic filter to skip binary/empty payloads regardless of extension."""
-        if file_path.name == ".DS_Store":
-            return False
-        if not text:
-            return False
-        stripped = text.strip()
-        if len(stripped) < 40:  # too short
-            return False
-        printable = sum(ch.isprintable() for ch in stripped)
-        density = printable / max(1, len(stripped))
-        if density < 0.85:
-            return False
-        # Reject obvious binary headers
-        head = stripped[:8]
-        if head.startswith(("%PDF-", "PK", "\u0000", "\ufffd")):
-            return False
-        return True
-
     text = _extract_text_from_file(file_path)
-    if not _is_meaningful_text(text):
+    if not _is_meaningful_text(text, file_path.name):
         logger.warning("Skipping non-text or empty content from %s", file_path)
         return ""
 
@@ -714,11 +385,9 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
     if not DEBUG_MODE and embedder is not None and index is not None:
         base_index = index.ntotal  # type: ignore
         chunks = list(_chunk(text))
-
-        # Process in batches to control memory
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i+batch_size]
+            batch_chunks = chunks[i:i + batch_size]
             embeddings = _encode_with_metrics(
                 embedder,
                 batch_chunks,
@@ -732,12 +401,9 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
                 embeddings = embeddings.reshape(1, -1)
 
             index.add(embeddings)
-
-            # Update metadata for each chunk in batch
             for j, chunk in enumerate(batch_chunks):
                 index_to_meta[base_index + i + j] = (str(file_path), chunk)
 
-            # Explicit cleanup
             del embeddings, batch_chunks
             gc.collect()
     elif DEBUG_MODE:
@@ -903,14 +569,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
         total_chars += len(part)
     context = "\n".join(context_parts)  # type: ignore
 
-    system_msg = (
-        "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
-        "Only use the document's name and file metadata for citation purposes. "
-        "Do NOT offer any personal information other than name, role, and employer unless specifically asked. "
-        "Cite the exact source URI for each fact. Include a final 'Sources:' section listing the URIs you used. "
-        "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
-        "any external knowledge or make assumptions."
-    )
+    system_msg = SYSTEM_PROMPT
     user_msg = "Documents:\n%s\n\nQuestion: %s" % (context, query)
 
     try:
@@ -924,7 +583,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
             api_base=OLLAMA_API_BASE,
             temperature=LLM_TEMPERATURE,
             stream=False,
-            timeout=120,
+            timeout=LLM_TIMEOUT,
         )
         if isinstance(resp, dict):
             resp.setdefault("sources", sources)
@@ -941,94 +600,11 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
     return fallback
 
 
-# --- Lightweight rerank/ground/verify utilities used by MCP tools ---
-
-def rerank(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Simple reranker that boosts passages containing the query terms. This is a
-    lightweight heuristic so we avoid an additional model dependency.
-    """
-    lowered_terms = [t for t in query.lower().split() if t]
-    signature_phrases = (
-        "regards",
-        "warm regards",
-        "best,",
-        "best regards",
-        "thanks",
-        "thank you",
-        "cheers",
-        "sincerely",
-    )
-
-    def _score(p: Dict[str, Any]) -> float:
-        """Heuristic score combining existing score with query term hits."""
-        base = float(p.get("score", 0.0) or 0.0)
-        text_raw = str(p.get("text", ""))
-        text = text_raw.lower()
-        term_hits = sum(text.count(term) for term in lowered_terms) if lowered_terms else 0
-
-        # Penalize low-signal passages (e.g., email signatures or very short snippets)
-        penalty = 0.0
-        word_count = len(text.split())
-        if word_count < 20:
-            penalty += 0.7
-        elif word_count < 40:
-            penalty += 0.3
-        if any(phrase in text for phrase in signature_phrases):
-            penalty += 0.5
-
-        return base + term_hits * 0.1 - penalty
-
-    ranked = sorted(passages, key=_score, reverse=True)
-    # Attach heuristic scores for downstream consumers
-    for p in ranked:
-        p["score"] = _score(p)
-    return ranked
-
-
-def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Produce a grounded answer by concatenating the top passage texts. This keeps
-    outputs deterministic when no LLM is available.
-    """
-    if not passages:
-        return {"answer": "I don't know.", "citations": []}
-
-    top_passages = passages[:3]
-    answer_parts = [p.get("text", "") for p in top_passages if p.get("text")]
-    answer = " ".join(answer_parts).strip()
-    citations = [p.get("uri", "") for p in top_passages if p.get("uri")]
-    return {"answer": answer or "I don't know.", "citations": citations}
-
-
 def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
     """
     Grounded career-centric answer: retrieve, rerank, filter signatures/boilerplate,
     and synthesize with citations; falls back gracefully when no signal.
     """
-    signature_phrases = (
-        "regards",
-        "warm regards",
-        "best,",
-        "best regards",
-        "thanks",
-        "thank you",
-        "cheers",
-        "sincerely",
-    )
-
-    def _is_low_signal(passage: Dict[str, Any]) -> bool:
-        text = str(passage.get("text", "")).strip()
-        if not text:
-            return True
-        lowered = text.lower()
-        words = lowered.split()
-        if len(words) < 12:
-            return True
-        if any(phrase in lowered for phrase in signature_phrases):
-            return True
-        return False
-
     # Retrieve and rerank candidates
     hits = _vector_search(question, k=k or SEARCH_TOP_K)
     if not hits:
@@ -1042,7 +618,7 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
         uri = p.get("uri")
         if uri and uri in seen:
             continue
-        if _is_low_signal(p):
+        if is_low_signal(p):
             continue
         filtered.append(p)
         if uri:
@@ -1072,13 +648,7 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
         synthesized["sources"] = sources
         return synthesized
 
-    system_msg = (
-        "You are a careful assistant. Write a concise professional summary using ONLY the provided documents. "
-        "Capture roles, companies, key achievements, and timelines when present. "
-        "Strictly exclude greetings, sign-offs, and speculative content. "
-        "If the documents do not clearly support the answer, reply exactly: \"I don't know.\" "
-        "End with a 'Sources:' section listing the URIs you used."
-    )
+    system_msg = GROUNDING_SYSTEM_PROMPT
     user_msg = f"Documents:\n{context}\n\nQuestion: {question}"
 
     try:
@@ -1089,7 +659,7 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
             api_base=OLLAMA_API_BASE,
             temperature=LLM_TEMPERATURE,
             stream=False,
-            timeout=90,
+            timeout=LLM_TIMEOUT,
         )
         if isinstance(resp, dict):
             resp.setdefault("sources", sources)

@@ -104,6 +104,21 @@ Key configuration options in `.env`:
 - `MCP_HOST`/`MCP_PORT`: MCP server binding (default: 127.0.0.1:8000)
 - `REST_HOST`/`REST_PORT`: REST API binding (default: 127.0.0.1:8001)
 - `MAX_MEMORY_MB`: Memory limit for HTTP server (default: 75% of system RAM)
+- `TORCH_VERSION`/`TORCH_INDEX_URL`: Optional overrides for PyTorch; start.sh auto-pins torch 2.2.2 with the Intel CPU wheel on x86_64 unless you set these.
+- Intel/x86_64 hosts run CPU-only by default; start.sh pins the CPU wheel automatically, which is slower than Apple Silicon or GPU-backed installs.
+- `CONTROL_DAEMON_PORT`: Preferred control daemon port (default: 8055); the REST shim will try successive ports up to `CONTROL_DAEMON_PORT_MAX`.
+- `CONTROL_DAEMON_PORT_MAX`: Upper bound for control daemon port scanning (default: 8105).
+- `CONTROL_DAEMON_IDLE_SECONDS`: Seconds the control daemon remains alive after finishing a system action (default: 60).
+
+# Control Daemon Behavior
+
+The UI invokes the lightweight control daemon (`src/servers/control_daemon.py`) to run the `start.sh`/`stop.sh` scripts. Recent changes keep that flow lean:
+
+1. The daemon simply runs `stop.sh` followed immediately by `start.sh` during restarts, mirroring the manual workflow so there’s no extra port-wait delay.
+2. If the preferred control daemon port is busy, the REST shim scans upward through `CONTROL_DAEMON_PORT_MAX`, kills any stale control-daemon `uvicorn` processes holding those ports, and reports back the active URI to the UI.
+3. After a system action completes, the daemon notes the idle time and exits automatically once `CONTROL_DAEMON_IDLE_SECONDS` seconds pass without a new request, preventing orphaned monitor processes.
+
+Because the control endpoint can change when the daemon respawns, the UI fetches `/system/status` before it issues actions so it always posts to the current URL.
 
 ## Quick Start
 

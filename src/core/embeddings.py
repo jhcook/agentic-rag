@@ -5,9 +5,13 @@ Embedding utilities and device-safe loader.
 from __future__ import annotations
 import logging
 import os
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Any, List
 from pathlib import Path
 import shutil
+import platform
+import hashlib
+import threading
+import numpy as np
 
 from sentence_transformers import SentenceTransformer  # type: ignore
 
@@ -27,10 +31,23 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 _EMBEDDER: Optional[SentenceTransformer] = None
 _EMBEDDER_NAME: Optional[str] = None
+_EMBEDDER_LOCK = threading.Lock()
 
 OPENAI_EMBED_DIMS = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
+}
+
+DEFAULT_SENTENCE_TRANSFORMER_FALLBACKS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/paraphrase-MiniLM-L3-v2",
+]
+
+# macOS-specific builds of PyTorch 2.5+ have been the most likely to throw the meta tensor error.
+PLATFORM_FALLBACKS = {
+    "Darwin": [
+        "sentence-transformers/all-MiniLM-L6-v2",
+    ],
 }
 
 
@@ -73,6 +90,36 @@ def _clear_sentence_transformer_cache(model_name: str, logger: logging.Logger) -
     return cleared
 
 
+def _clean_incomplete_model_artifacts(model_name: str, logger: logging.Logger) -> bool:
+    """Remove partial/incomplete download artifacts that can poison later loads."""
+    hf_root = Path(os.getenv("HF_HOME") or os.getenv("HUGGINGFACE_HUB_CACHE") or Path.home() / ".cache" / "huggingface" / "hub").expanduser()
+    target_root = hf_root / f"models--{model_name.replace('/', '--')}"
+    if not target_root.exists():
+        return False
+
+    removed = False
+    for pattern in ("**/*.incomplete", "**/tmp_*"):
+        for artifact in target_root.glob(pattern):
+            try:
+                artifact.unlink(missing_ok=True)  # type: ignore[arg-type]
+                removed = True
+            except Exception as exc:
+                logger.debug("Failed to remove artifact %s: %s", artifact, exc)
+    if removed:
+        logger.info("Removed incomplete download artifacts for %s", model_name)
+    return removed
+
+
+def _pin_torch_threads():
+    """Limit PyTorch thread usage to avoid oversubscription on small hosts."""
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+
+
 class LiteLLMEmbedder:
     """Minimal adapter to expose a SentenceTransformer-like interface for LiteLLM embeddings."""
 
@@ -98,6 +145,84 @@ class LiteLLMEmbedder:
         return self._dim
 
 
+class SimpleHashEmbedder:
+    """
+    Extremely lightweight fallback embedder that hashes tokens into a fixed-size
+    bag-of-words vector. This keeps the pipeline operational when torch models
+    cannot be loaded (e.g., CPU-only hosts hitting meta tensor errors).
+    """
+
+    def __init__(self, dim: int = 256):
+        self.dim = dim
+
+    def encode(self, inputs, **_: Any):
+        if isinstance(inputs, str):
+            payload = [inputs]
+        else:
+            payload = list(inputs)
+
+        vectors = []
+        for text in payload:
+            vec = np.zeros(self.dim, dtype=np.float32)
+            for token in str(text).split():
+                digest = hashlib.sha256(token.encode("utf-8")).digest()
+                bucket = int.from_bytes(digest[:4], "big") % self.dim
+                vec[bucket] += 1.0
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec /= norm
+            vectors.append(vec)
+        return np.vstack(vectors)
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self.dim
+
+
+def _parse_fallback_models(primary_model: str) -> List[str]:
+    """Build an ordered list of fallback models based on env vars and platform defaults."""
+    env_fallbacks = [
+        candidate.strip()
+        for candidate in os.getenv("EMBED_MODEL_FALLBACKS", "").split(",")
+        if candidate.strip()
+    ]
+    platform_fallbacks = PLATFORM_FALLBACKS.get(platform.system(), [])
+
+    ordered: List[str] = [primary_model]
+    for candidate in env_fallbacks + platform_fallbacks + DEFAULT_SENTENCE_TRANSFORMER_FALLBACKS:
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+def _load_sentence_transformer(model_name: str, logger: logging.Logger) -> SentenceTransformer:
+    """Load a SentenceTransformer with retries that scrub stale cache artifacts."""
+    last_exc: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            embedder = SentenceTransformer(
+                model_name,
+                device='cpu',
+                backend='torch'
+            )
+            _pin_torch_threads()
+            return embedder
+        except NotImplementedError as exc:
+            last_exc = exc
+            logger.warning("Embedding load attempt %s for '%s' hit meta tensor error: %s", attempt + 1, model_name, exc)
+            _clear_sentence_transformer_cache(model_name, logger)
+            _clean_incomplete_model_artifacts(model_name, logger)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("Embedding model '%s' failed to load on attempt %s: %s", model_name, attempt + 1, exc)
+            _clear_sentence_transformer_cache(model_name, logger)
+            _clean_incomplete_model_artifacts(model_name, logger)
+            # A general failure is unlikely to succeed on an immediate retry; break early.
+            break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"Unknown embedding load failure for {model_name}")
+
+
 def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> Optional[object]:
     """
     Lazily load and cache the embedding model with CPU-first defaults.
@@ -113,74 +238,36 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
     if not reload_needed:
         return _EMBEDDER
 
-    try:
-        logger.info("Loading embedding model: %s", model_name)
-        if model_name in OPENAI_EMBED_DIMS:
-            api_base = os.getenv("OPENAI_API_BASE")
-            _EMBEDDER = LiteLLMEmbedder(model_name, api_base=api_base)
-            _EMBEDDER_NAME = model_name
+    with _EMBEDDER_LOCK:
+        reload_needed = _EMBEDDER is None or _EMBEDDER_NAME != model_name
+        if not reload_needed:
             return _EMBEDDER
 
-        try:
-            import torch  # Local import so unit tests can swap it out
-            torch.set_num_threads(1)
-        except Exception:
-            pass
-        _EMBEDDER = SentenceTransformer(
-            model_name,
-            device='cpu',
-            backend='torch'
-        )
-        _EMBEDDER_NAME = model_name
-        try:
-            import torch
-            torch.set_num_threads(1)
-        except Exception:
-            pass
-    except NotImplementedError as exc:
-        # Torch sometimes leaves weights on 'meta' when device init fails; force a clean CPU load
-        logger.warning("Retrying embedder load on CPU due to meta tensor error: %s", exc)
-        _clear_sentence_transformer_cache(model_name, logger)
-        try:
-            _EMBEDDER = SentenceTransformer(
-                model_name,
-                device='cpu',
-                backend='torch'
-            )
-            _EMBEDDER_NAME = model_name
-        except Exception as inner_exc:
-            logger.warning("User embedding model '%s' failed after CPU retry: %s; falling back", model_name, inner_exc)
-            fallback = "all-MiniLM-L6-v2"
-            _clear_sentence_transformer_cache(fallback, logger)
-            _EMBEDDER = SentenceTransformer(
-                fallback,
-                device='cpu',
-                backend='torch'
-            )
-            _EMBEDDER_NAME = fallback
-        try:
-            import torch
-            torch.set_num_threads(1)
-        except Exception:
-            pass
-    except Exception as exc:
-        # Prefer to keep running with a smaller, local model rather than crash on meta-tensor/device errors
-        fallback = "all-MiniLM-L6-v2"
-        logger.warning(
-            "Embedding model '%s' failed to load (%s). Falling back to '%s'.",
-            model_name, exc, fallback
-        )
-        try:
-            _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch')
-            _EMBEDDER_NAME = fallback
-            import torch
-            torch.set_num_threads(1)
-            logger.info("Fallback embedding model '%s' loaded successfully", fallback)
-        except Exception as inner_exc:
-            logger.critical(
-                "Fallback embedding model '%s' also failed to load: %s", fallback, inner_exc
-            )
-            raise
+        for candidate in _parse_fallback_models(model_name):
+            try:
+                logger.info("Loading embedding model: %s", candidate)
+                if candidate in OPENAI_EMBED_DIMS:
+                    api_base = os.getenv("OPENAI_API_BASE")
+                    _EMBEDDER = LiteLLMEmbedder(candidate, api_base=api_base)
+                    _EMBEDDER_NAME = candidate
+                    return _EMBEDDER
 
-    return _EMBEDDER
+                _EMBEDDER = _load_sentence_transformer(candidate, logger)
+                _EMBEDDER_NAME = candidate
+                return _EMBEDDER
+            except Exception as exc:
+                logger.warning("Embedding model '%s' unavailable (%s)", candidate, exc)
+                continue
+
+        if os.getenv("DISABLE_SIMPLE_EMBEDDER") not in ("1", "true", "True"):
+            logger.error(
+                "All embedding models failed to load; falling back to SimpleHashEmbedder (dim=%s). "
+                "Set DISABLE_SIMPLE_EMBEDDER=1 to disable this behavior.", 256
+            )
+            _EMBEDDER = SimpleHashEmbedder()
+            _EMBEDDER_NAME = "simple-hash"
+            return _EMBEDDER
+
+        raise RuntimeError(
+            f"No embedding models could be loaded from candidates: {_parse_fallback_models(model_name)}"
+        )

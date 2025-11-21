@@ -110,6 +110,8 @@ function App() {
     visible: boolean
   }>({ total: 0, completed: 0, failed: 0, visible: false })
   const [statusMessage, setStatusMessage] = useState<string>('Idle')
+  const [systemAction, setSystemAction] = useState<'idle' | 'starting' | 'stopping' | 'restarting'>('idle')
+  const [controlEndpoint, setControlEndpoint] = useState<string>('http://127.0.0.1:8055')
 
   const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -122,6 +124,19 @@ function App() {
       reader.onerror = reject
       reader.readAsDataURL(file)
     })
+
+  const buildRestUrl = (path: string) => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const normalized = path.startsWith('/') ? path.slice(1) : path
+    return `http://${host}:${port}/${base}/${normalized}`
+  }
+
+  const buildControlUrl = (path: string) => {
+    const normalized = path.startsWith('/') ? path.slice(1) : path
+    return `${controlEndpoint}/${normalized}`
+  }
 
   // Sync UI defaults from env when present (fallback to existing KV values)
   useEffect(() => {
@@ -144,6 +159,41 @@ function App() {
   // run once on mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Poll health to update service badge
+  useEffect(() => {
+    const controller = new AbortController()
+    const check = async () => {
+      try {
+        const res = await fetch(buildRestUrl('/health'), { signal: controller.signal })
+        setSystemStatus(res.ok ? 'running' : 'error')
+      } catch (_) {
+        setSystemStatus('error')
+      }
+    }
+    check()
+    const id = setInterval(check, 10000)
+    return () => {
+      controller.abort()
+      clearInterval(id)
+    }
+  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
+
+  // Attempt to learn control daemon endpoint from REST (if up)
+  useEffect(() => {
+    const discover = async () => {
+      try {
+        const res = await fetch(buildRestUrl('/system/status'))
+        const data = await res.json()
+        if (data?.control_daemon) {
+          setControlEndpoint(data.control_daemon)
+        }
+      } catch (_) {
+        // ignore; will fall back to default
+      }
+    }
+    discover()
+  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
 
   // Poll indexing jobs to show background progress
   useEffect(() => {
@@ -588,6 +638,126 @@ function App() {
     }, 1500)
   }
 
+  const invokeControl = async (action: 'start' | 'stop' | 'restart') => {
+    // Ensure control daemon is up; if REST is reachable try to spawn it once
+    try {
+      const ensure = await fetch(buildRestUrl('/system/ensure_control_daemon'), { method: 'POST' })
+      const ensureData = await ensure.json().catch(() => ({}))
+      if (ensureData?.control_daemon) {
+        setControlEndpoint(ensureData.control_daemon)
+      }
+    } catch (_) {
+      // ignore; will fall back to direct attempts below
+    }
+
+    const endpoints = [
+      { type: 'control', url: buildControlUrl(`/system/${action}`) },
+      { type: 'rest', url: buildRestUrl(`/system/${action}`) },
+    ]
+    let lastErr: string | null = null
+    for (const target of endpoints) {
+      try {
+        const res = await fetch(target.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ env_file: '.env' })
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          const message = data?.detail?.message || data?.detail || data?.error || `HTTP ${res.status}`
+          throw new Error(message)
+        }
+        return { ok: true, via: target.type }
+      } catch (err: any) {
+        lastErr = err?.message || 'unknown error'
+        // If control daemon unreachable and we tried it first, ask REST to spawn it once
+        if (target.type === 'control') {
+          try {
+            await fetch(buildRestUrl('/system/ensure_control_daemon'), { method: 'POST' })
+            // retry control once after spawn
+            const retry = await fetch(buildControlUrl(`/system/${action}`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ env_file: '.env' })
+            })
+            const retryData = await retry.json().catch(() => ({}))
+            if (!retry.ok) {
+              const message = retryData?.detail?.message || retryData?.detail || retryData?.error || `HTTP ${retry.status}`
+              throw new Error(message)
+            }
+            return { ok: true, via: 'control' }
+          } catch (_) {
+            // fall through to next endpoint
+          }
+        }
+      }
+    }
+    throw new Error(lastErr || 'control invocation failed')
+  }
+
+  const handleSystemToggle = async () => {
+    const action = systemStatus === 'running' ? 'stop' : 'start'
+    const nextStatus = action === 'start' ? 'running' : 'stopped'
+    const toastId = 'system-action'
+    setSystemAction(action === 'start' ? 'starting' : 'stopping')
+    toast.loading(`${action === 'start' ? 'Starting' : 'Stopping'} services...`, { id: toastId })
+    try {
+      const result = await invokeControl(action)
+      toast.success(`Services ${action === 'start' ? 'starting' : 'stopping'} via ${result.via}`, {
+        id: toastId,
+        description: 'Follow log/system_control.log for progress'
+      })
+      setSystemStatus(nextStatus)
+    } catch (error: any) {
+      toast.error(`Failed to ${action} services`, {
+        id: toastId,
+        description: error?.message || 'Unexpected error'
+      })
+      setSystemStatus('error')
+    } finally {
+      setSystemAction('idle')
+    }
+  }
+
+  const handleRestart = async () => {
+    const toastId = 'system-restart'
+    setSystemAction('restarting')
+    toast.loading('Restarting services...', { id: toastId })
+    try {
+      const result = await invokeControl('restart')
+      // Poll health for up to ~60s
+      const start = Date.now()
+      let healthy = false
+      while (Date.now() - start < 60000) {
+        try {
+          const res = await fetch(buildRestUrl('/health'))
+          if (res.ok) {
+            healthy = true
+            break
+          }
+        } catch (_) {
+          // continue
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+      }
+      if (healthy) {
+        toast.success('Services restarted', { id: toastId })
+        setSystemStatus('running')
+      } else {
+        toast.error('Restart requested but health did not recover in time', { id: toastId })
+        setSystemStatus('error')
+      }
+    } catch (error: any) {
+      toast.error('Failed to restart services', {
+        id: toastId,
+        description: error?.message || 'Unexpected error'
+      })
+      setSystemStatus('error')
+    } finally {
+      setSystemAction('idle')
+    }
+  }
+
   const items = indexedItems || []
   const remoteItems = backendDocumentList.length > 0 ? backendDocumentList : items
   const totalFiles = backendDocs !== null ? backendDocs : remoteItems.length
@@ -624,9 +794,15 @@ function App() {
               <Button
                 variant={systemStatus === 'running' ? 'outline' : 'default'}
                 size="sm"
-                onClick={() => setSystemStatus(systemStatus === 'running' ? 'stopped' : 'running')}
+                onClick={handleSystemToggle}
+                disabled={systemAction !== 'idle'}
               >
-                {systemStatus === 'running' ? (
+                {systemAction !== 'idle' ? (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    Working...
+                  </>
+                ) : systemStatus === 'running' ? (
                   <>
                     <Pause className="h-4 w-4 mr-2" />
                     Stop Services
@@ -638,6 +814,15 @@ function App() {
                   </>
                 )}
               </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleRestart}
+                disabled={systemAction !== 'idle'}
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Restart
+              </Button>
             </div>
           </div>
         </div>
@@ -646,10 +831,10 @@ function App() {
       <main className="container mx-auto px-6 py-8">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
           <TabsList className="grid w-full max-w-3xl grid-cols-6">
-            <TabsTrigger value="dashboard" className="gap-2">
-              <Database className="h-4 w-4" />
-              Dashboard
-            </TabsTrigger>
+              <TabsTrigger value="dashboard" className="gap-2">
+                <Database className="h-4 w-4" />
+                Dashboard
+              </TabsTrigger>
             <TabsTrigger value="index" className="gap-2">
               <FolderOpen className="h-4 w-4" />
               Index

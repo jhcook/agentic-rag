@@ -323,6 +323,8 @@ else
     echo -e "${YELLOW}Warning: $ENV_FILE file not found, using defaults${NC}"
 fi
 
+ARCH_NAME=$(uname -m)
+
 # Set default values if not in .env
 OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://127.0.0.1:11434}
 MCP_HOST=${MCP_HOST:-127.0.0.1}
@@ -344,6 +346,20 @@ fi
 START_OLLAMA=false
 if [[ "$OLLAMA_HOST" == "127.0.0.1" ]] || [[ "$OLLAMA_HOST" == "localhost" ]]; then
     START_OLLAMA=true
+fi
+
+# Auto-tune Ollama context length when not provided explicitly
+if [[ -z "${OLLAMA_NUM_CTX:-}" ]]; then
+    ARCH_NAME=$(uname -m)
+    if [[ "$ARCH_NAME" == "arm64" ]]; then
+        export OLLAMA_NUM_CTX=4096
+        echo "Detected Apple Silicon (arm64); default OLLAMA_NUM_CTX=4096"
+    else
+        export OLLAMA_NUM_CTX=1024
+        echo "Detected $ARCH_NAME CPU; defaulting OLLAMA_NUM_CTX=1024 for lower memory/CPU usage"
+    fi
+else
+    echo "Using configured OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX}"
 fi
 
 echo -e "${GREEN}=== Agentic RAG Startup Script ===${NC}"
@@ -449,8 +465,8 @@ pull_ollama_models() {
     fi
 
     local models=()
-    models+=("$(extract_ollama_model "$LLM_MODEL_NAME")")
-    models+=("$(extract_ollama_model "$ASYNC_LLM_MODEL_NAME")")
+    models+=("$(extract_ollama_model "${LLM_MODEL_NAME:-}")")
+    models+=("$(extract_ollama_model "${ASYNC_LLM_MODEL_NAME:-}")")
 
     # Deduplicate and skip empty entries
     local seen=""
@@ -544,6 +560,29 @@ echo -e "${YELLOW}Clearing Python bytecode cache...${NC}"
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true
 echo -e "${GREEN}Bytecode cache cleared${NC}"
+
+# Optional torch pinning based on platform (Intel/x86_64 uses a CPU-friendly default)
+TORCH_VERSION=${TORCH_VERSION:-}
+TORCH_INDEX_URL=${TORCH_INDEX_URL:-}
+if [[ -z "$TORCH_VERSION" && "$ARCH_NAME" == "x86_64" ]]; then
+    TORCH_VERSION="2.2.2"
+    echo "Detected x86_64; preferring torch==$TORCH_VERSION (override with TORCH_VERSION env var)"
+fi
+
+if [[ -n "$TORCH_VERSION" ]]; then
+    TORCH_ARGS=("torch==${TORCH_VERSION}")
+    # Prefer the CPU/MKL channel on Intel unless a custom index is provided
+    if [[ -n "$TORCH_INDEX_URL" ]]; then
+        TORCH_ARGS+=("--index-url" "$TORCH_INDEX_URL")
+    elif [[ "$ARCH_NAME" == "x86_64" ]]; then
+        TORCH_ARGS+=("--index-url" "https://download.pytorch.org/whl/cpu")
+    fi
+    echo -e "${YELLOW}Installing pinned torch: ${TORCH_ARGS[*]}${NC}"
+    if ! pip install "${TORCH_ARGS[@]}" 2>&1; then
+        echo -e "${RED}Warning: Failed to install torch (${TORCH_ARGS[*]}); will fall back to requirements.txt default${NC}"
+        TORCH_VERSION=""
+    fi
+fi
 
 # Install requirements
 echo -e "${YELLOW}Installing requirements...${NC}"
