@@ -1,0 +1,181 @@
+
+
+Engineering and Technology Operations Executive
+
+
+
+As an accomplished leader approaching three decades of experience as a prominent system engineer in multiple countries, I possess a high degree of emotional intelligence and am well-versed in establishing, sustaining, and enforcing professional standards that drive success. Throughout my career, I have demonstrated expertise in personnel management, process improvement, and secure mission-critical on-premises and cloud-native infrastructure management.
+
+My strengths include exceptional business acumen, progressive leadership, and effective communication skills. I am a pragmatic and proactive professional with a keen eye for detail, focused on orchestrating sophisticated self-healing cloud-based distributed systems. Currently, I am seeking a leadership role in a meritocratic environment, where I can leverage my skills and experience to drive innovation and growth for the organization.
+
+Additionally, I have held a high-level security clearance from both American and British governments, enabling me to work with sensitive data and secure systems. I am eager to join a forward-thinking company that is at the forefront of emerging technology and poised for success.
+
+RELEVANT ACCOMPLISHMENTS
+
+Led transformation efforts for a global software provider as an executive, successfully improving underperforming staff, and revolutionizing technical debt. Implemented measures including deprecating components, upgrading configuration management, and implementing redundancy, resulting in $1,000,000 in annual savings, improved reliability, and increased programmatic consumption for subscribers and the front office.
+
+Successfully designed and led the transformation of a cloud-native IaaS to Kubernetes for global energy providers. I refreshed infrastructure as code, CI/CD, backup, monitoring, configuration, and capacity and identity management.
+
+As an early adopter of Kubernetes, delivered Red Hat OpenShift Container Platform on OpenStack and Azure for major UK government departments, passing audits and testing for OFFICIAL-SENSITIVE environments.
+
+Designed and implemented complex orchestration software for middle office personnel to manage virtualized compute, NetApp, and Oracle RAC installations in a high-volume trading environment, prior to public cloud.
+
+EXPERIENCE
+
+PROPERTYME, Sydney, AU • Jun 2023-
+We ease the burden of managing dozens of properties and occupying tenants. Our software gives property managers more time to focus on adding value and enjoying life – things that matter. Engineers at PropertyMe develop and operate our software. And we are key contributors to the features and products that enable the company’s vision.
+
+Site Reliability Engineering Lead
+I am a senior engineering lead facilitating SRE principles in the business. I am responsible for ensuring the confidentiality, integrity, and availability of the systems and infrastructure that deliver PropertyMe’s software.
+
+Accomplishments
+• The company used SRE in name only. I developed a strategy and content, prepared key stakeholders, trained engineers, and interfaced with product owners. I am responsible for the entirety of the company’s journey implementing site reliability engineering.
+• Implementing SRE across engineering teams requires auditable temporary access to production resources. I augmented AWS identity centre and AWS Organizations and implementing instrumentation for web-based, on-demand and API access to cloud resources logged to AWS CloudTrail.
+• Recent notable exploits require focus on protecting customers from phishing and email scams. Major providers such as Google and Yahoo have substantial updates to authentication and spam prevention requirements. I prepared the strategy and worked with marketing and operations to manage disruption of thousands of technology integrators. I implemented strong SPF, DKIM, and DMARC policies rejecting email that failed authentication and protected millions of users’ messages traversing PropertyMe platforms.
+• The main data store was MySQL 5.7. It is no longer supported and soon to require extended support from AWS. I worked with engineering to ensure dozens of tables with several Petabytes of storage would migrate to MySQL 8 addressing concerns such as foreign key constraints, character set, and collation. I designed a blue/green deployment strategy that delivered a major upgrade with minimal downtime.
+• The company’s application and platforms constantly receive malicious traffic both of foreign and competitor origin. I worked with product engineering and Cloudflare to onboard PropertyMe platforms to their CDN and WAF technology implemented and maintained entirely in code.
+• After ten years, the company’s infrastructure as code was aged and spread across a complex and disjointed array of tools. I developed a next-generation infrastructure as code solution using provider’s remote APIs, Python API bindings, and implemented GitOps patterns that implement and maintain the lifecycle of AWS and Cloudflare assets.
+
+INTERNATIONAL MOVE, London, UK-Sydney, AU • Nov 2022-Jun 2023
+The COVID pandemic and the Russian attack on Ukraine had tremendous effects on global markets and quality of life in the EU. As such, my family decided to relocate as my wife is from Australia, and we have Aussie twin daughters. 
+
+PUBLICIS SAPIENT, London, UK • Jan 2022-Oct 2022
+Help companies and the public sector keep up with the pace of technological, societal and cultural change—all while meeting the ever-evolving demands and expectations of their customers. How? By elevating customer experiences, modernizing organizations and unlocking value through technology and data. By setting bold but achievable visions for digital transformation, we empower our business partners with true speed and agility. 
+
+Director of Technology, Cloud Engineering
+I drive Publicis Sapient Cloud transformation initiatives in collaboration with clients together with pre- and post-sales efforts. This is a highly technical, client facing engineering delivery role responsible for the end-to-end customer cloud enablement experience. 
+
+Accomplishments
+• Take ownership of the technical delivery engagement, leading the design and implementation of cutting-edge solutions, including architecture design sessions, implementation projects, and proofs of concept, from start to finish.
+• Lead and mentor global, multidisciplinary project teams, driving collaboration and knowledge-sharing to deliver successful projects and drive innovation.
+• Take charge as the engineering lead, leveraging the latest technologies to design and develop cloud architecture, infrastructure automation, and network security solutions.
+• Contribute to business development by creating market-leading cloud propositions and accelerators for enterprise-scale clients, building relationships at all levels.
+• Stay abreast of the latest technology trends in the cloud market space and share your knowledge through thought leadership articles, blog posts, and customer connect forums.
+• Proven track record building strong technical relationships with senior executives and driving cloud consumption in large and highly strategic accounts.
+• Provide technical stewardship to globally distributed technology teams, ensuring their success and growth while maintaining the highest standards of technical excellence.
+
+AUTOGRID SYSTEMS, London, UK • May 2019-Oct 2021
+An American firm that provides software products and services to energy providers. The Company designs and develops software products that analyses smart meter and energy usage information for utilities.
+
+Vice President of Operations, Jan 2021-Oct 2021
+As a leader of globally distributed teams of certified AWS and Kubernetes experts, I oversaw the design and delivery of the company's programmatically consumable software portfolio using infrastructure as code and workflows. My teams ensured exceptional uptime and maintained large infrastructure footprints across North America, Europe, and the Asia Pacific, including Australia. The cloud-agnostic design, managed with Kubernetes Ansible Operators, provided unparalleled flexibility and scalability. I fostered a culture of excellence in my teams, who continually innovated to deliver world-class cloud-native solutions, creating a competitive advantage for the company.
+
+
+
+Accomplishments
+• As a senior manager, I set strategic objectives and maintain the company's leadership in a large, emerging market.
+• Fluent in infrastructure transformation to public/private cloud design strategy and security implications.
+• I designed custom workflows to increase sales velocity, reinforce compliance and eliminate bottlenecks in the estate's applications and individual components.
+• Proficient in diverse people management skills, including negotiation, collaboration and influence.
+• Manage the company's infrastructure portfolio, including P&L, monetization and end-user product design.
+• Manage customer-owned cloud environments and resolve technical challenges to maintain strong technical relationships.
+• Implemented Kubernetes Operators to deliver consumable products both internally and externally.
+• Designed and implemented a secure, Kubernetes-native message bus powered by Kafka, ingesting data from thousands of client edge devices.
+• Successfully managed the Ansible migration from 2.4 to 2.10 with minimal disruption, porting tens of thousands of lines of code containing non-idempotent, backwards incompatible modules and Kubernetes objects.
+
+Director of Infrastructure, May 2019-Jan 2021
+As a leader, I managed a global team of cloud-native system engineers who designed cloud-agnostic infrastructure with Terraform, automated with Python and managed with Ansible. We maintained large infrastructure footprints across multiple global regions, including North America, Europe, Asia, and Australia, while also implementing sovereign identity management for the company.
+
+Accomplishments
+• Enabled secure and easy consumption of cloud-native resources by achieving 100% convergence for multiple teams. • Revolutionized the cloud infrastructure, erased technical debt, and improved reliability increasing client retention.
+• Saved the company $1,000,000 per annum consolidating redundant cloud resources after a comprehensive audit.
+• Implemented centralized identity management and hierarchical deployment of master replicas, erasing audit concerns and increasing security.
+• Transformed the company's infrastructure to Kubernetes using EKS, reducing costs while improving reliability.
+• Implemented AWS Step Functions and Prometheus monitoring, providing proactive notification to internal and external clients about potential availability issues.
+• Migrated Cloudera Distribution Hadoop to AWS EMR, improving performance and considerable cost savings.
+• Automated workflows with Python, Ansible, and AWS Lambda, improving efficiency and reducing manual labour.
+• Transitioned the estate to Terraform, making provisioning programmatic and repeatable for its entire lifetime.
+• Introduced Cloudbees Jenkins integrated with GitHub and the internal identity provider, delivering Kubernetes-native and fully automated CICD pipelines.
+• Led technical changes to achieve NERC-CIP attestation and SOC2, ensuring regulatory compliance.
+• Implemented horizontal pod autoscaling with custom metrics to achieve true elasticity using Kubernetes.
+
+NATIONWIDE, London, UK • Oct 2018-Mar 2019 (Consultant)
+British mutual financial institution, the seventh largest cooperative financial institution and the largest building society in the world with over 15 million members.
+
+Principal Engineer
+The institution underwent further iterations maturing the Open Banking implementation. I was responsible for orchestrating each large platform installation as code, or IaC. This consisted of Red Hat OpenShift, Google’s Apigee, and Datastax Cassandra using Ansible Tower with ServiceNow as the CMDB. With success, I was selected to lead the business’s entire infrastructure transformation to cloud-native Kubernetes.
+
+Accomplishments
+•	The subject matter expert influencing multiple groups across business silos for digital transformation.
+•	Introduced the cloud-native paradigm including immutable and ephemeral patterns.
+•	Interface with Red Hat and the upstream community to normalise emerging tech for business consumption.
+•	Created a distributed Git workflow with multiple upstream bare repositories in VSTS for code promotion.
+•	Assisted Windows personnel with Ansible and the existing estate to become Kubernetes focused.
+•	Used Ansible K8S module for advanced automated configuration of Kubernetes / OpenShift.
+•	Introduced the Kubernetes operator framework creating a truly API driven, consumable infrastructure.
+
+ 
+BRITISH TELECOM, London, UK • Jun 2018-Sep 2018 (Consultant)
+A British multinational telecommunication holding company headquartered in London, United Kingdom. It has operations in around 180 countries; is the largest provider of fixed-line, broadband, and mobile services in the UK; provides subscription television; and IT services.
+
+DNS Consultant
+The broadband section of the business underwent a transition from managed DNS to OX PowerDNS. The new software is managed by BT employees. As such, the new deployment and management processes needed to be designed and implemented with mature patterns.
+
+Accomplishments
+•	Ensured OFCOM superiority was achieved after transition.
+•	Identified internal patterns and adjusted technical gaps with PowerDNS processes.
+•	Interface with Open-Xchange technical personnel to adopt the software and establish internal processes.
+•	Identified opportunities to implement the control plane on public cloud technology.
+
+DEUTSCHE BANK, London, UK • Oct 2017-Apr 2018 (Consultant)
+Deutsche Bank chooses to base its largest investment banking operations in the City of London, a centre of global flows of trade and wealth. We use this position as a global bank to keep our UK clients connected to markets, and help clients do business all over the world. 
+
+Principal Architect
+The bank is the largest licensor of Red Hat’s OpenShift platform as a service, or Kubernetes distribution. Risk Architecture and Design are responsible for delivering the bank’s largest portfolio. I am tasked with coordinating geographically disparate teams on boarding to OpenShift and working alongside platform engineering to mature the bank’s global OpenShift implementation. 
+
+Accomplishments
+•	Engage with the platform engineering team delivering best practices and iterations of the platform to match vendor releases.
+•	Work with software architects to lift and shift or decompose existing code bases and on board to OpenShift, complete the CI/CD path, and deliver products as code and Kubernetes objects.
+•	Maintain sync with upstream projects to adopt emerging technology components such as the service catalogue.
+•	Liaise with departments to revolutionise third-party components that are critical dependencies of the bank’s applications.
+
+DEPARTMENT FOR EDUCATION (UK GOVERNMENT), London, UK •Sep 2017-Dec 2017 (Consultant)
+The Department for Education is responsible for children’s services and education, including higher and further education policy, apprenticeships, and wider skills in England. We work to provide children’s services and education that ensure opportunity is equal for all, no matter what their background or family circumstances.
+
+Principal Systems Engineer
+The Department for Education is the UK government’s third-largest consumer of cloud-native technology. The recent disruption Kubernetes has delivered to the distributed systems ecosystem has not gone unnoticed. The department became aware of OpenShift deployments originating in the Department for Business, Energy & Industrial Strategy. I was tasked with providing expertise from hands-on experience with OpenShift and cloud-native patterns to deliver a proof of concept for adoption by the department.
+
+Accomplishments
+•	Ported an entire OpenShift stack from OpenStack to Microsoft Azure delivered with Ansible configuration management software.
+•	Worked with developers to integrate OpenShift on Azure with Microsoft’s Visual Studio Team Services and generate a proof-of-concept application.
+•	Successfully displayed infrastructure convergence, ephemeral containers, and microservice design patterns for department-wide adoption.
+DBEIS (UK GOVERNMENT), London, UK • Mar 2016-Sep 2017 (Consultant)
+The Department for Business, Energy, and Industrial Strategy was for economic growth. The department invested in skills and education to promote trade, boost innovation, and help people to start and grow a business. BEIS protected consumers and reduced the impact of regulation. BEIS was a ministerial department supported by 47 agencies.
+
+Principal Systems Engineer
+The UK’s export licensing system known as SPIRE was redeveloped using state-of-the-art software and infrastructure patterns. As the lead systems engineer, I was tasked with choosing a G-Cloud provider, designing, and implementing the infrastructure as well as interfacing with developers to integrate their codebase to new paradigms in distributed systems. 
+
+Accomplishments
+•	Created Docker containers to provide public services such as DNS using ephemeral patterns.
+•	Completed in-depth security analysis and penetration testing from NCC Group.
+•	Introduced developers to the ephemeral pattern and Red Hat OpenShift 3.
+•	Orchestrated multiple Red Hat OpenShift cluster instances using Ansible with OpenStack.
+•	Orchestrated the Red Hat Enterprise Linux platform in Red Hat OpenStack with Ansible playbooks.
+•	Introduced S2I builders with Red Hat OpenShift 3 with GitHub producing Docker images.
+•	Created an advanced CI/CD cloud infrastructure using Jenkins with SNAT/DNAT by pfSense.
+
+SECNIX SYSTEMS, London, UK • Jun 2010-2019
+Principal Engineer
+Provide hands-on engineering and architectural leadership experience to mission-critical cloud-native infrastructure. Develop reusable provisioning, monitoring and backup software implementations for trend monitoring, problem detection, runtime configuration, and continuous integration/deployment. Encapsulate logic in Go/Sh/Python and provide message-oriented orchestration.
+
+MAN INVESTMENTS, London, UK • July 2009-Jan 2010
+Senior Systems Engineer (AHL Prop Trading)
+A member of an elite three-person team with remit over Linux development, integration, and productising of AHL proprietary and client trading systems. Develop and implement reliable and scalable technology for inclusion in production systems. 
+
+TRAFIGURA, London, UK • Jan 2007-July 2009
+Chief Systems Architect
+Supervised technical activities relating to systems architecture and technical approach for all trading applications and platforms deployed by Trafigura and related entities globally. Researched, analyzed, and deployed emerging technologies to improve and enhance existing systems and resolve complex technical problems.
+
+OILSPACE, Moscow, Russia • Jan 2005-Dec 2006
+Head of Infrastructure Engineering
+Deep technical leadership position for talented Linux platform, network, and storage product development teams; formulated long- and short-term strategic technology plans.
+
+US NAVY, Bangor, WA & New London, CT • Jun 1996-Dec 2004
+A submarine fire control technician responsible for all shipboard weapon, sonar, and navigation systems. I was a platform instructor delivering complex next-generation submarine networks to the entire fleet. I attended several courses for leadership, technical troubleshooting, and shipboard networking. 
+
+TRAINING
+Advanced Architecting on AWS / Security Engineering on AWS / Developing on AWS / Red Hat Certified Engineer / OpenShift Enterprise Development / OpenShift Enterprise Administration
+
+EDUCATION
+BS in Computer Science, Eastern Connecticut State University, Willimantic, CT
+Honours: cum laude

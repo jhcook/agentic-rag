@@ -12,7 +12,7 @@ import os
 from src.core.extractors import _extract_text_from_file
 from src.core.indexer import index_path, upsert_document
 from src.core.store import load_store, save_store
-from src.core.rag_core import _ensure_store_synced, _rebuild_faiss_index
+import src.core.rag_core as rag_core
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +56,9 @@ def start_worker(env: Optional[Dict[str, str]] = None):
                 JOBS[job_id] = job
             try:
                 load_store()
-                _rebuild_faiss_index()
+                rag_core._rebuild_faiss_index()
                 # ensure any external changes are reflected in the current store
-                _ensure_store_synced()
+                rag_core._ensure_store_synced()
                 save_store()
             except Exception as exc:  # pragma: no cover
                 logger.error("Failed to refresh store after job %s: %s", job_id, exc, exc_info=True)

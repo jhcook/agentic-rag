@@ -126,26 +126,42 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
             torch.set_num_threads(1)
         except Exception:
             pass
-        _EMBEDDER = SentenceTransformer(
-            model_name,
-            device='cpu',
-            backend='torch'
-        )
-        _EMBEDDER_NAME = model_name
+        
+        # Try loading with default settings first
+        try:
+            _EMBEDDER = SentenceTransformer(
+                model_name,
+                device='cpu',
+                backend='torch',
+                model_kwargs={"trust_remote_code": True}
+            )
+            _EMBEDDER_NAME = model_name
+        except Exception as exc:
+            logger.warning("Initial load of '%s' failed: %s. Retrying with cache clear and CPU force.", model_name, exc)
+            _clear_sentence_transformer_cache(model_name, logger)
+            _EMBEDDER = SentenceTransformer(
+                model_name,
+                device='cpu',
+                backend='torch',
+                model_kwargs={"trust_remote_code": True}
+            )
+            _EMBEDDER_NAME = model_name
+
         try:
             import torch
             torch.set_num_threads(1)
         except Exception:
             pass
-    except NotImplementedError as exc:
-        # Torch sometimes leaves weights on 'meta' when device init fails; force a clean CPU load
-        logger.warning("Retrying embedder load on CPU due to meta tensor error: %s", exc)
-        _clear_sentence_transformer_cache(model_name, logger)
+    except Exception as exc:
+        # Catch ALL errors during load (NotImplementedError, OSError, etc)
+        logger.warning("Retrying embedder load on CPU due to error: %s", exc)
         try:
+            _clear_sentence_transformer_cache(model_name, logger)
             _EMBEDDER = SentenceTransformer(
                 model_name,
                 device='cpu',
-                backend='torch'
+                backend='torch',
+                model_kwargs={"trust_remote_code": True}
             )
             _EMBEDDER_NAME = model_name
         except Exception as inner_exc:
