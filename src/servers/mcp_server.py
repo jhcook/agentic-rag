@@ -129,6 +129,10 @@ from src.servers.mcp_app.metrics import refresh_prometheus_metrics  # re-exporte
 
 def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     """Handle shutdown gracefully with proper cleanup."""
+    import logging
+    # Suppress logging errors (like 'I/O operation on closed file') during shutdown
+    logging.raiseExceptions = False
+    
     global SHUTTING_DOWN
 
     if SHUTTING_DOWN:
