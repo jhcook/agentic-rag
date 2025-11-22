@@ -12,17 +12,24 @@ Agentic RAG (Retrieval-Augmented Generation) is a project designed to enhance th
 agentic-rag/
 ├── src/
 │   ├── core/
-│   │   └── rag_core.py          # Core RAG functionality and vector operations
+│   │   ├── factory.py           # Factory pattern for RAG backends (Local/Remote)
+│   │   ├── interfaces.py        # RAGBackend protocol definition
+│   │   ├── rag_core.py          # Core RAG functionality and vector operations
+│   │   ├── embeddings.py        # Embedding model wrapper
+│   │   ├── extractors.py        # File content extraction
+│   │   ├── faiss_index.py       # FAISS vector store management
+│   │   ├── llm_client.py        # LLM client wrapper
+│   │   └── store.py             # Document store implementation
 │   ├── servers/
-│   │   ├── mcp_server.py       # Model Context Protocol server
-│   │   └── rest_server.py      # FastAPI REST API server
+│   │   ├── mcp_server.py        # Model Context Protocol server
+│   │   ├── rest_server.py       # FastAPI REST API server
+│   │   └── mcp_app/             # MCP server application logic
 │   ├── clients/
 │   │   └── cli_agent.py         # Command-line client for REST API
 │   └── utils/
 │       ├── debug_test.py        # Debugging utilities
 │       ├── simple_indexer.py    # Basic file indexing (no embeddings)
 │       └── metrics_dashboard.py # Terminal metrics dashboard + log tail
-│       └── pylance_check.py     # Pylance validation tools
 ├── config/
 │   └── mcp/
 │       ├── mcp.yaml             # MCPHost configuration
@@ -32,17 +39,13 @@ agentic-rag/
 ├── tests/                       # Test suite
 ├── cache/                       # Vector store and cache files
 ├── log/                         # Log files
-│   ├── mcp_server.log          # MCP server process logs
-│   ├── mcp_server_access.log   # MCP server access logs
-│   ├── rest_server.log         # REST API process logs
-│   ├── rest_server_access.log  # REST API access logs
-│   ├── ollama_server.log       # Ollama server logs
-│   └── start.log                # Startup script output
 └── scripts/                     # Startup and utility scripts
 ```
 
 ## Features
 
+- **Hybrid Architecture**: Support for both Monolithic (Local) and Distributed (Remote) deployments
+- **Role-Based Startup**: flexible `start.sh` script to launch specific components (`monolith`, `server`, `client`)
 - **Document Indexing**: Index text documents for efficient retrieval using FAISS vector store
 - **Search Functionality**: Perform semantic searches on indexed documents using natural language queries
 - **Answer Synthesis**: Generate answers based on retrieved documents using LLM integration
@@ -60,7 +63,7 @@ To get started with the Agentic RAG project, clone the repository and install th
 $ git clone https://github.com/yourusername/agentic-rag.git
 ...
 $ cd agentic-rag
-agentic-rag$ ./start.sh
+agentic-rag$ ./start.sh --role monolith
 ...
 ```
 
@@ -97,8 +100,10 @@ agentic-rag$ cp .env.example .env
 
 Key configuration options in `.env`:
 
+- `RAG_BACKEND_TYPE`: Backend type (`local` or `remote`)
+- `RAG_REMOTE_URL`: URL for remote backend (if type is `remote`)
 - `EMBED_MODEL_NAME`: Embedding model (default: Snowflake/arctic-embed-xs)
-- `LLM_MODEL_NAME`: LLM model for completions (default: ollama/qwen2.5:0.5b)
+- `LLM_MODEL_NAME`: LLM model for completions (default: ollama/qwen2.5:3b)
 - `OLLAMA_API_BASE`: Ollama server URL (default: 127.0.0.1:11434)
 - `RAG_DB`: Path to document store (default: ./cache/rag_store.jsonl)
 - `MCP_HOST`/`MCP_PORT`: MCP server binding (default: 127.0.0.1:8000)
@@ -109,23 +114,27 @@ Key configuration options in `.env`:
 
 ### Using the Startup Script (Recommended)
 
-The easiest way to start all services:
+The `start.sh` script supports different roles for flexible deployment:
 
-```bash
-agentic-rag$ ./start.sh
-...
-```
+1. **Monolith Mode** (Default): Runs everything (Ollama, REST API, MCP Server) locally.
+   ```bash
+   ./start.sh --role monolith
+   ```
 
-This will:
+2. **Server Mode**: Runs only the REST API and Ollama (useful for a dedicated backend server).
+   ```bash
+   ./start.sh --role server
+   ```
 
-1. Create/activate Python virtual environment (`.venv`)
-2. Install all dependencies from `requirements.txt`
-3. Start Ollama server (if configured locally)
-4. Start HTTP/MCP server on port 8000
-5. Start REST API server on port 8001
-6. Log all output to `log/start.log` with timestamps
+3. **Client Mode**: Runs only the MCP Server (connects to a remote REST API).
+   ```bash
+   ./start.sh --role client
+   ```
 
-All services run in the background with comprehensive error handling and automatic rollback on failure.
+**Additional Flags:**
+- `--skip-rest`: Skip starting the REST API server
+- `--skip-ui`: Skip starting the UI (if applicable)
+- `--env FILE`: Use a custom environment file
 
 To stop all services:
 
@@ -140,24 +149,24 @@ agentic-rag$ ./stop.sh
 ./start.sh [OPTIONS]
 
 Options:
-  -h, --help              Show detailed help
-  --env FILE              Use custom environment file (default: .env)
-  --venv NAME             Use custom venv name (default: .venv)
-  --python CMD            Python command to use (default: python3.11)
-  --recreate-venv         Force recreation of virtual environment
+  --role {monolith,server,client}  Startup role (default: monolith)
+  --skip-rest                      Skip starting REST API
+  --skip-ui                        Skip starting UI
+  -h, --help                       Show detailed help
+  --env FILE                       Use custom environment file (default: .env)
+  --venv NAME                      Use custom venv name (default: .venv)
+  --python CMD                     Python command to use (default: python3.11)
+  --recreate-venv                  Force recreation of virtual environment
 ```
 
 Examples:
 
 ```bash
-# Use production environment
-agentic-rag$ ./start.sh --env .env.production
+# Start as a backend server
+agentic-rag$ ./start.sh --role server
 
-# Recreate virtual environment
-agentic-rag$ ./start.sh --recreate-venv
-
-# Use Python 3.12
-agentic-rag$ ./start.sh --python python3.12
+# Start as a client connecting to a remote backend
+agentic-rag$ ./start.sh --role client
 ```
 
 ### Manual Startup
@@ -170,26 +179,17 @@ If you prefer to start services individually:
 ollama serve
 ```
 
-#### Terminal 2: Start HTTP/MCP Server
-
-```bash
-python -m src.servers.mcp_server
-```
-
-Expected output:
-
-```text
-2025-11-15 22:36:13,413 - rag_core - INFO - Rebuilding FAISS index from store documents
-INFO:     Started server process [23579]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-```
-
-#### Terminal 3: Start REST API Server
+#### Terminal 2: Start REST API Server (Backend)
 
 ```bash
 uvicorn src.servers.rest_server:app --host 127.0.0.1 --port 8001
+```
+
+#### Terminal 3: Start MCP Server (Frontend/Client)
+
+```bash
+# Ensure RAG_BACKEND_TYPE=remote and RAG_REMOTE_URL are set in .env if connecting to REST API
+python -m src.servers.mcp_server
 ```
 
 Expected output:

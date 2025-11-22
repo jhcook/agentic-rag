@@ -1,4 +1,4 @@
-import http_server
+import src.servers.mcp_server as http_server
 
 
 def test_extract_url_from_query():

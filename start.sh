@@ -154,6 +154,16 @@ OPTIONS:
     --skip-ui
         Do not start the UI dev server
 
+    --skip-rest
+        Do not start the REST API server
+
+    --role ROLE
+        Specify the node role: monolith, server, or client
+        Default: monolith
+        - monolith: Starts all services (Ollama, MCP, REST, UI)
+        - server: Starts backend services (Ollama, MCP, REST). Skips UI.
+        - client: Starts frontend services (UI, REST proxy). Skips Ollama, MCP.
+
 ENVIRONMENT CONFIGURATION (.env):
     The script reads configuration from a .env file in the current directory.
     If .env is not found, default values are used.
@@ -267,6 +277,9 @@ PYTHON_CMD="python3.11"
 RECREATE_VENV=false
 SKIP_MODEL_PULL=false
 START_UI=true
+START_REST=true
+ROLE="monolith"
+START_MCP=true
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -286,6 +299,10 @@ while [[ $# -gt 0 ]]; do
             PYTHON_CMD="$2"
             shift 2
             ;;
+        --role)
+            ROLE="$2"
+            shift 2
+            ;;
         --recreate-venv)
             RECREATE_VENV=true
             shift
@@ -298,16 +315,38 @@ while [[ $# -gt 0 ]]; do
             START_UI=false
             shift
             ;;
+        --skip-rest)
+            START_REST=false
+            shift
+            ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
             echo ""
-            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--recreate-venv] [--skip-model-pull] [--skip-ui]"
+            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--role ROLE] [--recreate-venv] [--skip-model-pull] [--skip-ui]"
             echo ""
             echo "Run './start.sh --help' for detailed information"
             exit 1
             ;;
     esac
 done
+
+# Apply role-based configuration
+case $ROLE in
+    monolith)
+        # Default settings: everything on
+        ;;
+    server)
+        START_UI=false
+        ;;
+    client)
+        START_MCP=false
+        # We will disable Ollama later in the script
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown role '$ROLE'. Valid roles: monolith, server, client${NC}"
+        exit 1
+        ;;
+esac
 
 # Create log directory if it doesn't exist
 mkdir -p log
@@ -323,6 +362,8 @@ else
     echo -e "${YELLOW}Warning: $ENV_FILE file not found, using defaults${NC}"
 fi
 
+ARCH_NAME=$(uname -m)
+
 # Set default values if not in .env
 OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://127.0.0.1:11434}
 MCP_HOST=${MCP_HOST:-127.0.0.1}
@@ -331,6 +372,12 @@ RAG_HOST=${RAG_HOST:-${REST_HOST:-127.0.0.1}}
 RAG_PORT=${RAG_PORT:-${REST_PORT:-8001}}
 UI_HOST=${UI_HOST:-0.0.0.0}
 UI_PORT=${UI_PORT:-5173}
+
+# Intel/MKL Optimizations
+# Required for FAISS/NumPy on some systems to prevent crashes and optimize performance
+export KMP_DUPLICATE_LIB_OK=TRUE
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 
 # Extract host and port from OLLAMA_API_BASE
 OLLAMA_HOST=$(echo "$OLLAMA_API_BASE" | sed -E 's|https?://([^:/]+).*|\1|')
@@ -342,16 +389,51 @@ fi
 
 # Determine if Ollama should be started locally
 START_OLLAMA=false
-if [[ "$OLLAMA_HOST" == "127.0.0.1" ]] || [[ "$OLLAMA_HOST" == "localhost" ]]; then
-    START_OLLAMA=true
+if [[ "$ROLE" != "client" ]]; then
+    if [[ "$OLLAMA_HOST" == "127.0.0.1" ]] || [[ "$OLLAMA_HOST" == "localhost" ]]; then
+        START_OLLAMA=true
+    fi
+fi
+
+# Auto-tune Ollama context length when not provided explicitly
+if [[ -z "${OLLAMA_NUM_CTX:-}" ]]; then
+    OS_TYPE=$(uname -s)
+    if [[ "$ARCH_NAME" == "arm64" ]] && [[ "$OS_TYPE" == "Darwin" ]]; then
+        # Check memory size on macOS
+        TOTAL_MEM=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        # If RAM > 20GB (approx 21474836480 bytes), assume 32GB+ machine and allow larger context
+        if [[ "$TOTAL_MEM" -gt 21474836480 ]]; then
+            export OLLAMA_NUM_CTX=4096
+            echo "Detected Apple Silicon with high RAM (>20GB); default OLLAMA_NUM_CTX=4096"
+        else
+            export OLLAMA_NUM_CTX=1024
+            echo "Detected Apple Silicon with standard RAM; default OLLAMA_NUM_CTX=1024 (optimized for monolith)"
+        fi
+    elif [[ "$ARCH_NAME" == "arm64" ]]; then
+        export OLLAMA_NUM_CTX=1024
+        echo "Detected ARM64 (Linux); default OLLAMA_NUM_CTX=1024"
+    else
+        export OLLAMA_NUM_CTX=1024
+        echo "Detected $ARCH_NAME CPU; defaulting OLLAMA_NUM_CTX=1024 for lower memory/CPU usage"
+    fi
+else
+    echo "Using configured OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX}"
 fi
 
 echo -e "${GREEN}=== Agentic RAG Startup Script ===${NC}"
+echo "Role: $ROLE"
 echo "Virtual environment: $VENV_NAME"
 echo "Python command: $PYTHON_CMD"
 echo "Ollama API: $OLLAMA_API_BASE (start locally: $START_OLLAMA)"
-echo "MCP Server: http://${MCP_HOST}:${MCP_PORT}"
+if [[ "$START_MCP" == true ]]; then
+    echo "MCP Server: http://${MCP_HOST}:${MCP_PORT}"
+else
+    echo "MCP Server: skipped (client role)"
+fi
 echo "REST API: http://${RAG_HOST}:${RAG_PORT}"
+if [[ "$START_REST" == false ]]; then
+    echo "REST API: skipped (--skip-rest)"
+fi
 if [[ "$START_UI" == true ]]; then
     echo "UI Dev Server: http://${UI_HOST}:${UI_PORT}"
 else
@@ -545,6 +627,29 @@ find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true
 echo -e "${GREEN}Bytecode cache cleared${NC}"
 
+# Optional torch pinning based on platform (Intel/x86_64 uses a CPU-friendly default)
+TORCH_VERSION=${TORCH_VERSION:-}
+TORCH_INDEX_URL=${TORCH_INDEX_URL:-}
+if [[ -z "$TORCH_VERSION" && "$ARCH_NAME" == "x86_64" ]]; then
+    TORCH_VERSION="2.2.2"
+    echo "Detected x86_64; preferring torch==$TORCH_VERSION (override with TORCH_VERSION env var)"
+fi
+
+if [[ -n "$TORCH_VERSION" ]]; then
+    TORCH_ARGS=("torch==${TORCH_VERSION}")
+    # Prefer the CPU/MKL channel on Intel unless a custom index is provided
+    if [[ -n "$TORCH_INDEX_URL" ]]; then
+        TORCH_ARGS+=("--index-url" "$TORCH_INDEX_URL")
+    elif [[ "$ARCH_NAME" == "x86_64" ]]; then
+        TORCH_ARGS+=("--index-url" "https://download.pytorch.org/whl/cpu")
+    fi
+    echo -e "${YELLOW}Installing pinned torch: ${TORCH_ARGS[*]}${NC}"
+    if ! pip install "${TORCH_ARGS[@]}" 2>&1; then
+        echo -e "${RED}Warning: Failed to install torch (${TORCH_ARGS[*]}); will fall back to requirements.txt default${NC}"
+        TORCH_VERSION=""
+    fi
+fi
+
 # Install requirements
 echo -e "${YELLOW}Installing requirements...${NC}"
 echo "Python version: $(python --version 2>&1)"
@@ -628,43 +733,53 @@ else
 fi
 
 # 2. Start HTTP Server (MCP Server)
-echo -e "${YELLOW}Starting HTTP/MCP server...${NC}"
-if check_process "$MCP_PORT"; then
-    echo -e "${YELLOW}HTTP/MCP server already running on port $MCP_PORT${NC}"
-else
-    nohup uv run python -m src.servers.mcp_server >> log/mcp_server.log 2>&1 &
-    HTTP_PID=$!
-    STARTED_PIDS+=("$HTTP_PID")
-    STARTED_SERVICES+=("HTTP Server")
-    echo "HTTP Server PID: $HTTP_PID"
+if [[ "$START_MCP" == true ]]; then
+    echo -e "${YELLOW}Starting HTTP/MCP server...${NC}"
+    if check_process "$MCP_PORT"; then
+        echo -e "${YELLOW}HTTP/MCP server already running on port $MCP_PORT${NC}"
+    else
+        nohup uv run python -m src.servers.mcp_server >> log/mcp_server.log 2>&1 &
+        HTTP_PID=$!
+        STARTED_PIDS+=("$HTTP_PID")
+        STARTED_SERVICES+=("HTTP Server")
+        echo "HTTP Server PID: $HTTP_PID"
 
-    if ! wait_for_service "$MCP_PORT" "HTTP/MCP server"; then
-        echo -e "${RED}Failed to start HTTP/MCP server${NC}"
-        echo -e "${RED}Check log/mcp_server.log for details${NC}"
-        exit 1
+        if ! wait_for_service "$MCP_PORT" "HTTP/MCP server"; then
+            echo -e "${RED}Failed to start HTTP/MCP server${NC}"
+            echo -e "${RED}Check log/mcp_server.log for details${NC}"
+            exit 1
+        fi
     fi
+    echo ""
+else
+    echo -e "${GREEN}Skipping HTTP/MCP server (client role)${NC}"
+    echo ""
 fi
-echo ""
 
 # 3. Start REST API Server
-echo -e "${YELLOW}Starting REST API server...${NC}"
-if check_process "$RAG_PORT"; then
-    echo -e "${YELLOW}REST API server already running on port $RAG_PORT${NC}"
-else
-    # Run uvicorn directly to avoid the uv wrapper logging twice
-    nohup python -m uvicorn src.servers.rest_server:app --host "$RAG_HOST" --port "$RAG_PORT" --no-access-log >> log/rest_server.log 2>&1 &
-    REST_PID=$!
-    STARTED_PIDS+=("$REST_PID")
-    STARTED_SERVICES+=("REST API Server")
-    echo "REST API Server PID: $REST_PID"
+if [[ "$START_REST" == true ]]; then
+    echo -e "${YELLOW}Starting REST API server...${NC}"
+    if check_process "$RAG_PORT"; then
+        echo -e "${YELLOW}REST API server already running on port $RAG_PORT${NC}"
+    else
+        # Run uvicorn directly to avoid the uv wrapper logging twice
+        nohup python -m uvicorn src.servers.rest_server:app --host "$RAG_HOST" --port "$RAG_PORT" --no-access-log >> log/rest_server.log 2>&1 &
+        REST_PID=$!
+        STARTED_PIDS+=("$REST_PID")
+        STARTED_SERVICES+=("REST API Server")
+        echo "REST API Server PID: $REST_PID"
 
-    if ! wait_for_service "$RAG_PORT" "REST API server"; then
-        echo -e "${RED}Failed to start REST API server${NC}"
-        echo -e "${RED}Check log/rest_server.log for details${NC}"
-        exit 1
+        if ! wait_for_service "$RAG_PORT" "REST API server"; then
+            echo -e "${RED}Failed to start REST API server${NC}"
+            echo -e "${RED}Check log/rest_server.log for details${NC}"
+            exit 1
+        fi
     fi
+    echo ""
+else
+    echo -e "${GREEN}Skipping REST API server (--skip-rest)${NC}"
+    echo ""
 fi
-echo ""
 
 # 4. Start UI dev server (Vite)
 if [[ "$START_UI" == true ]]; then
@@ -699,10 +814,21 @@ echo "Services running:"
 if [[ "$START_OLLAMA" == true ]]; then
     echo "  - Ollama: $OLLAMA_API_BASE (log: log/ollama_server.log)"
 else
-    echo "  - Ollama: $OLLAMA_API_BASE (remote)"
+    echo "  - Ollama: $OLLAMA_API_BASE (remote or skipped)"
 fi
-echo "  - HTTP/MCP Server: http://${MCP_HOST}:${MCP_PORT} (log: log/mcp_server.log)"
-echo "  - REST API: http://${RAG_HOST}:${RAG_PORT} (log: log/rest_server.log)"
+
+if [[ "$START_MCP" == true ]]; then
+    echo "  - HTTP/MCP Server: http://${MCP_HOST}:${MCP_PORT} (log: log/mcp_server.log)"
+else
+    echo "  - HTTP/MCP Server: skipped"
+fi
+
+if [[ "$START_REST" == true ]]; then
+    echo "  - REST API: http://${RAG_HOST}:${RAG_PORT} (log: log/rest_server.log)"
+else
+    echo "  - REST API: skipped"
+fi
+
 if [[ "$START_UI" == true ]]; then
     echo "  - UI Dev Server: http://${UI_HOST}:${UI_PORT} (log: log/ui_server.log)"
 fi

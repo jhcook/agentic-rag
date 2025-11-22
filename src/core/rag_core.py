@@ -13,10 +13,8 @@ import asyncio
 import gc
 import zipfile
 import io
-import string
-import threading
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
@@ -33,8 +31,26 @@ from src.core.faiss_index import (
 # Load .env early so configuration is available at module import time
 load_dotenv()
 
-# Shared extractors
-from src.core.extractors import _extract_text_from_file, _download_from_url
+# Optional dependencies
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
+try:
+    from docx import Document
+except ImportError:
+    Document = None
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 try:
     from litellm import completion  # type: ignore
@@ -136,7 +152,7 @@ class Store:
         self.docs[uri] = text
 
 
-def _encode_with_metrics(embedder: SentenceTransformer, inputs: Any, stage: str, **kwargs):
+def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any, stage: str, **kwargs):
     """Wrap embedder.encode to record metrics when available."""
     if embedder is None:  # Defensive: should already be handled by callers
         raise RuntimeError("Embedding model is not initialized.")
@@ -240,26 +256,24 @@ def save_store():
         raise
 
 
-def _chunk_document(text: str, uri: str) -> Tuple[List[str], List[str]]:
-    """Chunk a single document and return chunks with metadata."""
-    all_chunks = []
-    chunk_metadata = []
-
-    max_chars = 800
-    overlap = 120
+def _chunk_text(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
+    """Chunk text into pieces of max_chars with overlap."""
+    out: List[str] = []
     i = 0
     n = len(text)
-
     while i < n:
         j = min(n, i + max_chars)
-        chunk = text[i:j]
-        all_chunks.append(chunk)
-        chunk_metadata.append(uri)
+        out.append(text[i:j])
         i += max_chars - overlap
         if i >= n:
             break
+    return out
 
-    return all_chunks, chunk_metadata
+def _chunk_document(text: str, uri: str) -> Tuple[List[str], List[str]]:
+    """Chunk a single document and return chunks with metadata."""
+    chunks = _chunk_text(text)
+    return chunks, [uri] * len(chunks)
+
 
 def _should_skip_uri(uri: str) -> bool:
     """Skip hidden/system files that should never be indexed."""
@@ -409,7 +423,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         return {"upserted": True, "existed": existed}
 
     base_index = index.ntotal if index is not None else 0  # type: ignore
-    chunks = list(_chunk(text))
+    chunks = list(_chunk_text(text))
 
     if embedder is not None and index is not None:
         # Process in batches to control memory
@@ -477,12 +491,18 @@ def _download_from_url(url: str) -> bytes:
         return b"[ERROR: Could not download %s: %s]" % (url.encode(), str(exc).encode())
 
 
-def _extract_text_from_file(file_path: pathlib.Path) -> str:
+def _extract_text_from_file(file_path: Union[pathlib.Path, str]) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
-    if file_path.name in {".DS_Store"}:
+    
+    # Handle string input that might not have .name attribute
+    if isinstance(file_path, pathlib.Path) and file_path.name in {".DS_Store"}:
         return ""
+
+    # Ensure file_path is a Path object if it's not a URL, so we can use .suffix, .read_text(), etc.
+    if not file_str.startswith(('http://', 'https://')) and not isinstance(file_path, pathlib.Path):
+        file_path = pathlib.Path(file_path)
 
     def _read_head(path: pathlib.Path, size: int = 512) -> bytes:
         try:
@@ -713,7 +733,7 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
 
     if not DEBUG_MODE and embedder is not None and index is not None:
         base_index = index.ntotal  # type: ignore
-        chunks = list(_chunk(text))
+        chunks = list(_chunk_text(text))
 
         # Process in batches to control memory
         batch_size = 8
@@ -831,20 +851,6 @@ def send_store_to_llm() -> str:
         break
 
     return resp
-
-
-def _chunk(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
-    """Chunk text into pieces of max_chars with overlap."""
-    out: List[str] = []
-    i = 0
-    n = len(text)
-    while i < n:
-        j = min(n, i + max_chars)
-        out.append(text[i:j])
-        i += max_chars - overlap  # Fixed: increment by step size, not absolute position
-        if i >= n:
-            break
-    return out
 
 
 def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:

@@ -16,11 +16,12 @@ All models are configured through environment variables in the `.env` file:
 
 ```dotenv
 EMBED_MODEL_NAME=Snowflake/arctic-embed-xs
-LLM_MODEL_NAME=ollama/qwen2.5:7b
-ASYNC_LLM_MODEL_NAME=qwen2.5:7b
+LLM_MODEL_NAME=ollama/qwen2.5:3b
+ASYNC_LLM_MODEL_NAME=qwen2.5:3b
 OLLAMA_API_BASE=http://127.0.0.1:11434
 OLLAMA_KEEP_ALIVE=-1
 LLM_TEMPERATURE=0.1
+RAG_BACKEND_TYPE=local  # or 'remote'
 ```
 
 ## Embedding Model (`EMBED_MODEL_NAME`)
@@ -35,19 +36,13 @@ The embedding model converts text documents into high-dimensional numerical vect
 
 ### Code Integration
 
-**Loading the Model** (`src/core/rag_core.py`):
+**Loading the Model** (`src/core/embeddings.py`):
 ```python
-def get_embedder() -> Optional[SentenceTransformer]:
-    global _EMBEDDER
-    if DEBUG_MODE:
-        return None
+def get_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2", ...) -> Optional[SentenceTransformer]:
+    # ...
     if _EMBEDDER is None:
-        logger.info("Loading embedding model: %s", EMBED_MODEL_NAME)
-        _EMBEDDER = SentenceTransformer(
-            EMBED_MODEL_NAME,
-            device='cpu',
-            backend='torch'
-        )
+        logger.info("Loading embedding model: %s", model_name)
+        _EMBEDDER = SentenceTransformer(model_name, ...)
     return _EMBEDDER
 ```
 
@@ -64,7 +59,7 @@ def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
 def _rebuild_faiss_index():
     embedder = get_embedder()
     for uri, text in _STORE.docs.items():
-        chunks = _chunk(text)
+        chunks = _chunk_text(text)
         embeddings = embedder.encode(chunks, normalize_embeddings=True)
         index.add(embeddings)  # Add to FAISS vector database
 ```
@@ -75,7 +70,7 @@ def _rebuild_faiss_index():
 The primary language model generates grounded answers by synthesizing information from retrieved documents. It ensures responses are based only on the provided context.
 
 ### Current Configuration
-- **Model**: `ollama/qwen2.5:7b`
+- **Model**: `ollama/qwen2.5:3b`
 - **Provider**: Ollama (local)
 - **Usage**: Synchronous completions via LiteLLM
 
@@ -112,7 +107,7 @@ The system prompt enforces grounding: *"Answer the user's question using ONLY th
 Handles asynchronous operations and bulk text processing, particularly useful for sending large amounts of text to the model or when working with async contexts.
 
 ### Current Configuration
-- **Model**: `qwen2.5:7b` (same as primary but without provider prefix)
+- **Model**: `qwen2.5:3b` (same as primary but without provider prefix)
 - **Provider**: Ollama AsyncClient
 - **Usage**: Asynchronous chat completions
 
@@ -159,7 +154,7 @@ def send_store_to_llm() -> str:
 
 **Current Configuration**: `-1` (keep models loaded indefinitely)
 
-**Usage**: This is an Ollama server configuration parameter that prevents model reloading between requests, significantly improving performance for the qwen2.5:7b model.
+**Usage**: This is an Ollama server configuration parameter that prevents model reloading between requests, significantly improving performance for the qwen2.5:3b model.
 
 ## Temperature Control (`LLM_TEMPERATURE`)
 
@@ -226,7 +221,7 @@ For retrieval-augmented generation, low temperature (0.1) ensures responses stay
 
 ### Model Selection
 - **Embedding Model**: Choose models optimized for semantic similarity (384-768 dimensions typical)
-- **LLM**: Balance size vs. quality; qwen2.5:7b provides good quality with reasonable resource usage
+- **LLM**: Balance size vs. quality; qwen2.5:3b provides good quality with reasonable resource usage
 - **Async Model**: Usually same as primary LLM but can be different for specialized tasks
 
 ### Performance Tuning

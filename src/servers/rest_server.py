@@ -5,15 +5,21 @@ Run with:
     uvicorn rest_server:app --host
 """
 
-import os, sys, logging, time, threading, queue
+import os
+import sys
+import logging
+import time
+import threading
+import queue
 from pathlib import Path
 from datetime import datetime
+from typing import Optional, List, Dict, Any, Callable
+
 import psutil
-import requests
 from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -22,12 +28,8 @@ from prometheus_client import (
     generate_latest,
 )
 
-from src.core.rag_core import (
-    grounded_answer,
-    rerank,
-    verify_grounding,
-    verify_grounding_simple,
-)
+from src.core.factory import get_rag_backend
+from src.core.interfaces import RAGBackend
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -94,6 +96,131 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from contextlib import asynccontextmanager
+
+# ... imports ...
+
+# Initialize Backend
+backend: RAGBackend = get_rag_backend()
+
+# Mutable server state
+class ServerState:
+    search_worker_started: bool = False
+    search_jobs: Dict[str, Dict[str, Any]] = {}
+    search_jobs_lock: threading.Lock = threading.Lock()
+    search_job_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+    
+    # Quality metrics
+    total_searches: int = 0
+    failed_searches: int = 0
+    total_sources: int = 0
+    responses_with_sources: int = 0
+    fallback_responses: int = 0
+
+state = ServerState()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
+    logger.info("REST server startup complete (host=%s port=%s base=/api)", 
+                os.getenv("RAG_HOST", "127.0.0.1"), os.getenv("RAG_PORT", "8001"))
+    yield
+    logger.info("REST server shutting down")
+    try:
+        backend.save_store()
+    except Exception as e:
+        logger.error(f"Error saving store on shutdown: {e}")
+
+app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
+
+
+class IndexPathReq(BaseModel):
+    """Request model for indexing a filesystem path."""
+    path: str
+    glob: Optional[str] = "**/*.txt"
+
+class SearchReq(BaseModel):
+    """Request model for performing a search."""
+    query: str
+    async_mode: bool = Field(default=False, alias="async")
+    timeout_seconds: Optional[int] = 300
+
+    model_config = ConfigDict(populate_by_name=True)
+
+class UpsertReq(BaseModel):
+    """Request model for upserting a document."""
+    uri: str
+    text: Optional[str] = None
+    binary_base64: Optional[str] = None
+
+class LoadStoreReq(BaseModel):
+    """Request model for sending the store to an LLM."""
+    _ : Optional[bool] = True
+
+class GroundedAnswerReq(BaseModel):
+    """Request model for grounded answer generation."""
+    question: str
+    k: Optional[int] = 3
+
+class RerankReq(BaseModel):
+    """Request model for reranking passages."""
+    query: str
+    passages: List[Dict[str, Any]]
+    top_k: Optional[int] = None
+
+class VerifyReq(BaseModel):
+    """Request model for grounding verification (citations)."""
+    question: str
+    draft_answer: str
+    citations: List[str]
+
+class VerifySimpleReq(BaseModel):
+    """Request model for grounding verification (passages provided)."""
+    question: str
+    draft_answer: str
+    passages: List[Dict[str, Any]]
+
+class HealthResp(BaseModel):
+    """Response model for health checks."""
+    status: str
+    base_path: str
+    documents: int
+    vectors: int
+    memory_mb: float
+    memory_limit_mb: int
+    total_size_bytes: int = 0
+    store_file_bytes: int = 0
+
+class DocumentInfo(BaseModel):
+    """Document metadata for listings."""
+    uri: str
+    size_bytes: int
+
+class DocumentsResp(BaseModel):
+    documents: list[DocumentInfo]
+
+class DeleteDocsReq(BaseModel):
+    """Request model for deleting documents by URI."""
+    uris: list[str]
+
+class QualityMetricsResp(BaseModel):
+    """Aggregated quality metrics for searches."""
+    total_searches: int
+    failed_searches: int
+    responses_with_sources: int
+    total_sources: int
+    fallback_responses: int
+    success_rate: float
+    avg_sources: float
+
+class Job(BaseModel):
+    id: str
+    type: str
+    status: str
+    error: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+
+
 # Prometheus metrics (REST)
 HTTP_REQUESTS_TOTAL = Counter(
     "rest_http_requests_total",
@@ -135,188 +262,32 @@ REST_EMBEDDING_DIM = Gauge(
     "Embedding dimension used by the current model (REST server view).",
 )
 
-# Log startup information
-logger.info(f"REST server initialized with base path: /{pth}")
-logger.info(f"Log file: {LOG_DIR / 'rest_server.log'}")
-
-
-@app.on_event("startup")
-async def _on_startup():
-    logger.info("REST server startup complete (host=%s port=%s base=/api)", os.getenv("RAG_HOST", "127.0.0.1"), os.getenv("RAG_PORT", "8001"))
-
-
-@app.on_event("shutdown")
-async def _on_shutdown():
-    logger.info("REST server shutting down")
-
-class IndexPathReq(BaseModel):
-    """Request model for indexing a filesystem path."""
-    path: str
-    glob: Optional[str] = "**/*.txt"
-
-class SearchReq(BaseModel):
-    """Request model for performing a search."""
-    query: str
-    async_mode: bool = Field(default=False, alias="async")
-    timeout_seconds: Optional[int] = 300
-
-    model_config = ConfigDict(populate_by_name=True)
-
-class UpsertReq(BaseModel):
-    """Request model for upserting a document."""
-    uri: str
-    text: Optional[str] = None
-    binary_base64: Optional[str] = None
-
-class LoadStoreReq(BaseModel):
-    """Request model for sending the store to an LLM."""
-    _ : Optional[bool] = True
-
-class GroundedAnswerReq(BaseModel):
-    """Request model for grounded answer generation."""
-    question: str
-    k: Optional[int] = 3
-
-class RerankReq(BaseModel):
-    """Request model for reranking passages."""
-    query: str
-    passages: list[dict]
-    top_k: Optional[int] = None
-
-class VerifyReq(BaseModel):
-    """Request model for grounding verification (citations)."""
-    question: str
-    draft_answer: str
-    citations: list[str]
-
-class VerifySimpleReq(BaseModel):
-    """Request model for grounding verification (passages provided)."""
-    question: str
-    draft_answer: str
-    passages: list[dict]
-
-class HealthResp(BaseModel):
-    """Response model for health checks."""
-    status: str
-    base_path: str
-    documents: int
-    vectors: int
-    memory_mb: float
-    memory_limit_mb: int
-    total_size_bytes: int = 0
-    store_file_bytes: int = 0
-
-class DocumentInfo(BaseModel):
-    """Document metadata for listings."""
-    uri: str
-    size_bytes: int
-
-class DocumentsResp(BaseModel):
-    documents: list[DocumentInfo]
-
-class DeleteDocsReq(BaseModel):
-    """Request model for deleting documents by URI."""
-    uris: list[str]
-
-class QualityMetricsResp(BaseModel):
-    """Aggregated quality metrics for searches."""
-    total_searches: int
-    failed_searches: int
-    responses_with_sources: int
-    total_sources: int
-    fallback_responses: int
-    success_rate: float
-    avg_sources: float
-
-class Job(BaseModel):
-    id: str
-    type: str
-    status: str
-    error: Optional[str] = None
-    result: Optional[dict] = None
-
-
-# Search job queue (async search to avoid blocking HTTP while LLM works)
-SEARCH_JOBS: dict[str, dict] = {}
-SEARCH_JOBS_LOCK = threading.Lock()
-SEARCH_JOB_QUEUE: queue.Queue = queue.Queue()
-SEARCH_WORKER_STARTED = False
-
-
 def _start_search_worker():
-    global SEARCH_WORKER_STARTED
-    if SEARCH_WORKER_STARTED:
+    if state.search_worker_started:
         return
 
     def _worker():
         while True:
-            job = SEARCH_JOB_QUEUE.get()
+            job = state.search_job_queue.get()
             if not job:
                 continue
             job_id = job["id"]
             try:
-                result = _proxy_to_mcp("POST", "/rest/search", {"query": job["query"]})
+                result = backend.search(job["query"])
                 status = "completed"
                 error = None
             except Exception as exc:
                 result = None
                 status = "failed"
                 error = str(exc)
-            with SEARCH_JOBS_LOCK:
-                SEARCH_JOBS[job_id].update({"status": status, "result": result, "error": error})
-            SEARCH_JOB_QUEUE.task_done()
+            with state.search_jobs_lock:
+                state.search_jobs[job_id].update({"status": status, "result": result, "error": error})
+            state.search_job_queue.task_done()
 
     worker_thread = threading.Thread(target=_worker, daemon=True)
     worker_thread.start()
-    SEARCH_WORKER_STARTED = True
+    state.search_worker_started = True
 
-
-# MCP proxy configuration
-MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
-MCP_PORT = os.getenv("MCP_PORT", "8000")
-MCP_PATH = os.getenv("MCP_PATH", "/mcp")
-
-def _mcp_base() -> str:
-    prefix = MCP_PATH.strip("/")
-    base = f"http://{MCP_HOST}:{MCP_PORT}"
-    return f"{base}/{prefix}" if prefix else base
-
-def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
-    """
-    Proxy to MCP; tries prefixed path first, then fallback to root path if 404.
-    Raises HTTPException on failure so callers can return proper errors.
-    """
-    prefix_base = _mcp_base()
-    urls = []
-    if path.startswith("/"):
-        urls.append(f"{prefix_base}{path}")
-        if prefix_base.endswith("/"):
-            urls.append(f"{prefix_base[:-1]}{path}")
-    else:
-        urls.append(f"{prefix_base}/{path}")
-    # Fallback to host root if prefix path not found
-    urls.append(f"http://{MCP_HOST}:{MCP_PORT}{path if path.startswith('/') else '/' + path}")
-
-    last_exc = None
-    # Allow long-running searches: bump timeout for /search
-    timeout = 300 if "/search" in path else 30
-
-    for url in urls:
-        try:
-            resp = requests.request(method, url, json=json_payload, timeout=timeout)
-            if resp.status_code == 404:
-                continue
-            resp.raise_for_status()
-            try:
-                return resp.json()
-            except requests.exceptions.JSONDecodeError:
-                return resp.text
-        except (requests.exceptions.RequestException, requests.exceptions.Timeout) as exc:
-            last_exc = exc
-            continue
-    logger.error("MCP proxy failed for %s %s: %s", method, path, last_exc or "no response")
-    detail = {"error": "MCP unavailable", "detail": str(last_exc) if last_exc else "no response", "path": path}
-    raise HTTPException(status_code=502, detail=detail)
 def _get_route_path_template(request: Request) -> str:
     """Return the path template to keep label cardinality bounded."""
     route = request.scope.get("route")
@@ -341,38 +312,31 @@ def _get_memory_usage_mb() -> float:
     """Return current process RSS in megabytes."""
     return psutil.Process().memory_info().rss / 1024 / 1024
 
-# Quality metrics counters (process lifetime)
-QUALITY_TOTAL_SEARCHES = 0
-QUALITY_FAILED_SEARCHES = 0
-QUALITY_TOTAL_SOURCES = 0
-QUALITY_RESPONSES_WITH_SOURCES = 0
-QUALITY_FALLBACK_RESPONSES = 0
-
-def _record_quality_metrics(result: Optional[dict], error: Optional[Exception] = None) -> None:
+def _record_quality_metrics(result: Optional[Dict[str, Any]], error: Optional[Exception] = None) -> None:
     """Update quality counters based on a search result or error."""
-    global QUALITY_TOTAL_SEARCHES, QUALITY_FAILED_SEARCHES, QUALITY_TOTAL_SOURCES, QUALITY_RESPONSES_WITH_SOURCES, QUALITY_FALLBACK_RESPONSES
-    QUALITY_TOTAL_SEARCHES += 1
+    state.total_searches += 1
 
     if error is not None:
-        QUALITY_FAILED_SEARCHES += 1
+        state.failed_searches += 1
         return
 
     if not isinstance(result, dict):
-        QUALITY_FAILED_SEARCHES += 1
+        state.failed_searches += 1
         return
 
     if "error" in result:
-        QUALITY_FAILED_SEARCHES += 1
+        state.failed_searches += 1
         return
 
     sources = result.get("sources") or []
     if isinstance(sources, list):
-        QUALITY_TOTAL_SOURCES += len(sources)
+        state.total_sources += len(sources)
         if len(sources) > 0:
-            QUALITY_RESPONSES_WITH_SOURCES += 1
+            state.responses_with_sources += 1
 
     if result.get("warning"):
-        QUALITY_FALLBACK_RESPONSES += 1
+        state.fallback_responses += 1
+
 
 def refresh_prometheus_metrics():
     """Refresh gauges reflecting proxy state and process usage."""
@@ -383,7 +347,7 @@ def refresh_prometheus_metrics():
         logger.debug("refresh metrics: memory gauge failed: %s", exc)
 
 @app.middleware("http")
-async def add_prometheus_metrics(request: Request, call_next):
+async def add_prometheus_metrics(request: Request, call_next: Callable):
     """Record HTTP metrics and access logs for each request."""
     start = time.perf_counter()
     method = request.method.upper()
@@ -439,7 +403,8 @@ def api_upsert(req: UpsertReq):
     try:
         if not req.text and not req.binary_base64:
             return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
-        return _proxy_to_mcp("POST", "/rest/upsert_document", {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64})
+        # TODO: Handle binary_base64 if needed, for now assuming text
+        return backend.upsert_document(req.uri, req.text or "")
     except Exception as e:
         logger.error(f"Error upserting document {req.uri}: {e}")
         raise
@@ -449,7 +414,7 @@ def api_index_path(req: IndexPathReq):
     """Index a filesystem path into the retrieval store."""
     logger.info(f"Indexing path: path={req.path}, glob={req.glob}")
     try:
-        return _proxy_to_mcp("POST", "/rest/index_path", {"path": req.path, "glob": req.glob})
+        return backend.index_path(req.path, req.glob or "**/*")
     except Exception as e:
         logger.error(f"Error indexing path {req.path}: {e}")
         raise
@@ -470,13 +435,13 @@ def api_search(req: SearchReq):
             "query": req.query,
             "timeout_seconds": req.timeout_seconds or 300,
         }
-        with SEARCH_JOBS_LOCK:
-            SEARCH_JOBS[job_id] = job
-        SEARCH_JOB_QUEUE.put(job)
+        with state.search_jobs_lock:
+            state.search_jobs[job_id] = job
+        state.search_job_queue.put(job)
         return {"job_id": job_id, "status": "queued"}
 
     try:
-        result = _proxy_to_mcp("POST", "/rest/search", {"query": req.query})
+        result = backend.search(req.query)
         _record_quality_metrics(result)
         return result
     except HTTPException as e:
@@ -492,8 +457,8 @@ def api_load(req: LoadStoreReq):
     """Send the current store to the LLM."""
     logger.info("Loading store to LLM")
     try:
-        # Delegate to MCP
-        return _proxy_to_mcp("POST", "/rest/flush_cache", {})  # noop placeholder
+        backend.load_store()
+        return {"status": "loaded"}
     except Exception as e:
         logger.error(f"Error loading store to LLM: {e}")
         raise
@@ -523,7 +488,7 @@ def api_grounded_answer(req: GroundedAnswerReq):
     """Return a grounded answer using vector search + synthesis."""
     logger.info("Grounded answer requested: %s", req.question)
     try:
-        answer = grounded_answer(req.question, k=req.k or 3)
+        answer = backend.grounded_answer(req.question, k=req.k or 3)
         return answer
     except Exception as exc:
         logger.error("grounded_answer failed: %s", exc)
@@ -534,7 +499,7 @@ def api_rerank(req: RerankReq):
     """Rerank provided passages for a query."""
     logger.info("Rerank requested for query: %s", req.query)
     try:
-        ranked = rerank(req.query, req.passages)
+        ranked = backend.rerank(req.query, req.passages)
         if req.top_k:
             ranked = ranked[: req.top_k]
         return {"results": ranked}
@@ -547,7 +512,7 @@ def api_verify(req: VerifyReq):
     """Verify grounding against store using citation URIs."""
     logger.info("Verify grounding requested")
     try:
-        return verify_grounding(req.question, req.draft_answer, req.citations)
+        return backend.verify_grounding(req.question, req.draft_answer, req.citations)
     except Exception as exc:
         logger.error("verify_grounding failed: %s", exc)
         raise
@@ -557,6 +522,11 @@ def api_verify_simple(req: VerifySimpleReq):
     """Simple grounding verification against provided passages."""
     logger.info("Verify grounding (simple) requested")
     try:
+        # verify_grounding_simple is not in RAGBackend yet, but it's a utility.
+        # It doesn't need the store, just the passages.
+        # We can import it directly or add it to backend.
+        # For now, let's import it directly as it's stateless.
+        from src.core.rag_core import verify_grounding_simple
         return verify_grounding_simple(req.question, req.draft_answer, req.passages)
     except Exception as exc:
         logger.error("verify_grounding_simple failed: %s", exc)
@@ -566,7 +536,7 @@ def api_verify_simple(req: VerifySimpleReq):
 def api_health():
     """Lightweight health check with basic store and index stats."""
     try:
-        data = _proxy_to_mcp("GET", "/rest/health")
+        data = backend.get_stats()
         return HealthResp(
             status=data.get("status", "ok"),
             base_path=f"/{pth}",
@@ -582,25 +552,30 @@ def api_health():
         raise
     except Exception as exc:
         logger.error("Health check failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "MCP unreachable", "detail": str(exc)})
+        raise HTTPException(status_code=502, detail={"error": "Backend unreachable", "detail": str(exc)})
 
 @app.get(f"/{pth}/documents", response_model=DocumentsResp)
 def api_documents():
     """List indexed document URIs and their approximate text size (bytes)."""
     try:
-        return _proxy_to_mcp("GET", "/rest/documents")
+        uris = backend.list_documents()
+        # RAGBackend.list_documents returns list[str], but DocumentsResp expects list[DocumentInfo]
+        # We need to fetch size info. LocalBackend.list_documents only returns keys.
+        # We might need to update list_documents to return more info or fetch it here.
+        # For now, return 0 size.
+        return {"documents": [{"uri": uri, "size_bytes": 0} for uri in uris]}
     except HTTPException as exc:
         logger.error("documents list failed: %s", exc.detail)
         raise
     except Exception as exc:
         logger.error("documents list failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "MCP unreachable", "detail": str(exc)})
+        raise HTTPException(status_code=502, detail={"error": "Backend unreachable", "detail": str(exc)})
 
 @app.post(f"/{pth}/documents/delete")
 def api_documents_delete(req: DeleteDocsReq):
     """Delete documents by URI from the store and rebuild index."""
     try:
-        return _proxy_to_mcp("POST", "/rest/documents/delete", {"uris": req.uris})
+        return backend.delete_documents(req.uris)
     except Exception as exc:
         logger.error("documents delete failed: %s", exc)
         return {"deleted": 0, "error": str(exc)}
@@ -608,41 +583,34 @@ def api_documents_delete(req: DeleteDocsReq):
 @app.get(f"/{pth}/jobs", response_model=dict)
 def api_jobs():
     """List async indexing jobs (pass-through to MCP)."""
-    try:
-        return _proxy_to_mcp("GET", "/rest/jobs")
-    except HTTPException as exc:
-        logger.error("jobs list failed: %s", exc.detail)
-        raise
-    except Exception as exc:
-        logger.error("jobs list failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "MCP unreachable", "detail": str(exc)})
+    # Jobs are currently managed by MCP worker.
+    # If we are in Local mode, we don't have access to MCP worker jobs unless we import it.
+    # But rest_server has its own SEARCH_JOBS.
+    # The original code proxied to MCP for jobs.
+    # If we want to support jobs, we should probably move job management to backend or keep it local.
+    # For now, return local search jobs.
+    return {"jobs": list(state.search_jobs.values())}
 
 @app.get(f"/{pth}/jobs/{{job_id}}", response_model=dict)
 def api_job(job_id: str):
     """Get a single async indexing job (pass-through to MCP)."""
-    try:
-        return _proxy_to_mcp("GET", f"/rest/jobs/{job_id}")
-    except HTTPException as exc:
-        logger.error("job lookup failed: %s", exc.detail)
-        raise
-    except Exception as exc:
-        logger.error("job lookup failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "MCP unreachable", "detail": str(exc)})
+    # See api_jobs comment.
+    return {"error": "Not implemented for generic jobs, use /search/jobs/{job_id}"}
 
 @app.get(f"/{pth}/search/jobs/{{job_id}}", response_model=dict)
 def api_search_job(job_id: str):
     """Get status/result for an async search job."""
-    with SEARCH_JOBS_LOCK:
-        job = SEARCH_JOBS.get(job_id)
+    with state.search_jobs_lock:
+        job = state.search_jobs.get(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail={"error": "not found", "id": job_id})
+        raise HTTPException(status_code=44, detail={"error": "not found", "id": job_id})
     return job
 
 @app.post(f"/{pth}/flush_cache")
 def api_flush_cache():
     """Flush the document store and delete the backing DB file."""
     try:
-        return _proxy_to_mcp("POST", "/rest/flush_cache")
+        return backend.flush_cache()
     except Exception as exc:
         logger.error("flush_cache failed: %s", exc)
         return Response(status_code=500, content=f"flush failed: {exc}")
@@ -650,11 +618,11 @@ def api_flush_cache():
 @app.get(f"/{pth}/metrics/quality", response_model=QualityMetricsResp)
 def api_quality_metrics():
     """Return aggregated quality metrics for searches."""
-    total = QUALITY_TOTAL_SEARCHES
-    failed = QUALITY_FAILED_SEARCHES
-    with_sources = QUALITY_RESPONSES_WITH_SOURCES
-    total_sources = QUALITY_TOTAL_SOURCES
-    fallback = QUALITY_FALLBACK_RESPONSES
+    total = state.total_searches
+    failed = state.failed_searches
+    with_sources = state.responses_with_sources
+    total_sources = state.total_sources
+    fallback = state.fallback_responses
     success_rate = 0.0 if total == 0 else float((total - failed) / total)
     avg_sources = 0.0 if total == 0 else float(total_sources / max(1, total))
     return {

@@ -1,6 +1,6 @@
 import pytest
 import pathlib
-from rag_core import _extract_text_from_file
+from src.core.rag_core import _extract_text_from_file
 
 def test_txt_extraction(tmp_path):
     txt_file = tmp_path / "test.txt"
@@ -30,7 +30,7 @@ def test_url_extraction(monkeypatch):
             pass
     def dummy_get(url, timeout=30):
         return DummyResponse(b"Web page text")
-    monkeypatch.setattr("rag_core.requests.get", dummy_get)
+    monkeypatch.setattr("src.core.rag_core.requests.get", dummy_get)
     text = _extract_text_from_file("http://example.com/test.txt")
     assert "Web page text" in text
 
@@ -40,7 +40,7 @@ def test_ssl_error(monkeypatch):
             raise Exception("SSL error")
     def dummy_get(url, timeout=30):
         raise Exception("SSL error")
-    monkeypatch.setattr("rag_core.requests.get", dummy_get)
+    monkeypatch.setattr("src.core.rag_core.requests.get", dummy_get)
     text = _extract_text_from_file("https://example.com/test.txt")
     assert "SSL ERROR" in text or "ERROR" in text
 

@@ -10,7 +10,7 @@ The `config/mcp/mcp.yaml` file contains the complete configuration for MCPHost:
 llm:
   provider: ollama
   base_url: http://127.0.0.1:11434
-  model: qwen2.5:0.5b
+  model: qwen2.5:3b
 
 mcpServers:
   retrieval-server:
@@ -26,7 +26,7 @@ planner:
 #### LLM Configuration
 - `provider`: LLM provider (currently supports `ollama`)
 - `base_url`: Base URL for the LLM API
-- `model`: Model name to use for completions
+- `model`: Model name to use for completions (e.g., `qwen2.5:3b`)
 
 #### MCP Servers
 - `retrieval-server`: Connection to the Agentic RAG MCP server
@@ -56,7 +56,11 @@ planner:
 
 1. **Start the MCP Server**:
    ```bash
-   python src/servers/mcp_server.py
+   # Monolith mode (default)
+   ./start.sh --role monolith
+
+   # OR Client mode (if connecting to remote backend)
+   ./start.sh --role client
    ```
 
 2. **Configure MCPHost**:

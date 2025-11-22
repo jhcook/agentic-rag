@@ -13,10 +13,15 @@ MCP allows AI assistants to securely connect to external tools and data sources.
 
 ## Architecture
 
+The system supports two architectural modes:
+
+### 1. Monolithic (Local)
+Everything runs on the same machine. The MCP server accesses the document store directly.
+
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   AI Assistant  │────│   MCP Host      │────│   MCP Server    │
-│   (Copilot)     │    │   (MCPHost)     │    │   (This Project) │
+│   (Copilot)     │    │   (MCPHost)     │    │   (LocalBackend)│
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                               │
                               ▼
@@ -27,9 +32,35 @@ MCP allows AI assistants to securely connect to external tools and data sources.
                        └─────────────────┘
 ```
 
+### 2. Distributed (Remote)
+The MCP server acts as a client to a remote REST API. This allows the heavy lifting (LLM inference, Vector Search) to happen on a powerful server, while the MCP server runs locally with the user.
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   AI Assistant  │────│   MCP Host      │────│   MCP Server    │
+│   (Copilot)     │    │   (MCPHost)     │    │ (RemoteBackend) │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                      │
+                                                      ▼
+                                              ┌─────────────────┐
+                                              │    REST API     │
+                                              │    (Server)     │
+                                              └─────────────────┘
+                                                      │
+                                                      ▼
+                                               ┌─────────────────┐
+                                               │ Document Store  │
+                                               └─────────────────┘
+```
+
 ## Quick Start
 
-1. **Start the MCP Server**: Run `python src/servers/mcp_server.py`
+1. **Start the Services**:
+   - **Monolith**: ` ./start.sh --role monolith`
+   - **Distributed**:
+     - Server: `./start.sh --role server`
+     - Client: `./start.sh --role client` (configure `RAG_REMOTE_URL` in `.env`)
+
 2. **Configure MCPHost**: Use the configuration in `config/mcp/mcp.yaml`
 3. **Connect AI Assistant**: Point your MCP-compatible AI assistant to the server
 
