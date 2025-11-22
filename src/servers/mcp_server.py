@@ -37,20 +37,16 @@ from mcp.server.fastmcp import FastMCP
 from starlette.responses import Response
 from dotenv import load_dotenv
 
-# Import shared logic
+# Import factory and interfaces
+from src.core.factory import get_rag_backend
+from src.core.interfaces import RAGBackend
+
+# Import shared logic (only for constants/utils that are safe)
 from src.core.rag_core import (
-    search,
-    load_store,
-    save_store,
-    upsert_document,
-    get_store,
     resolve_input_path,
-    rerank,
-    grounded_answer,
-    verify_grounding,
-    _rebuild_faiss_index,
     OLLAMA_API_BASE
 )
+from src.core.extractors import _extract_text_from_file
 
 from src.servers.mcp_app.logging_config import (
     configure_logging,
@@ -74,6 +70,9 @@ patch_streamable_http(access_logger=access_logger)
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
 
+# Initialize Backend
+backend: RAGBackend = get_rag_backend()
+
 # Create FastMCP instance
 mcp = FastMCP("retrieval-server")
 
@@ -96,7 +95,7 @@ def _background_load_store():
         return
     STORE_LOADING = True
     try:
-        load_store()
+        backend.load_store()
         refresh_prometheus_metrics(OLLAMA_API_BASE)
         STORE_LOADED = True
         logger.info("Background store load complete")
@@ -144,7 +143,7 @@ def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
         logger.info("Initiating graceful shutdown...")
 
     try:
-        save_store()
+        backend.save_store()
         logger.info("Store saved successfully")
     except Exception as e:
         logger.error("Error saving store during shutdown: %s", e, exc_info=True)
@@ -204,7 +203,7 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
             else:
                 return {"error": f"Text missing and file not found: {normalized_uri}", "upserted": False}
 
-        result: Dict[str, Any] = upsert_document(normalized_uri, content)
+        result: Dict[str, Any] = backend.upsert_document(normalized_uri, content)
         logger.info("Successfully upserted document: %s", uri)
         return result
     except Exception as e:
@@ -306,7 +305,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
                 logger.warning("Skipping %s: %s", file_path, read_err)
                 continue
 
-            upsert_document(str(file_path), content)
+            backend.upsert_document(str(file_path), content)
             indexed += 1
             indexed_uris.append(str(file_path))
 
@@ -387,7 +386,7 @@ def index_url_tool(
 
         # Use URL as document ID if not provided
         doc_id = doc_id or url
-        upsert_document(doc_id, content)
+        backend.upsert_document(doc_id, content)
 
         logger.info("Indexed document from URL: %s", url)
         return {"indexed": 1, "uri": url, "doc_id": doc_id}
@@ -423,7 +422,7 @@ def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
     """
     try:
         logger.info("Searching for: %s", query)
-        result = search(query, top_k=top_k)
+        result = backend.search(query, top_k=top_k)
         logger.info("Search completed for: %s", query)
 
         # Force garbage collection after search to manage memory
@@ -492,11 +491,7 @@ def list_indexed_documents_tool() -> Dict[str, Any]:
     """
     try:
         logger.info("Listing indexed documents")
-        store = get_store()
-        if not store:
-            return {"uris": [], "message": "Store not loaded or empty."}
-
-        uris = list(store.docs.keys())
+        uris = backend.list_documents()
         logger.info("Found %d indexed documents.", len(uris))
         return {"uris": uris}
     except Exception as e:
@@ -511,7 +506,7 @@ def rerank_tool(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, An
     Use this after search_tool when you need the most relevant snippets first.
     """
     try:
-        return rerank(query, passages)
+        return backend.rerank(query, passages)
     except Exception as e:
         logger.error("Error reranking passages: %s", e, exc_info=True)
         return []
@@ -524,7 +519,7 @@ def grounded_answer_tool(question: str, k: int = 5) -> Dict[str, Any]:
     This performs a vector search and returns an answer plus citations.
     """
     try:
-        return grounded_answer(question, k=k)
+        return backend.grounded_answer(question, k=k)
     except Exception as e:
         logger.error("Error generating grounded answer: %s", e, exc_info=True)
         return {"error": str(e)}
@@ -535,7 +530,7 @@ def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> D
     Verify that an answer is grounded in the cited documents.
     """
     try:
-        return verify_grounding(question, answer, citations)
+        return backend.verify_grounding(question, answer, citations)
     except Exception as e:
         logger.error("Error verifying grounding: %s", e, exc_info=True)
         return {"error": str(e)}
@@ -601,7 +596,7 @@ if __name__ == "__main__":
 
         # Ensure index is rebuilt at startup so searches work immediately
         try:
-            _rebuild_faiss_index()
+            backend.rebuild_index()
             logger.info("FAISS index rebuild complete at startup")
         except Exception as exc:
             logger.error("Startup index rebuild failed: %s", exc, exc_info=True)
@@ -620,3 +615,4 @@ if __name__ == "__main__":
         logger.error("Fatal server error: %s", e, exc_info=True)
         graceful_shutdown()
         sys.exit(1)
+

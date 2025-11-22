@@ -15,6 +15,9 @@ from src.core.rag_core import (
     get_faiss_globals,
     MAX_MEMORY_MB,
     save_store,
+    grounded_answer,
+    rerank,
+    verify_grounding,
 )
 from src.core.indexer import index_path, upsert_document
 from src.core.extractors import _extract_text_from_file
@@ -157,6 +160,39 @@ async def rest_search(request: Request):
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
+@rest_api.post("/grounded_answer")
+async def rest_grounded_answer(request: Request):
+    body = await request.json()
+    question = body.get("question", "")
+    k = int(body.get("k", 3))
+    try:
+        result = await anyio.to_thread.run_sync(grounded_answer, question, k)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+@rest_api.post("/rerank")
+async def rest_rerank(request: Request):
+    body = await request.json()
+    query = body.get("query", "")
+    passages = body.get("passages", [])
+    try:
+        result = await anyio.to_thread.run_sync(rerank, query, passages)
+        return JSONResponse({"results": result})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+@rest_api.post("/verify_grounding")
+async def rest_verify_grounding(request: Request):
+    body = await request.json()
+    question = body.get("question", "")
+    draft_answer = body.get("draft_answer", "")
+    citations = body.get("citations", [])
+    try:
+        result = await anyio.to_thread.run_sync(verify_grounding, question, draft_answer, citations)
+        return JSONResponse(result)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 @rest_api.get("/documents")
 async def rest_documents(_request: Request):

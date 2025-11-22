@@ -1,8 +1,11 @@
-**/venv              # Used for development environment
-**/.venv             # Intended for production environment
+**/venv/
+**/.venv/
+.env
 __pycache__
 log
 documents
+cache
+**/*.log
 
 # OS generated files
 .DS_Store

@@ -1,6 +1,8 @@
 import os
 import logging
-from typing import Dict, Any, Optional
+import pathlib
+import psutil
+from typing import Dict, Any, Optional, List
 import requests
 
 from src.core.interfaces import RAGBackend
@@ -8,6 +10,8 @@ from src.core.interfaces import RAGBackend
 # For now, we import at top level, but in a real services split, we might not have the dependencies.
 try:
     import src.core.rag_core as local_core
+    from src.core.store import DB_PATH
+    from src.core.extractors import _extract_text_from_file
     HAS_LOCAL_CORE = True
 except ImportError:
     HAS_LOCAL_CORE = False
@@ -24,15 +28,34 @@ class LocalBackend:
         return local_core.upsert_document(uri, text)
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
-        # rag_core doesn't have a direct index_path function exposed in the same way, 
-        # it usually relies on the caller to walk files. 
-        # But let's assume we wrap the logic or add it to rag_core.
-        # For now, we'll implement the walk logic here or call a helper.
-        # Looking at mcp_server.py, it implements index_documents_tool by walking.
-        # We should probably move that logic to rag_core to make it shared.
-        # For this POC, I'll leave it as a placeholder or call a helper if it exists.
-        from src.utils.simple_indexer import index_directory
-        return index_directory(path, glob) # This might need adaptation
+        try:
+            base = local_core.resolve_input_path(path)
+        except FileNotFoundError as exc:
+            return {"error": str(exc), "indexed": 0, "uris": []}
+
+        # Normalize glob
+        if not glob or not glob.strip():
+            glob = "**/*"
+        
+        if base.is_file():
+            files = [base]
+        else:
+            files = list(base.rglob(glob))
+            
+        indexed = 0
+        indexed_uris = []
+        for file_path in files:
+            try:
+                content = _extract_text_from_file(file_path)
+                if not content:
+                    continue
+                local_core.upsert_document(str(file_path), content)
+                indexed += 1
+                indexed_uris.append(str(file_path))
+            except Exception as e:
+                logger.warning(f"Failed to index {file_path}: {e}")
+                
+        return {"indexed": indexed, "uris": indexed_uris}
 
     def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
         return local_core.grounded_answer(question, k=k)
@@ -40,6 +63,62 @@ class LocalBackend:
     def load_store(self) -> bool:
         local_core.load_store()
         return True
+
+    def save_store(self) -> bool:
+        local_core.save_store()
+        return True
+
+    def list_documents(self) -> List[str]:
+        store = local_core.get_store()
+        return list(store.docs.keys())
+
+    def rebuild_index(self) -> None:
+        local_core._rebuild_faiss_index()
+
+    def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return local_core.rerank(query, passages)
+
+    def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
+        return local_core.verify_grounding(question, answer, citations)
+
+    def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
+        store = local_core.get_store()
+        deleted = 0
+        for uri in uris:
+            if uri in store.docs:
+                del store.docs[uri]
+                deleted += 1
+        local_core.save_store()
+        local_core._rebuild_faiss_index()
+        return {"deleted": deleted}
+
+    def flush_cache(self) -> Dict[str, Any]:
+        store = local_core.get_store()
+        store.docs.clear()
+        removed = False
+        if DB_PATH and pathlib.Path(DB_PATH).exists():
+            try:
+                pathlib.Path(DB_PATH).unlink()
+                removed = True
+            except OSError:
+                removed = False
+        local_core.save_store()
+        local_core._rebuild_faiss_index()
+        return {"status": "flushed", "db_removed": removed, "documents": 0}
+
+    def get_stats(self) -> Dict[str, Any]:
+        store = local_core.get_store()
+        index, _, _ = local_core.get_faiss_globals()
+        docs = len(getattr(store, "docs", {}))
+        vectors = index.ntotal if index is not None else 0
+        
+        return {
+            "status": "ok",
+            "documents": docs,
+            "vectors": vectors,
+            "memory_mb": psutil.Process().memory_info().rss / 1024 / 1024,
+            "memory_limit_mb": local_core.MAX_MEMORY_MB,
+        }
 
 class RemoteBackend:
     """HTTP calls to the REST API."""
@@ -71,6 +150,52 @@ class RemoteBackend:
         # Remote store management might be different
         resp = requests.post(f"{self.base_url}/load_store", json={})
         return resp.status_code == 200
+
+    def save_store(self) -> bool:
+        # Remote save might not be exposed or needed if server handles it
+        # But for interface compliance:
+        # Assuming there is no explicit save endpoint, or we use flush_cache?
+        # Let's assume no-op or log warning for now, or add endpoint if needed.
+        # Actually, mcp_server calls save_store on shutdown.
+        # If we are a client, we probably don't need to tell the server to save on OUR shutdown.
+        return True
+
+    def list_documents(self) -> List[str]:
+        resp = requests.get(f"{self.base_url}/documents")
+        resp.raise_for_status()
+        data = resp.json()
+        return [doc["uri"] for doc in data.get("documents", [])]
+
+    def rebuild_index(self) -> None:
+        # Triggering rebuild remotely?
+        # Maybe /flush_cache triggers it?
+        # Or we just assume server manages it.
+        pass
+
+    def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        resp = requests.post(f"{self.base_url}/rerank", json={"query": query, "passages": passages})
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+
+    def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
+        resp = requests.post(f"{self.base_url}/verify_grounding", json={"question": question, "draft_answer": answer, "citations": citations})
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
+        resp = requests.post(f"{self.base_url}/documents/delete", json={"uris": uris})
+        resp.raise_for_status()
+        return resp.json()
+
+    def flush_cache(self) -> Dict[str, Any]:
+        resp = requests.post(f"{self.base_url}/flush_cache", json={})
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_stats(self) -> Dict[str, Any]:
+        resp = requests.get(f"{self.base_url}/health")
+        resp.raise_for_status()
+        return resp.json()
 
 def get_rag_backend() -> RAGBackend:
     """Factory to get the configured backend."""

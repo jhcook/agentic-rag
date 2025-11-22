@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from rag_core import get_faiss_globals, upsert_document, get_store
+from src.core.rag_core import get_faiss_globals, upsert_document, get_store
 
 def test_faiss_indexing():
     index, index_to_meta, _ = get_faiss_globals()
