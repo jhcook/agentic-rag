@@ -7,31 +7,33 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Progress } from '@/components/ui/progress'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { 
   Database, 
-  ChatCircle, 
-  GearSix, 
+  MessageCircle as ChatCircle, 
+  Settings as GearSix, 
   FolderOpen, 
-  Lightning,
+  Zap as Lightning,
   CheckCircle,
-  WarningCircle,
-  CloudArrowUp,
+  AlertCircle as WarningCircle,
+  CloudUpload as CloudArrowUp,
   Play,
   Pause,
   File,
   Plus,
   Trash,
-  CaretDown,
-  CaretUp,
+  ChevronDown as CaretDown,
+  ChevronUp as CaretUp,
   Info,
-  ChartLine,
-  ListBullets
-} from '@phosphor-icons/react'
-import { useKV } from '@github/spark/hooks'
+  LineChart as ChartLine,
+  List as ListBullets
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { MetricsDashboard } from '@/components/MetricsDashboard'
 import { LogsViewer } from '@/components/LogsViewer'
+import { ProviderSelector } from '@/components/ProviderSelector'
+import { FileManager } from '@/components/FileManager'
+import { ChatInterface, Message } from '@/components/ChatInterface'
 
 type IndexedItem = {
   id: string
@@ -74,10 +76,11 @@ function App() {
   const [backendDocs, setBackendDocs] = useState<number | null>(null)
   const [backendSize, setBackendSize] = useState<number | null>(null)
   const [backendDocumentList, setBackendDocumentList] = useState<IndexedItem[]>([])
-  const [indexedItems, setIndexedItems] = useKV<IndexedItem[]>('indexed-items', [])
+  const [indexedItems, setIndexedItems] = useState<IndexedItem[]>([])
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
+  const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
-  const [ollamaConfig, setOllamaConfig] = useKV<OllamaConfig>('ollama-config', {
+  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>({
     apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
     model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
     embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
@@ -90,7 +93,7 @@ function App() {
     mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
     mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
     mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
-    ragHost: import.meta.env.VITE_RAG_HOST || '127.0.0.1',
+    ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
     ragPort: import.meta.env.VITE_RAG_PORT || '8001',
     ragPath: import.meta.env.VITE_RAG_PATH || 'api'
   })
@@ -102,6 +105,12 @@ function App() {
   const [searchJobId, setSearchJobId] = useState<string | null>(null)
   const [searchMessage, setSearchMessage] = useState<string | null>(null)
   const [flushLoading, setFlushLoading] = useState(false)
+  const [statusMessage, setStatusMessage] = useState<string>('Idle')
+  const [vertexConfig, setVertexConfig] = useState({
+    projectId: '',
+    location: 'us-central1',
+    dataStoreId: ''
+  })
   const searchAbortRef = useRef<AbortController | null>(null)
   const [jobProgress, setJobProgress] = useState<{
     total: number
@@ -109,7 +118,54 @@ function App() {
     failed: number
     visible: boolean
   }>({ total: 0, completed: 0, failed: 0, visible: false })
-  const [statusMessage, setStatusMessage] = useState<string>('Idle')
+  const [chatMessages, setChatMessages] = useState<Message[]>([])
+
+  // Fetch Vertex config on mount
+  useEffect(() => {
+    const fetchVertexConfig = async () => {
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      try {
+        const res = await fetch(`http://${host}:${port}/${base}/config/vertex`)
+        if (res.ok) {
+          const data = await res.json()
+          setVertexConfig({
+            projectId: data.VERTEX_PROJECT_ID || '',
+            location: data.VERTEX_LOCATION || 'us-central1',
+            dataStoreId: data.VERTEX_DATA_STORE_ID || ''
+          })
+        }
+      } catch (e) {
+        console.error("Failed to fetch vertex config", e)
+      }
+    }
+    fetchVertexConfig()
+  }, [ollamaConfig])
+
+  const handleSaveVertexConfig = async () => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/config/vertex`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: vertexConfig.projectId,
+          location: vertexConfig.location,
+          data_store_id: vertexConfig.dataStoreId
+        })
+      })
+      if (res.ok) {
+        toast.success('Vertex AI configuration saved')
+      } else {
+        throw new Error('Failed to save')
+      }
+    } catch (e) {
+      toast.error('Failed to save Vertex AI configuration')
+    }
+  }
 
   const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -126,19 +182,39 @@ function App() {
   // Sync UI defaults from env when present (fallback to existing KV values)
   useEffect(() => {
     setOllamaConfig((current) => {
-      const cfg = current || {}
+      const cfg = current || {
+        apiEndpoint: 'http://127.0.0.1:11434',
+        model: 'qwen2.5:7b',
+        embeddingModel: 'Snowflake/arctic-embed-xs',
+        temperature: '0.7',
+        topP: '0.9',
+        topK: '40',
+        repeatPenalty: '1.1',
+        seed: '-1',
+        numCtx: '2048',
+        mcpHost: '127.0.0.1',
+        mcpPort: '8000',
+        mcpPath: '/mcp',
+        ragHost: '127.0.0.1',
+        ragPort: '8001',
+        ragPath: 'api'
+      }
       return {
-        ...cfg,
-        apiEndpoint: cfg.apiEndpoint || import.meta.env.VITE_OLLAMA_API_BASE || cfg.apiEndpoint,
-        model: cfg.model || (import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || cfg.model),
-        embeddingModel: cfg.embeddingModel || import.meta.env.VITE_EMBED_MODEL_NAME || cfg.embeddingModel,
-        temperature: cfg.temperature || import.meta.env.VITE_LLM_TEMPERATURE || cfg.temperature,
-        mcpHost: cfg.mcpHost || import.meta.env.VITE_MCP_HOST || cfg.mcpHost,
-        mcpPort: cfg.mcpPort || import.meta.env.VITE_MCP_PORT || cfg.mcpPort,
-        mcpPath: cfg.mcpPath || import.meta.env.VITE_MCP_PATH || cfg.mcpPath,
-        ragHost: cfg.ragHost || import.meta.env.VITE_RAG_HOST || cfg.ragHost,
-        ragPort: cfg.ragPort || import.meta.env.VITE_RAG_PORT || cfg.ragPort,
-        ragPath: cfg.ragPath || import.meta.env.VITE_RAG_PATH || cfg.ragPath,
+        apiEndpoint: cfg.apiEndpoint || import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
+        model: cfg.model || (import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b'),
+        embeddingModel: cfg.embeddingModel || import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
+        temperature: cfg.temperature || import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
+        topP: cfg.topP || '0.9',
+        topK: cfg.topK || '40',
+        repeatPenalty: cfg.repeatPenalty || '1.1',
+        seed: cfg.seed || '-1',
+        numCtx: cfg.numCtx || '2048',
+        mcpHost: cfg.mcpHost || import.meta.env.VITE_MCP_HOST || '127.0.0.1',
+        mcpPort: cfg.mcpPort || import.meta.env.VITE_MCP_PORT || '8000',
+        mcpPath: cfg.mcpPath || import.meta.env.VITE_MCP_PATH || '/mcp',
+        ragHost: cfg.ragHost || import.meta.env.VITE_RAG_HOST || 'localhost',
+        ragPort: cfg.ragPort || import.meta.env.VITE_RAG_PORT || '8001',
+        ragPath: cfg.ragPath || import.meta.env.VITE_RAG_PATH || 'api',
       }
     })
   // run once on mount
@@ -247,7 +323,7 @@ function App() {
       if (!res.ok || data?.error) {
         throw new Error(data?.error || `HTTP ${res.status}`)
       }
-      setBackendDocumentList(prev => prev.filter(d => d.id !== uri && d.uri !== uri))
+      setBackendDocumentList(prev => prev.filter(d => d.id !== uri))
       toast.success('Removed from index', { id: loadingId })
     } catch (error: unknown) {
       toast.error(error instanceof Error ? error.message : 'Failed to delete', { id: loadingId })
@@ -389,6 +465,28 @@ function App() {
     toast.success('Configuration saved', {
       description: 'Ollama settings have been updated'
     })
+  }
+
+  const handleGoogleLogin = () => {
+    const host = ollamaConfig?.ragHost || 'localhost'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    window.open(`http://${host}:${port}/${base}/auth/login?t=${Date.now()}`, '_blank', 'width=600,height=700')
+  }
+
+  const handleGoogleLogout = async () => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const url = `http://${host}:${port}/${base}/auth/logout`
+    
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      toast.success('Disconnected from Google Account')
+    } catch (error) {
+      toast.error('Failed to disconnect')
+    }
   }
 
   const handleSearch = async () => {
@@ -594,13 +692,14 @@ function App() {
   const totalSize = backendSize !== null ? backendSize : remoteItems.reduce((acc, item) => acc + (item.size || 0), 0)
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b border-border bg-card">
+    <TooltipProvider>
+      <div className="min-h-screen bg-background">
+        <header className="border-b border-border bg-card">
         <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
-                        <Lightning className="h-6 w-6 text-primary-foreground" weight="fill" />
+                        <Lightning className="h-6 w-6 text-primary-foreground" />
                       </div>
                       <div>
                         <h1 className="text-xl font-bold tracking-tight">Agentic AI</h1>
@@ -615,9 +714,9 @@ function App() {
                   variant={systemStatus === 'running' ? 'default' : systemStatus === 'error' ? 'destructive' : 'secondary'}
                   className="gap-1"
                 >
-                  {systemStatus === 'running' && <CheckCircle className="h-3 w-3" weight="fill" />}
-                  {systemStatus === 'error' && <WarningCircle className="h-3 w-3" weight="fill" />}
-                  {systemStatus === 'stopped' && <Pause className="h-3 w-3" weight="fill" />}
+                  {systemStatus === 'running' && <CheckCircle className="h-3 w-3" />}
+                  {systemStatus === 'error' && <WarningCircle className="h-3 w-3" />}
+                  {systemStatus === 'stopped' && <Pause className="h-3 w-3" />}
                   {systemStatus.charAt(0).toUpperCase() + systemStatus.slice(1)}
                 </Badge>
               </div>
@@ -708,10 +807,9 @@ function App() {
               <Card>
                 <CardHeader className="pb-3">
                   <CardDescription>Active Provider</CardDescription>
-                  <CardTitle className="text-3xl">Ollama</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-xs text-muted-foreground">Local inference</p>
+                  <ProviderSelector config={ollamaConfig} />
                 </CardContent>
               </Card>
 
@@ -794,91 +892,7 @@ function App() {
               <h2 className="text-2xl font-semibold tracking-tight mb-2">File Indexing</h2>
               <p className="text-muted-foreground">Manage your indexed files and directories</p>
             </div>
-
-            <div className="flex gap-3 items-center">
-              <Button onClick={handleAddFile}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Files
-              </Button>
-              <Button variant="outline" onClick={handleAddDirectory}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Directory
-              </Button>
-              <Button variant="destructive" onClick={handleFlushCache} disabled={flushLoading}>
-                {flushLoading && <CloudArrowUp className="h-4 w-4 mr-2 animate-spin" />}
-                Flush Cache
-              </Button>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Indexed Items ({totalFiles})</CardTitle>
-                <CardDescription>
-                  {totalFiles === 0 ? 'No items have been indexed yet' : `Total size: ${formatFileSize(totalSize)}`}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {remoteItems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12">
-                    <FolderOpen className="h-12 w-12 text-muted-foreground mb-4" />
-                    <p className="text-sm text-muted-foreground mb-4">Add files or directories to get started</p>
-                    <div className="flex gap-2">
-                      <Button onClick={handleAddFile}>
-                        <File className="h-4 w-4 mr-2" />
-                        Add Files
-                      </Button>
-                      <Button variant="outline" onClick={handleAddDirectory}>
-                        <FolderOpen className="h-4 w-4 mr-2" />
-                        Add Directory
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {remoteItems.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center justify-between rounded-lg border border-border p-4 hover:bg-muted/50 transition-colors"
-                      >
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                            {item.type === 'directory' ? (
-                              <FolderOpen className="h-5 w-5 text-primary" />
-                            ) : (
-                              <File className="h-5 w-5 text-primary" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium truncate">{item.name}</p>
-                            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                              <Badge variant="secondary" className="text-xs">
-                                {item.type}
-                              </Badge>
-                              <span>{formatFileSize(item.size)}</span>
-                              <span>{new Date(item.addedAt).toLocaleDateString()}</span>
-                            </div>
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            if (backendDocumentList.length > 0) {
-                              handleDeleteRemote(item.path)
-                            } else {
-                              handleRemoveItem(item.id)
-                            }
-                          }}
-                          className="shrink-0"
-                        >
-                          <Trash className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <FileManager config={ollamaConfig} />
           </TabsContent>
 
           <TabsContent value="search" className="space-y-6">
@@ -886,76 +900,15 @@ function App() {
               <h2 className="text-2xl font-semibold tracking-tight mb-2">Conversational Search</h2>
               <p className="text-muted-foreground">Ask questions about your indexed documents</p>
             </div>
-
-            <Card>
-              <CardContent className="p-6 space-y-4">
-                <div className="flex items-start gap-3">
-                  <ChatCircle className="h-6 w-6 text-muted-foreground mt-1" />
-                  <div className="flex-1 space-y-2">
-                    <label className="text-sm font-medium">Question</label>
-                    <textarea
-                      className="w-full min-h-[120px] rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      placeholder="Ask a question about your indexed documents..."
-                      value={queryText}
-                      onChange={(e) => setQueryText(e.target.value)}
-                    />
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-muted-foreground">
-                        {backendDocs !== null
-                          ? `${backendDocs} documents indexed on server`
-                          : `${items.length} items tracked locally`}
-                      </p>
-                      <div className="flex items-center gap-2">
-                        {searching && (
-                          <Button variant="outline" size="sm" onClick={handleCancelSearch}>
-                            Cancel
-                          </Button>
-                        )}
-                        <Button onClick={handleSearch} disabled={searching || (backendDocs !== null ? backendDocs === 0 : items.length === 0)}>
-                          {searching && <CloudArrowUp className="h-4 w-4 mr-2 animate-spin" />}
-                          {searching ? 'Searching...' : 'Search'}
-                        </Button>
-                      </div>
-                    </div>
-                    {searchError && (
-                      <p className="text-sm text-destructive flex items-center gap-2">
-                        <WarningCircle className="h-4 w-4" />
-                        {searchError}
-                      </p>
-                    )}
-                    {searchAnswer && (
-                      <div className="mt-4 rounded-md border border-border bg-muted/40 p-4 space-y-2">
-                        <p className="text-sm font-semibold">Answer</p>
-                        <p className="text-sm whitespace-pre-wrap">{searchAnswer}</p>
-                        {searchSources.length > 0 && (
-                          <div className="pt-2">
-                            <p className="text-xs text-muted-foreground mb-1">Sources</p>
-                            <ul className="list-disc list-inside text-xs text-muted-foreground space-y-0.5">
-                              {searchSources.map((src) => (
-                                <li key={src}>{src}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {backendDocs !== null && backendDocs === 0 && (
-                      <div className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-                        No documents indexed on server. Add files/directories from the Index tab.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <ChatInterface config={ollamaConfig} messages={chatMessages} setMessages={setChatMessages} />
           </TabsContent>
 
           <TabsContent value="metrics" className="space-y-6">
-            <MetricsDashboard />
+            <MetricsDashboard config={ollamaConfig} />
           </TabsContent>
 
           <TabsContent value="logs" className="space-y-6">
-            <LogsViewer />
+            <LogsViewer config={ollamaConfig} />
           </TabsContent>
 
           <TabsContent value="settings" className="space-y-6">
@@ -1478,18 +1431,85 @@ function App() {
                   <Badge variant="secondary">Coming Soon</Badge>
                 </div>
 
-                <div className="flex items-center justify-between rounded-lg border border-border p-4 opacity-60">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      <CloudArrowUp className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <p className="font-semibold">Gemini + Google Drive</p>
-                      <p className="text-sm text-muted-foreground">Google AI with Drive integration</p>
-                    </div>
+                <Collapsible open={googleExpanded} onOpenChange={setGoogleExpanded}>
+                  <div className="rounded-lg border border-border">
+                    <CollapsibleTrigger asChild>
+                      <button className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                            <CloudArrowUp className="h-5 w-5 text-muted-foreground" />
+                          </div>
+                          <div className="text-left">
+                            <p className="font-semibold">Gemini + Google Drive</p>
+                            <p className="text-sm text-muted-foreground">Google AI with Drive integration</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {googleExpanded ? (
+                            <CaretUp className="h-5 w-5 text-muted-foreground" />
+                          ) : (
+                            <CaretDown className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </div>
+                      </button>
+                    </CollapsibleTrigger>
+                    
+                    <CollapsibleContent>
+                      <div className="border-t border-border p-6 space-y-6">
+                        <p className="text-sm text-muted-foreground">
+                          Connect your Google account to enable semantic search across your Google Drive documents and use Gemini models.
+                        </p>
+                        <div className="flex gap-3">
+                          <Button onClick={handleGoogleLogin} className="flex-1">
+                             Connect Google Account
+                          </Button>
+                          <Button onClick={handleGoogleLogout} variant="outline" className="flex-1">
+                             Disconnect
+                          </Button>
+                        </div>
+
+                        <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20 mt-4">
+                          <h4 className="font-semibold text-sm">Vertex AI Configuration (Enterprise)</h4>
+                          <p className="text-xs text-muted-foreground">Required for "Vertex AI Agent" mode.</p>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor="vertex-project">Project ID</Label>
+                            <Input
+                              id="vertex-project"
+                              value={vertexConfig.projectId}
+                              onChange={(e) => setVertexConfig({...vertexConfig, projectId: e.target.value})}
+                              placeholder="my-gcp-project-id"
+                            />
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor="vertex-location">Location</Label>
+                            <Input
+                              id="vertex-location"
+                              value={vertexConfig.location}
+                              onChange={(e) => setVertexConfig({...vertexConfig, location: e.target.value})}
+                              placeholder="us-central1"
+                            />
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor="vertex-datastore">Data Store ID</Label>
+                            <Input
+                              id="vertex-datastore"
+                              value={vertexConfig.dataStoreId}
+                              onChange={(e) => setVertexConfig({...vertexConfig, dataStoreId: e.target.value})}
+                              placeholder="my-datastore-id"
+                            />
+                          </div>
+                          
+                          <Button onClick={handleSaveVertexConfig} size="sm" variant="secondary" className="w-full">
+                            Save Vertex Configuration
+                          </Button>
+                        </div>
+                      </div>
+                    </CollapsibleContent>
                   </div>
-                  <Badge variant="secondary">Coming Soon</Badge>
-                </div>
+                </Collapsible>
               </CardContent>
             </Card>
           </TabsContent>
@@ -1510,6 +1530,7 @@ function App() {
         </div>
       )}
     </div>
+    </TooltipProvider>
   )
 }
 

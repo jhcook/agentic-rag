@@ -54,3 +54,7 @@ class RAGBackend(Protocol):
     def get_stats(self) -> Dict[str, Any]:
         """Get system statistics (health check)."""
         ...
+
+    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Conversational chat with the backend."""
+        ...

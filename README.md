@@ -272,6 +272,35 @@ python src/clients/cli_agent.py "index documents"  # Fast indexing without ML
 
 The MCP server exposes document indexing and search tools that can be used by MCP-compatible AI assistants. See the [MCP documentation](docs/mcp/index.md) for complete setup and usage instructions.
 
+## Mobile App
+
+The project includes a React Native mobile application (using Expo) located in the `mobile/` directory.
+
+### Setup
+
+1.  Navigate to the mobile directory:
+    ```bash
+    cd mobile
+    ```
+2.  Install dependencies:
+    ```bash
+    npm install
+    ```
+3.  Start the development server:
+    ```bash
+    npm start
+    ```
+
+### Configuration
+
+The mobile app connects to the REST API server. By default, it expects the server to be running at `http://localhost:8001/api`.
+
+**Important for Emulators/Devices:**
+-   **Server Configuration**: To allow access from emulators or physical devices, you must configure the REST API to listen on all interfaces. Add `RAG_HOST=0.0.0.0` to your `.env` file and restart the server.
+-   **iOS Simulator**: `http://localhost:8001/api` works out of the box.
+-   **Android Emulator**: Change `API_BASE` in `mobile/App.js` to `http://10.0.2.2:8001/api`.
+-   **Physical Device**: Change `API_BASE` in `mobile/App.js` to your computer's LAN IP (e.g., `http://192.168.1.50:8001/api`).
+
 ## Development
 
 ### Running Tests

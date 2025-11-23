@@ -1136,3 +1136,32 @@ def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> 
         if uri in store.docs:
             passages.append({"uri": uri, "text": store.docs[uri], "score": 1.0})
     return verify_grounding_simple(question, draft_answer, passages)
+
+
+def chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    """
+    Conversational chat using Ollama.
+    """
+    if completion is None:
+        return {"error": "LiteLLM not available"}
+
+    try:
+        resp = completion(
+            model=LLM_MODEL_NAME,
+            messages=messages,
+            api_base=OLLAMA_API_BASE,
+            temperature=LLM_TEMPERATURE,
+            stream=False,
+            timeout=300,
+        )
+        
+        if isinstance(resp, dict) and "choices" in resp:
+             content = resp["choices"][0]["message"]["content"]
+             return {"role": "assistant", "content": content}
+        
+        # Handle other response formats if needed
+        return {"role": "assistant", "content": str(resp)}
+
+    except Exception as exc:
+        logger.error("Chat completion failed: %s", exc)
+        return {"error": str(exc)}

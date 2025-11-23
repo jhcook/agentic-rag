@@ -6,22 +6,21 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { 
-  Lightning, 
+  Zap as Lightning, 
   Database, 
-  CloudArrowUp,
+  CloudUpload as CloudArrowUp,
   Play,
   Pause,
-  DownloadSimple,
+  Download as DownloadSimple,
   Trash,
-  FunnelSimple,
+  Filter as FunnelSimple,
   Terminal,
   CheckCircle,
   XCircle,
-  Warning,
+  TriangleAlert as Warning,
   Info as InfoIcon,
-  MagnifyingGlass
-} from '@phosphor-icons/react'
-import { useKV } from '@github/spark/hooks'
+  Search as MagnifyingGlass
+} from 'lucide-react'
 import { toast } from 'sonner'
 
 type LogLevel = 'info' | 'warn' | 'error' | 'debug'
@@ -149,24 +148,8 @@ const generateMockLog = (source: string): LogEntry => {
   }
 }
 
-export function LogsViewer() {
-  const [ollamaConfig] = useKV<OllamaConfig>('ollama-config', {
-    apiEndpoint: 'http://localhost:11434',
-    model: 'llama3.2',
-    embeddingModel: 'nomic-embed-text',
-    temperature: '0.7',
-    topP: '0.9',
-    topK: '40',
-    repeatPenalty: '1.1',
-    seed: '-1',
-    numCtx: '2048',
-    mcpHost: '127.0.0.1',
-    mcpPort: '8000',
-    mcpPath: '/mcp',
-    ragHost: '127.0.0.1',
-    ragPort: '8001',
-    ragPath: 'api'
-  })
+export function LogsViewer({ config }: { config: OllamaConfig }) {
+  const ollamaConfig = config
 
   const [ollamaLogs, setOllamaLogs] = useState<LogEntry[]>([])
   const [mcpLogs, setMcpLogs] = useState<LogEntry[]>([])
@@ -184,9 +167,9 @@ export function LogsViewer() {
   const restScrollRef = useRef<HTMLDivElement>(null)
   
   const intervalRefs = useRef<{
-    ollama?: NodeJS.Timeout
-    mcp?: NodeJS.Timeout
-    rest?: NodeJS.Timeout
+    ollama?: ReturnType<typeof setInterval>
+    mcp?: ReturnType<typeof setInterval>
+    rest?: ReturnType<typeof setInterval>
   }>({})
 
   useEffect(() => {
@@ -300,7 +283,7 @@ export function LogsViewer() {
               <Badge variant={state.isStreaming ? 'default' : 'secondary'} className="gap-1">
                 {state.isStreaming ? (
                   <>
-                    <CheckCircle className="h-3 w-3" weight="fill" />
+                    <CheckCircle className="h-3 w-3" />
                     Streaming
                   </>
                 ) : (
@@ -350,7 +333,7 @@ export function LogsViewer() {
                       <span className="text-muted-foreground shrink-0">
                         {log.timestamp.toLocaleTimeString()}
                       </span>
-                      <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${LOG_LEVEL_STYLES[log.level]}`} weight="fill" />
+                      <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${LOG_LEVEL_STYLES[log.level]}`} />
                       <span className={`${LOG_LEVEL_STYLES[log.level]} break-all`}>
                         {log.message}
                       </span>

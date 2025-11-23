@@ -6,6 +6,8 @@ log
 documents
 cache
 **/*.log
+client_secrets.json
+token.json
 
 # OS generated files
 .DS_Store

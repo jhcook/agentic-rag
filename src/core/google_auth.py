@@ -1,0 +1,115 @@
+"""
+Google OAuth2 Authentication Manager.
+
+Handles the OAuth2 flow for Google APIs (Drive, Gemini/Generative Language).
+Manages client secrets, token storage, and credential refreshing.
+"""
+
+import os
+import logging
+import json
+from typing import Optional, List
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+logger = logging.getLogger(__name__)
+
+# Scopes required for the application
+SCOPES = [
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/gmail.readonly',      # Access to read emails
+    'https://www.googleapis.com/auth/generative-language.retriever', # For semantic retrieval if needed
+    'https://www.googleapis.com/auth/generative-language.tuning',    # For tuning if needed
+    'https://www.googleapis.com/auth/cloud-platform'                 # Broad scope, often needed for Vertex/Gemini
+]
+
+# Fallback to specific Generative Language scope if cloud-platform is too broad
+# SCOPES = [
+#     'https://www.googleapis.com/auth/drive.readonly',
+#     'https://www.googleapis.com/auth/generative-language'
+# ]
+
+class GoogleAuthManager:
+    def __init__(self, 
+                 secrets_path: str = "client_secrets.json", 
+                 token_path: str = "token.json"):
+        self.secrets_path = secrets_path
+        self.token_path = token_path
+        self.creds: Optional[Credentials] = None
+
+    def authenticate(self) -> Optional[Credentials]:
+        """
+        Get valid user credentials from storage. 
+        Does NOT trigger interactive flow automatically anymore (use web flow).
+        """
+        self.creds = None
+        
+        # 1. Try to load existing token
+        if os.path.exists(self.token_path):
+            try:
+                self.creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
+            except Exception as e:
+                logger.warning(f"Failed to load existing token: {e}")
+                # Delete invalid token file to prevent repeated errors
+                try:
+                    os.remove(self.token_path)
+                    logger.info("Deleted invalid token file.")
+                except OSError:
+                    pass
+                self.creds = None
+
+        # 2. Refresh if expired
+        if self.creds and self.creds.expired and self.creds.refresh_token:
+            try:
+                logger.info("Refreshing expired Google OAuth token...")
+                self.creds.refresh(Request())
+                # Save refreshed token
+                with open(self.token_path, 'w') as token:
+                    token.write(self.creds.to_json())
+            except Exception as e:
+                logger.warning(f"Token refresh failed: {e}.")
+                # Delete invalid token file
+                try:
+                    os.remove(self.token_path)
+                    logger.info("Deleted invalid token file after failed refresh.")
+                except OSError:
+                    pass
+                self.creds = None
+
+        return self.creds
+
+    def get_credentials(self) -> Optional[Credentials]:
+        if not self.creds or not self.creds.valid:
+            return self.authenticate()
+        return self.creds
+
+    def flow_from_client_secrets(self, redirect_uri: str):
+        """Create a Flow instance for web-based auth."""
+        if not os.path.exists(self.secrets_path):
+            raise FileNotFoundError(f"Client secrets file not found at {self.secrets_path}")
+            
+        return InstalledAppFlow.from_client_secrets_file(
+            self.secrets_path, 
+            SCOPES, 
+            redirect_uri=redirect_uri
+        )
+
+    def save_credentials(self, creds: Credentials):
+        """Save credentials to token.json."""
+        self.creds = creds
+        with open(self.token_path, 'w') as token:
+            token.write(creds.to_json())
+        logger.info(f"Token saved to {self.token_path}")
+
+    def logout(self):
+        """Clear credentials from memory and delete token file."""
+        self.creds = None
+        if os.path.exists(self.token_path):
+            try:
+                os.remove(self.token_path)
+                logger.info(f"Deleted token file at {self.token_path}")
+            except Exception as e:
+                logger.error(f"Error deleting token file: {e}")
+                raise

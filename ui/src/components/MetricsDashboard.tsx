@@ -5,21 +5,23 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MetricsChart } from '@/components/MetricsChart'
 import { MemoryUsageChart } from '@/components/MemoryUsageChart'
 import { 
-  ChartLine, 
+  LineChart as ChartLine, 
   Database, 
-  Lightning, 
+  Zap as Lightning, 
   Timer,
   Cpu,
-  HardDrives,
+  HardDrive as HardDrives,
   CheckCircle,
-  WarningCircle
-} from '@phosphor-icons/react'
-import { useKV } from '@github/spark/hooks'
+  AlertCircle as WarningCircle
+} from 'lucide-react'
 
 type OllamaConfig = {
   ragHost: string
   ragPort: string
   ragPath: string
+  mcpHost: string
+  mcpPort: string
+  mcpPath: string
 }
 
 type HealthData = {
@@ -45,27 +47,22 @@ type QualityMetrics = {
   avg_sources: number
 }
 
-export function MetricsDashboard() {
-  const [ollamaConfig] = useKV<OllamaConfig>('ollama-config', {
-    ragHost: '127.0.0.1',
-    ragPort: '8001',
-    ragPath: 'api'
-  })
-  const [health, setHealth] = useState<HealthData | null>(null)
-  const [mcpMetrics, setMcpMetrics] = useState<MCPMetrics | null>(null)
-  const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(null)
+export function MetricsDashboard({ config }: { config: OllamaConfig }) {
+  const [healthData, setHealth] = useState<HealthData | null>(null)
+  const [mcpData, setMcpMetrics] = useState<MCPMetrics | null>(null)
+  const [qualityData, setQualityMetrics] = useState<QualityMetrics | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [qualityError, setQualityError] = useState<string | null>(null)
-  const [restMetrics, setRestMetrics] = useState<Record<string, number>>({})
+  const [restData, setRestMetrics] = useState<Record<string, number>>({})
   const [restMetricsError, setRestMetricsError] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
     const fetchRestMetrics = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      const host = config?.ragHost || '127.0.0.1'
+      const port = config?.ragPort || '8001'
+      const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/metrics`
 
       try {
@@ -107,9 +104,9 @@ export function MetricsDashboard() {
     }
 
     const fetchHealth = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      const host = config?.ragHost || '127.0.0.1'
+      const port = config?.ragPort || '8001'
+      const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/${base}/health`
 
       try {
@@ -140,13 +137,13 @@ export function MetricsDashboard() {
       clearInterval(id)
       clearInterval(mid)
     }
-  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
+  }, [config?.ragHost, config?.ragPort, config?.ragPath])
 
   useEffect(() => {
     const controller = new AbortController()
     const fetchMcpMetrics = async () => {
-      const host = ollamaConfig?.mcpHost || '127.0.0.1'
-      const port = ollamaConfig?.mcpPort || '8000'
+      const host = config?.mcpHost || '127.0.0.1'
+      const port = config?.mcpPort || '8000'
       // MCP /metrics is exposed at the root (not under mcpPath)
       const url = `http://${host}:${port}/metrics`
       try {
@@ -169,14 +166,14 @@ export function MetricsDashboard() {
       controller.abort()
       clearInterval(id)
     }
-  }, [ollamaConfig?.mcpHost, ollamaConfig?.mcpPort, ollamaConfig?.mcpPath])
+  }, [config?.mcpHost, config?.mcpPort, config?.mcpPath])
 
   useEffect(() => {
     const controller = new AbortController()
     const fetchQuality = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      const host = config?.ragHost || '127.0.0.1'
+      const port = config?.ragPort || '8001'
+      const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/${base}/metrics/quality`
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
@@ -203,7 +200,7 @@ export function MetricsDashboard() {
       controller.abort()
       clearInterval(id)
     }
-  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
+  }, [config?.ragHost, config?.ragPort, config?.ragPath])
 
   const formatSize = (bytes: number) => {
     if (!bytes) return '0 B'
@@ -217,16 +214,16 @@ export function MetricsDashboard() {
     return `${size.toFixed(1)} ${units[idx]}`
   }
 
-  const docCount = health?.documents ?? 0
-  const vectorCount = health?.vectors ?? 0
-  const memoryMb = health?.memory_mb ?? 0
-  const sizeBytes = (health?.total_size_bytes ?? 0) || (health?.store_file_bytes ?? 0)
+  const docCount = healthData?.documents ?? 0
+  const vectorCount = healthData?.vectors ?? 0
+  const memoryMb = healthData?.memory_mb ?? 0
+  const sizeBytes = (healthData?.total_size_bytes ?? 0) || (healthData?.store_file_bytes ?? 0)
   const totalSize = formatSize(sizeBytes)
-  const mcpMemoryMb = mcpMetrics?.memory_mb ?? null
-  const quality = qualityMetrics
-  const restAvgLatency = restMetrics['rest_http_request_duration_avg'] || null
-  const restReqCount = restMetrics['rest_http_requests_total'] || null
-  const restInflight = restMetrics['rest_inflight_requests'] || null
+  const mcpMemoryMb = mcpData?.memory_mb ?? null
+  const quality = qualityData
+  const restAvgLatency = restData['rest_http_request_duration_avg'] || null
+  const restReqCount = restData['rest_http_requests_total'] || null
+  const restInflight = restData['rest_inflight_requests'] || null
 
   return (
     <div className="space-y-6">
@@ -250,8 +247,8 @@ export function MetricsDashboard() {
             <p className="text-xs text-muted-foreground mt-1">From REST /health</p>
             <div className="mt-2">
               <Badge variant="secondary" className="text-xs">
-                <CheckCircle className="h-3 w-3 mr-1" weight="fill" />
-                {health ? 'Healthy' : 'Unknown'}
+                <CheckCircle className="h-3 w-3 mr-1" />
+                {healthData ? 'Healthy' : 'Unknown'}
               </Badge>
             </div>
           </CardContent>
@@ -269,7 +266,7 @@ export function MetricsDashboard() {
             <p className="text-xs text-muted-foreground mt-1">FAISS index total vectors</p>
             <div className="mt-2">
               <Badge variant="secondary" className="text-xs">
-                {health ? 'Healthy' : 'Unknown'}
+                {healthData ? 'Healthy' : 'Unknown'}
               </Badge>
             </div>
           </CardContent>
@@ -287,8 +284,8 @@ export function MetricsDashboard() {
             <p className="text-xs text-muted-foreground mt-1">UTF-8 text volume</p>
             <div className="mt-2">
               <Badge variant="secondary" className="text-xs">
-                <CheckCircle className="h-3 w-3 mr-1" weight="fill" />
-                {health ? 'Healthy' : 'Unknown'}
+                <CheckCircle className="h-3 w-3 mr-1" />
+                {healthData ? 'Healthy' : 'Unknown'}
               </Badge>
             </div>
           </CardContent>
@@ -394,12 +391,12 @@ export function MetricsDashboard() {
               <CardContent>
                 <div className="text-2xl font-bold">{memoryMb.toFixed(0)} MB</div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Process RSS{health?.memory_limit_mb ? ` / Limit ${health.memory_limit_mb} MB` : ''}
+                  Process RSS{healthData?.memory_limit_mb ? ` / Limit ${healthData.memory_limit_mb} MB` : ''}
                 </p>
                 <div className="mt-2">
                   <Badge variant="secondary" className="text-xs">
-                    <CheckCircle className="h-3 w-3 mr-1" weight="fill" />
-                    {health ? 'Healthy' : 'Unknown'}
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    {healthData ? 'Healthy' : 'Unknown'}
                   </Badge>
                 </div>
               </CardContent>
@@ -419,13 +416,13 @@ export function MetricsDashboard() {
                 <p className="text-xs text-muted-foreground mt-1">From MCP /metrics</p>
                 <div className="mt-2">
                   <Badge variant="secondary" className="text-xs">
-                    <CheckCircle className="h-3 w-3 mr-1" weight="fill" />
+                    <CheckCircle className="h-3 w-3 mr-1" />
                     {mcpMemoryMb !== null ? 'Healthy' : 'Unknown'}
                   </Badge>
                 </div>
                 {mcpError && (
                   <p className="text-xs text-destructive mt-2 flex items-center gap-1">
-                    <WarningCircle className="h-3 w-3" weight="fill" /> {mcpError}
+                    <WarningCircle className="h-3 w-3" /> {mcpError}
                   </p>
                 )}
               </CardContent>

@@ -9,22 +9,22 @@ import time
 import uuid
 
 from src.core.rag_core import (
-    search,
     get_store,
     _rebuild_faiss_index,
     get_faiss_globals,
     MAX_MEMORY_MB,
     save_store,
-    grounded_answer,
-    rerank,
-    verify_grounding,
 )
 from src.core.indexer import index_path, upsert_document
-from src.core.extractors import _extract_text_from_file
+from src.core.extractors import _extract_text_from_file, extract_text_from_bytes
 from src.core.store import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
+from src.core.factory import get_rag_backend
 
 rest_api = FastAPI(title="mcp-rest-shim")
+
+# Initialize backend
+backend = get_rag_backend()
 
 rest_api.add_middleware(
     CORSMiddleware,
@@ -51,6 +51,23 @@ async def rest_upsert_document(request: Request):
         return JSONResponse({"job_id": job_id, "status": "queued"})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+@rest_api.post("/extract")
+async def rest_extract(request: Request):
+    """Extract text from an uploaded file (in-memory, no storage)."""
+    try:
+        form = await request.form()
+        file = form.get("file")
+        if not file:
+            return JSONResponse({"error": "file is required"}, status_code=422)
+        
+        content = await file.read()
+        filename = getattr(file, "filename", "unknown")
+        text = extract_text_from_bytes(content, filename)
+        return JSONResponse({"text": text, "filename": filename})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
 
 
 @rest_api.post("/index_path")
@@ -88,7 +105,7 @@ async def rest_search(request: Request):
                     (60, "what a mission"),
                 ]
                 try:
-                    result_local = search(query, top_k=5)
+                    result_local = backend.search(query, top_k=5)
                     # Normalize result
                     if hasattr(result_local, "model_dump"):
                         result_local = result_local.model_dump()
@@ -132,7 +149,7 @@ async def rest_search(request: Request):
                     if elapsed >= timeout_seconds:
                         # Timed out: return passages-only
                         try:
-                            passages = search(query, top_k=5, max_context_chars=4000)
+                            passages = backend.search(query, top_k=5) #, max_context_chars=4000) - backend interface might not support max_context_chars
                         except Exception as exc:
                             passages = {"error": str(exc)}
                         with JOBS_LOCK:
@@ -148,7 +165,7 @@ async def rest_search(request: Request):
             return JSONResponse({"job_id": job_id, "status": "queued"})
 
         # Sync path as before
-        result = await anyio.to_thread.run_sync(search, query)
+        result = await anyio.to_thread.run_sync(backend.search, query)
         # Normalize possible ModelResponse/dicts to JSON-serializable payload
         if hasattr(result, "model_dump"):
             result = result.model_dump()
@@ -166,7 +183,7 @@ async def rest_grounded_answer(request: Request):
     question = body.get("question", "")
     k = int(body.get("k", 3))
     try:
-        result = await anyio.to_thread.run_sync(grounded_answer, question, k)
+        result = await anyio.to_thread.run_sync(backend.grounded_answer, question, k)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -177,7 +194,7 @@ async def rest_rerank(request: Request):
     query = body.get("query", "")
     passages = body.get("passages", [])
     try:
-        result = await anyio.to_thread.run_sync(rerank, query, passages)
+        result = await anyio.to_thread.run_sync(backend.rerank, query, passages)
         return JSONResponse({"results": result})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -189,7 +206,7 @@ async def rest_verify_grounding(request: Request):
     draft_answer = body.get("draft_answer", "")
     citations = body.get("citations", [])
     try:
-        result = await anyio.to_thread.run_sync(verify_grounding, question, draft_answer, citations)
+        result = await anyio.to_thread.run_sync(backend.verify_grounding, question, draft_answer, citations)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -215,15 +232,8 @@ async def rest_documents_delete(request: Request):
     try:
         body = await request.json()
         uris = body.get("uris", [])
-        store = get_store()
-        deleted = 0
-        for uri in uris:
-            if uri in store.docs:
-                del store.docs[uri]
-                deleted += 1
-        save_store()
-        _rebuild_faiss_index()
-        return JSONResponse({"deleted": deleted})
+        result = await anyio.to_thread.run_sync(backend.delete_documents, uris)
+        return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -231,18 +241,8 @@ async def rest_documents_delete(request: Request):
 @rest_api.post("/flush_cache")
 async def rest_flush_cache():
     try:
-        store = get_store()
-        store.docs.clear()
-        removed = False
-        if DB_PATH and Path(DB_PATH).exists():
-            try:
-                Path(DB_PATH).unlink()
-                removed = True
-            except OSError:
-                removed = False
-        save_store()
-        _rebuild_faiss_index()
-        return JSONResponse({"status": "flushed", "db_removed": removed, "documents": len(store.docs)})
+        result = await anyio.to_thread.run_sync(backend.flush_cache)
+        return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -250,22 +250,8 @@ async def rest_flush_cache():
 @rest_api.get("/health")
 async def rest_health():
     try:
-        store = get_store()
-        index, _, _ = get_faiss_globals()
-        docs = len(getattr(store, "docs", {}))
-        vectors = index.ntotal if index is not None else 0  # type: ignore[attr-defined]
-        if docs > 0 and vectors == 0:
-            # Try a single rebuild to repopulate vectors if index is empty
-            _rebuild_faiss_index()
-            index, _, _ = get_faiss_globals()
-            vectors = index.ntotal if index is not None else 0  # type: ignore[attr-defined]
-        return JSONResponse({
-            "status": "ok",
-            "documents": docs,
-            "vectors": vectors,
-            "memory_mb": psutil.Process().memory_info().rss / 1024 / 1024,
-            "memory_limit_mb": MAX_MEMORY_MB,
-        })
+        stats = await anyio.to_thread.run_sync(backend.get_stats)
+        return JSONResponse(stats)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 

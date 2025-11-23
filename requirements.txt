@@ -1,5 +1,5 @@
 fastapi==0.119.0
-faiss-cpu==1.11.0
+faiss-cpu==1.13.0
 litellm==1.78.7
 mcp==1.18.0
 numpy==1.26.4
@@ -16,3 +16,7 @@ uv
 uvicorn==0.38.0
 beautifulsoup4==4.14.2
 prometheus-client==0.23.1
+google-generativeai
+google-auth-oauthlib
+google-api-python-client
+google-cloud-aiplatform

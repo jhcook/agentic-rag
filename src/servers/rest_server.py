@@ -16,8 +16,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 
 import psutil
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, Response, HTTPException, Form, UploadFile, File
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from prometheus_client import (
@@ -30,6 +30,8 @@ from prometheus_client import (
 
 from src.core.factory import get_rag_backend
 from src.core.interfaces import RAGBackend
+from src.core.google_auth import GoogleAuthManager
+from src.core.extractors import extract_text_from_bytes
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -85,23 +87,11 @@ sys.stderr.flush()
 # Get base path
 pth = os.getenv("RAG_PATH", "api")
 
-app = FastAPI(title="retrieval-rest-server")
-
-# Allow cross-origin calls from mobile/web clients (permissive by default)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 from contextlib import asynccontextmanager
-
-# ... imports ...
 
 # Initialize Backend
 backend: RAGBackend = get_rag_backend()
+auth_manager = GoogleAuthManager()
 
 # Mutable server state
 class ServerState:
@@ -132,6 +122,15 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error saving store on shutdown: {e}")
 
 app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
+
+# Allow cross-origin calls from mobile/web clients (permissive by default)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class IndexPathReq(BaseModel):
@@ -202,6 +201,10 @@ class DocumentsResp(BaseModel):
 class DeleteDocsReq(BaseModel):
     """Request model for deleting documents by URI."""
     uris: list[str]
+
+class ConfigModeReq(BaseModel):
+    """Request model for setting the backend mode."""
+    mode: str
 
 class QualityMetricsResp(BaseModel):
     """Aggregated quality metrics for searches."""
@@ -580,6 +583,27 @@ def api_documents_delete(req: DeleteDocsReq):
         logger.error("documents delete failed: %s", exc)
         return {"deleted": 0, "error": str(exc)}
 
+@app.get(f"/{pth}/config/mode")
+def api_get_mode():
+    """Get the current backend mode."""
+    if hasattr(backend, "get_mode"):
+        return {
+            "mode": backend.get_mode(),
+            "available_modes": backend.get_available_modes()
+        }
+    return {"mode": "unknown", "available_modes": []}
+
+@app.post(f"/{pth}/config/mode")
+def api_set_mode(req: ConfigModeReq):
+    """Set the backend mode (e.g., 'local', 'google')."""
+    if hasattr(backend, "set_mode"):
+        success = backend.set_mode(req.mode)
+        if success:
+            return {"status": "ok", "mode": req.mode}
+        else:
+            raise HTTPException(status_code=400, detail=f"Mode '{req.mode}' not available. Available: {backend.get_available_modes()}")
+    raise HTTPException(status_code=501, detail="Backend does not support mode switching")
+
 @app.get(f"/{pth}/jobs", response_model=dict)
 def api_jobs():
     """List async indexing jobs (pass-through to MCP)."""
@@ -634,6 +658,269 @@ def api_quality_metrics():
         "success_rate": success_rate,
         "avg_sources": avg_sources,
     }
+
+@app.get(f"/{pth}/auth/login")
+def auth_login(request: Request):
+    """Initiate Google OAuth2 flow."""
+    # Construct callback URL based on the request's host
+    # This requires the Google Cloud Console to have this exact URI whitelisted
+    redirect_uri = str(request.url_for('auth_callback'))
+    
+    # Force localhost if 127.0.0.1 is used, as Google often requires localhost
+    if "127.0.0.1" in redirect_uri:
+        redirect_uri = redirect_uri.replace("127.0.0.1", "localhost")
+    
+    # If running behind a proxy (like ngrok or in some container setups), 
+    # you might need to force https or a specific host.
+    # For now, we trust the request headers.
+    
+    logger.info(f"Initiating auth flow with redirect_uri: {redirect_uri}")
+    
+    try:
+        flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        logger.info(f"Generated auth URL: {authorization_url}")
+        response = RedirectResponse(authorization_url)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+    except Exception as e:
+        logger.error(f"Error initiating auth: {e}")
+        # If client_secrets.json is missing, redirect to setup page
+        if "Client secrets file not found" in str(e) or "No such file" in str(e):
+             return RedirectResponse(url=request.url_for('auth_setup'))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"/{pth}/auth/setup", name="auth_setup")
+def auth_setup(request: Request):
+    """Show the setup page for Google Auth."""
+    return HTMLResponse(content="""
+        <html>
+            <head>
+                <title>Setup Google Integration</title>
+                <style>
+                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 40px; max-width: 600px; margin: 0 auto; background-color: #f5f5f7; }
+                    .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                    h1 { margin-top: 0; color: #1d1d1f; }
+                    p { color: #86868b; line-height: 1.5; }
+                    label { display: block; margin-top: 20px; font-weight: 500; color: #1d1d1f; }
+                    input[type="text"] { width: 100%; padding: 12px; margin-top: 8px; border: 1px solid #d2d2d7; border-radius: 8px; font-size: 16px; box-sizing: border-box; }
+                    button { background-color: #0071e3; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; font-weight: 600; margin-top: 30px; cursor: pointer; width: 100%; }
+                    button:hover { background-color: #0077ed; }
+                    .details { margin-top: 20px; font-size: 14px; }
+                    summary { cursor: pointer; color: #0071e3; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h1>Connect Google Drive</h1>
+                    <p>To enable "Premium" features like Drive search and Gemini integration, we need to connect to your Google Cloud project.</p>
+                    
+                    <form action="./setup" method="post">
+                        <label for="client_id">Client ID</label>
+                        <input type="text" id="client_id" name="client_id" placeholder="e.g., 12345...apps.googleusercontent.com" required>
+                        
+                        <label for="client_secret">Client Secret</label>
+                        <input type="text" id="client_secret" name="client_secret" placeholder="e.g., GOCSPX-..." required>
+                        
+                        <button type="submit">Save & Connect</button>
+                    </form>
+                    
+                    <div class="details">
+                        <details>
+                            <summary>How do I get these?</summary>
+                            <ol>
+                                <li>Go to the <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>.</li>
+                                <li>Create a new Project (or select existing).</li>
+                                <li>Go to <strong>APIs & Services > Credentials</strong>.</li>
+                                <li>Click <strong>Create Credentials > OAuth client ID</strong>.</li>
+                                <li>Select <strong>Web application</strong>.</li>
+                                <li>Add this Redirect URI: <br><code>http://localhost:8001/api/auth/callback</code></li>
+                                <li>Click Create and copy the ID and Secret.</li>
+                            </ol>
+                        </details>
+                    </div>
+                </div>
+            </body>
+        </html>
+    """)
+
+@app.post(f"/{pth}/auth/setup")
+def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
+    """Save the provided credentials to client_secrets.json."""
+    import json
+    
+    # Basic validation
+    if not client_id or not client_secret:
+        return HTMLResponse("Missing fields", status_code=400)
+        
+    # Construct the JSON structure expected by google-auth-oauthlib
+    secrets = {
+        "web": {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret.strip(),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": [
+                str(request.url_for('auth_callback')),
+                "http://localhost:8001/api/auth/callback"
+            ]
+        }
+    }
+    
+    try:
+        with open("client_secrets.json", "w") as f:
+            json.dump(secrets, f, indent=2)
+            
+        # Redirect back to login to start the flow
+        return RedirectResponse(url=request.url_for('auth_login'), status_code=303)
+    except Exception as e:
+        logger.error(f"Failed to save secrets: {e}")
+        return HTMLResponse(f"Failed to save configuration: {e}", status_code=500)
+
+@app.get(f"/{pth}/auth/callback", name="auth_callback")
+def auth_callback(request: Request, code: str, state: Optional[str] = None):
+    """Handle Google OAuth2 callback."""
+    redirect_uri = str(request.url_for('auth_callback'))
+    logger.info(f"Handling auth callback with redirect_uri: {redirect_uri}")
+    
+    try:
+        flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        auth_manager.save_credentials(creds)
+        
+        # Reload the backend's auth if necessary
+        if hasattr(backend, 'reload_auth'):
+            backend.reload_auth()
+        
+        return HTMLResponse(content="""
+            <html>
+                <head><title>Auth Success</title
+                    <h1 style="color: green;">Authentication Successful</h1>
+                    <p>You have successfully connected your Google account.</p>
+                    <p>You can close this window and return to the app.</p>
+                </body>
+            </html>
+        """)
+    except Exception as e:
+        logger.error(f"Error in auth callback: {e}")
+        return HTMLResponse(content=f"""
+            <html>
+                <head><title>Auth Failed</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+                    <h1 style="color: red;">Authentication Failed</h1>
+                    <p>{e}</p>
+                </body>
+            </html>
+        """, status_code=500)
+
+@app.get(f"/{pth}/auth/logout")
+def auth_logout(request: Request):
+    """Log out by deleting the stored token."""
+    try:
+        logger.info(f"Logout requested. Checking for token file...")
+        auth_manager.logout()
+        if hasattr(backend, 'logout'):
+            backend.logout()
+        logger.info("Logout successful")
+        return JSONResponse({"status": "logged_out"})
+    except Exception as e:
+        logger.error(f"Error logging out: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatReq(BaseModel):
+    messages: List[ChatMessage]
+
+@app.post(f"/{pth}/chat")
+def api_chat(req: ChatReq):
+    """Conversational chat."""
+    logger.info("Chat request received")
+    if hasattr(backend, "chat"):
+        return backend.chat([m.model_dump() for m in req.messages])
+    raise HTTPException(status_code=501, detail="Backend does not support chat")
+
+@app.get(f"/{pth}/drive/files")
+def api_drive_files(folder_id: Optional[str] = None):
+    """List Drive files."""
+    if hasattr(backend, "list_drive_files"):
+        return {"files": backend.list_drive_files(folder_id)}
+    # If backend doesn't support drive files (e.g. Local), return empty or error?
+    # For now, return empty list to avoid breaking UI
+    return {"files": []}
+
+@app.post(f"/{pth}/drive/upload")
+async def api_drive_upload(file: UploadFile = File(...), folder_id: Optional[str] = Form(None)):
+    """Upload file to Drive."""
+    if hasattr(backend, "upload_file"):
+        content = await file.read()
+        return backend.upload_file(file.filename, content, file.content_type)
+    raise HTTPException(status_code=501, detail="Backend does not support drive upload")
+
+@app.post(f"/{pth}/extract")
+async def api_extract(file: UploadFile = File(...)):
+    """Extract text from an uploaded file (in-memory, no storage)."""
+    try:
+        content = await file.read()
+        text = extract_text_from_bytes(content, file.filename)
+        return {"text": text, "filename": file.filename}
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class VertexConfigReq(BaseModel):
+    project_id: str
+    location: str
+    data_store_id: str
+
+@app.post(f"/{pth}/config/vertex")
+def api_save_vertex_config(req: VertexConfigReq):
+    """Save Vertex AI configuration."""
+    config = {
+        "VERTEX_PROJECT_ID": req.project_id,
+        "VERTEX_LOCATION": req.location,
+        "VERTEX_DATA_STORE_ID": req.data_store_id
+    }
+    # Save to file
+    try:
+        with open("vertex_config.json", "w") as f:
+            import json
+            json.dump(config, f, indent=2)
+        
+        # Update current process env vars so it works immediately
+        os.environ.update(config)
+        
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"Failed to save vertex config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"/{pth}/config/vertex")
+def api_get_vertex_config():
+    """Get Vertex AI configuration."""
+    try:
+        if os.path.exists("vertex_config.json"):
+            with open("vertex_config.json", "r") as f:
+                import json
+                return json.load(f)
+        return {
+            "VERTEX_PROJECT_ID": os.getenv("VERTEX_PROJECT_ID", ""),
+            "VERTEX_LOCATION": os.getenv("VERTEX_LOCATION", "us-central1"),
+            "VERTEX_DATA_STORE_ID": os.getenv("VERTEX_DATA_STORE_ID", "")
+        }
+    except Exception as e:
+        logger.error(f"Failed to read vertex config: {e}")
+        return {}
 
 if __name__ == "__main__":
     try:
