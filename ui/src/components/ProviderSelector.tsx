@@ -95,7 +95,7 @@ export function ProviderSelector({ config }: { config: any }) {
           className="w-full justify-between"
           disabled={loading}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 truncate">
             <currentProvider.icon className="h-4 w-4" />
             {currentProvider.label}
           </div>

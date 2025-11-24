@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Send, User, Bot, Download, Paperclip, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { toast } from 'sonner'
 import { marked } from 'marked'
@@ -31,10 +32,11 @@ function MarkdownRenderer({ content }: { content: string }) {
   return <div className="prose prose-sm dark:prose-invert max-w-none [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4 [&>a]:text-blue-500 [&>a]:underline" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-export function ChatInterface({ config, messages, setMessages }: { config: any, messages: Message[], setMessages: React.Dispatch<React.SetStateAction<Message[]>> }) {
+export function ChatInterface({ config, messages, setMessages, selectedModel }: { config: any, messages: Message[], setMessages: React.Dispatch<React.SetStateAction<Message[]>>, selectedModel: string }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [attachments, setAttachments] = useState<{name: string, content: string}[]>([])
+  const [sendHistory, setSendHistory] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -44,6 +46,15 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
       viewportRef.current.scrollTop = viewportRef.current.scrollHeight
     }
   }, [messages, loading])
+
+  // Set default for history based on model
+  useEffect(() => {
+    if (selectedModel && selectedModel.toLowerCase().includes('ollama')) {
+      setSendHistory(false); // Default to no history for Ollama models
+    } else {
+      setSendHistory(true); // Default to with history for others
+    }
+  }, [selectedModel]);
 
   const handleSend = async () => {
     if (!input.trim() && attachments.length === 0) return
@@ -67,12 +78,16 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
 
+    const messagesToSend = sendHistory ? [...messages, userMsg] : [userMsg];
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: [...messages, userMsg].map(m => ({ role: m.role, content: m.content }))
+          // Conditionally send history
+          messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
+          model: selectedModel || undefined
         })
       })
 
@@ -97,7 +112,22 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
         return
       }
 
-      const botMsg: Message = { role: 'assistant', content: data.content || data.answer || "No response", timestamp: Date.now() }
+      let responseContent = data.content || data.answer || "No response";
+
+      // Defensive parsing to handle raw ModelResponse object string
+      if (typeof responseContent === 'string' && responseContent.startsWith('ModelResponse(')) {
+        const match = responseContent.match(/message=Message\(content='([^']*)'/);
+        if (match && match[1]) {
+          // It's a bit of a hack, but we can un-escape the string
+          responseContent = match[1].replace(/\\n/g, '\n').replace(/\\'/g, "'").replace(/\\"/g, '"');
+        }
+      }
+
+      const botMsg: Message = { 
+        role: 'assistant', 
+        content: responseContent, 
+        timestamp: Date.now() 
+      }
       setMessages(prev => [...prev, botMsg])
     } catch (e: any) {
       console.error(e)
@@ -262,6 +292,15 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
           <Button onClick={handleSend} disabled={loading || (!input.trim() && attachments.length === 0)} size="icon">
             <Send className="h-4 w-4" />
           </Button>
+        </div>
+        <div className="flex items-center space-x-2 mt-2">
+          <Checkbox id="send-history" checked={sendHistory} onCheckedChange={(checked) => setSendHistory(Boolean(checked))} />
+          <label
+            htmlFor="send-history"
+            className="text-xs font-medium leading-none text-muted-foreground peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+          >
+            Send conversation history
+          </label>
         </div>
       </div>
     </div>
