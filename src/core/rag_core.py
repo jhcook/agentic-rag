@@ -921,7 +921,7 @@ def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str
     return {"answer": answer or "I don't know.", "citations": citations}
 
 
-def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
+def grounded_answer(question: str, k: int = SEARCH_TOP_K, **kwargs: Any) -> Dict[str, Any]:
     """
     Grounded career-centric answer: retrieve, rerank, filter signatures/boilerplate,
     and synthesize with citations; falls back gracefully when no signal.
@@ -936,6 +936,9 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
         "cheers",
         "sincerely",
     )
+
+    model_name = kwargs.get("model", LLM_MODEL_NAME)
+    temperature = kwargs.get("temperature", LLM_TEMPERATURE)
 
     def _is_low_signal(passage: Dict[str, Any]) -> bool:
         text = str(passage.get("text", "")).strip()
@@ -1008,13 +1011,22 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
     )
     user_msg = f"Document Content:\n{context}\n\nQuestion: {question}"
 
+    # Extract num_ctx if provided
+    num_ctx = kwargs.get("num_ctx")
+    if num_ctx:
+        try:
+            num_ctx = int(num_ctx)
+        except (ValueError, TypeError):
+            num_ctx = None
+
     try:
         resp = completion(  # type: ignore
-            model=LLM_MODEL_NAME,
+            model=model_name,
             messages=[{"role": "system", "content": system_msg},
                       {"role": "user", "content": user_msg}],
             api_base=OLLAMA_API_BASE,
-            temperature=LLM_TEMPERATURE,
+            temperature=temperature,
+            num_ctx=num_ctx,
             stream=False,
             timeout=90,
         )
@@ -1057,13 +1069,16 @@ def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> 
     return verify_grounding_simple(question, draft_answer, passages)
 
 
-def chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
     """
     Conversational chat using Ollama with RAG context from indexed documents.
     Only uses indexed document content - no external knowledge.
     """
     if completion is None:
         return {"error": "LiteLLM not available"}
+
+    model_name = kwargs.get("model", LLM_MODEL_NAME)
+    temperature = kwargs.get("temperature", LLM_TEMPERATURE)
 
     # Extract the latest user message to use as search query
     last_user_msg = next((m for m in reversed(messages) if m.get("role") == "user"), None)
@@ -1105,12 +1120,21 @@ def chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     # Add system message at the beginning
     final_messages = [{"role": "system", "content": system_msg}] + enhanced_messages
 
+    # Extract num_ctx if provided
+    num_ctx = kwargs.get("num_ctx")
+    if num_ctx:
+        try:
+            num_ctx = int(num_ctx)
+        except (ValueError, TypeError):
+            num_ctx = None
+
     try:
         resp = completion(
-            model=LLM_MODEL_NAME,
+            model=model_name,
             messages=final_messages,
             api_base=OLLAMA_API_BASE,
-            temperature=LLM_TEMPERATURE,
+            temperature=temperature,
+            num_ctx=num_ctx,
             stream=False,
             timeout=300,
         )

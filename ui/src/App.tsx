@@ -35,6 +35,7 @@ import { ProviderSelector } from '@/components/ProviderSelector'
 import { FileManager } from '@/components/FileManager'
 import { ChatInterface, Message } from '@/components/ChatInterface'
 import { ConversationSidebar, Conversation } from '@/components/ConversationSidebar'
+import { SettingsDashboard } from '@/components/SettingsDashboard'
 
 type IndexedItem = {
   id: string
@@ -124,6 +125,30 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activeMode, setActiveMode] = useState<string>('local')
+
+  // Fetch app config on mount
+  useEffect(() => {
+    const fetchAppConfig = async () => {
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      try {
+        const res = await fetch(`http://${host}:${port}/${base}/config/app`)
+        if (res.ok) {
+          const data = await res.json()
+          if (Object.keys(data).length > 0) {
+            setOllamaConfig(prev => ({
+              ...prev,
+              ...data
+            }))
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch app config", e)
+      }
+    }
+    fetchAppConfig()
+  }, []) // Run once on mount, using initial env vars to find server
 
   // Fetch active mode
   useEffect(() => {
@@ -634,10 +659,29 @@ function App() {
     })
   }
 
-  const handleSaveConfig = () => {
-    toast.success('Configuration saved', {
-      description: 'Ollama settings have been updated'
-    })
+  const handleSaveConfig = async () => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ollamaConfig)
+      })
+      
+      if (res.ok) {
+        toast.success('Configuration saved', {
+          description: 'Settings have been saved to server'
+        })
+      } else {
+        throw new Error('Failed to save')
+      }
+    } catch (e) {
+      console.error("Failed to save config", e)
+      toast.error('Failed to save configuration')
+    }
   }
 
   const handleGoogleLogin = () => {
@@ -1140,606 +1184,17 @@ function App() {
           </TabsContent>
 
           <TabsContent value="settings" className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-2">Settings</h2>
-              <p className="text-muted-foreground">Configure AI providers and system preferences</p>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>REST API Server Configuration</CardTitle>
-                <CardDescription>Connection details for the Agentic RAG REST API</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="rag-host">Host</Label>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                            <Info className="h-4 w-4" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="max-w-xs">Host/IP for the REST API server.</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                    <Input
-                      id="rag-host"
-                      value={ollamaConfig?.ragHost || ''}
-                      onChange={(e) => handleConfigChange('ragHost', e.target.value)}
-                      placeholder="127.0.0.1"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="rag-port">Port</Label>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                            <Info className="h-4 w-4" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="max-w-xs">Port for the REST API server (default 8001).</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                    <Input
-                      id="rag-port"
-                      value={ollamaConfig?.ragPort || ''}
-                      onChange={(e) => handleConfigChange('ragPort', e.target.value)}
-                      placeholder="8001"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="rag-path">Base Path</Label>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                            <Info className="h-4 w-4" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="max-w-xs">Base path prefix for REST routes (e.g., /api).</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                    <Input
-                      id="rag-path"
-                      value={ollamaConfig?.ragPath || ''}
-                      onChange={(e) => handleConfigChange('ragPath', e.target.value)}
-                      placeholder="api"
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>AI Provider</CardTitle>
-                <CardDescription>Select your preferred AI backend</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <Collapsible open={ollamaExpanded} onOpenChange={setOllamaExpanded}>
-                  <div className="rounded-lg border border-border">
-                    <CollapsibleTrigger asChild>
-                      <button className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                            <Lightning className="h-5 w-5 text-primary" />
-                          </div>
-                          <div className="text-left">
-                            <p className="font-semibold">Ollama (Local)</p>
-                            <p className="text-sm text-muted-foreground">Run AI models locally</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge>Active</Badge>
-                          {ollamaExpanded ? (
-                            <CaretUp className="h-5 w-5 text-muted-foreground" />
-                          ) : (
-                            <CaretDown className="h-5 w-5 text-muted-foreground" />
-                          )}
-                        </div>
-                      </button>
-                    </CollapsibleTrigger>
-                    
-                    <CollapsibleContent>
-                      <div className="border-t border-border p-6 space-y-6">
-                        <div className="space-y-4">
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <Label htmlFor="api-endpoint">Ollama API Endpoint</Label>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                    <Info className="h-4 w-4" />
-                                  </button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p className="max-w-xs">The URL where your local Ollama server is running. Default is http://localhost:11434</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </div>
-                            <Input
-                              id="api-endpoint"
-                              value={ollamaConfig?.apiEndpoint || ''}
-                              onChange={(e) => handleConfigChange('apiEndpoint', e.target.value)}
-                              placeholder="http://localhost:11434"
-                            />
-                          </div>
-
-                          <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
-                            <h4 className="font-semibold text-sm">MCP Server Configuration</h4>
-                            <div className="grid gap-4 md:grid-cols-3">
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="mcp-host">Host</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Host address for the MCP (Model Context Protocol) server endpoint</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="mcp-host"
-                                  value={ollamaConfig?.mcpHost || ''}
-                                  onChange={(e) => handleConfigChange('mcpHost', e.target.value)}
-                                  placeholder="127.0.0.1"
-                                />
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="mcp-port">Port</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Port number for the MCP server. Default is 8000</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="mcp-port"
-                                  value={ollamaConfig?.mcpPort || ''}
-                                  onChange={(e) => handleConfigChange('mcpPort', e.target.value)}
-                                  placeholder="8000"
-                                />
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="mcp-path">Path</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Base path for MCP streamable HTTP transport (e.g., /mcp)</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="mcp-path"
-                                  value={ollamaConfig?.mcpPath || ''}
-                                  onChange={(e) => handleConfigChange('mcpPath', e.target.value)}
-                                  placeholder="/mcp"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
-                            <h4 className="font-semibold text-sm">REST API Server Configuration</h4>
-                            <div className="grid gap-4 md:grid-cols-3">
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="rag-host">Host</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Host address for the REST API server endpoint</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="rag-host"
-                                  value={ollamaConfig?.ragHost || ''}
-                                  onChange={(e) => handleConfigChange('ragHost', e.target.value)}
-                                  placeholder="127.0.0.1"
-                                />
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="rag-port">Port</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Port number for the REST API server. Default is 8001</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="rag-port"
-                                  value={ollamaConfig?.ragPort || ''}
-                                  onChange={(e) => handleConfigChange('ragPort', e.target.value)}
-                                  placeholder="8001"
-                                />
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="flex items-center gap-2">
-                                  <Label htmlFor="rag-path">Base Path</Label>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                        <Info className="h-4 w-4" />
-                                      </button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      <p className="max-w-xs">Base path prefix for REST API routes (e.g., api or /api)</p>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                                <Input
-                                  id="rag-path"
-                                  value={ollamaConfig?.ragPath || ''}
-                                  onChange={(e) => handleConfigChange('ragPath', e.target.value)}
-                                  placeholder="api"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          <Collapsible open={advancedExpanded} onOpenChange={setAdvancedExpanded}>
-                            <CollapsibleTrigger asChild>
-                              <Button variant="outline" className="w-full justify-between">
-                                <span>Advanced Parameters</span>
-                                {advancedExpanded ? (
-                                  <CaretUp className="h-4 w-4" />
-                                ) : (
-                                  <CaretDown className="h-4 w-4" />
-                                )}
-                              </Button>
-                            </CollapsibleTrigger>
-                            <CollapsibleContent>
-                              <div className="space-y-4 mt-4 p-4 rounded-lg border border-border bg-muted/30">
-                                <div className="grid gap-4 md:grid-cols-2">
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="model">Model</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">The primary LLM model to use for generating responses (e.g., llama3.2, mistral, codellama)</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="model"
-                                      value={ollamaConfig?.model || ''}
-                                      onChange={(e) => handleConfigChange('model', e.target.value)}
-                                      placeholder="llama3.2"
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="embedding-model">Embedding Model</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Model used to convert documents into vector embeddings for semantic search (e.g., nomic-embed-text)</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="embedding-model"
-                                      value={ollamaConfig?.embeddingModel || ''}
-                                      onChange={(e) => handleConfigChange('embeddingModel', e.target.value)}
-                                      placeholder="nomic-embed-text"
-                                    />
-                                  </div>
-                                </div>
-
-                                <div className="grid gap-4 md:grid-cols-3">
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="temperature">Temperature</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Controls randomness in responses. Higher values (e.g., 0.8) make output more creative, lower values (e.g., 0.2) make it more focused and deterministic. Range: 0-2</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="temperature"
-                                      type="number"
-                                      step="0.1"
-                                      min="0"
-                                      max="2"
-                                      value={ollamaConfig?.temperature || ''}
-                                      onChange={(e) => handleConfigChange('temperature', e.target.value)}
-                                      placeholder="0.7"
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="top-p">Top P</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Nucleus sampling threshold. The model considers tokens with cumulative probability up to this value. Lower values make output more focused. Range: 0-1</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="top-p"
-                                      type="number"
-                                      step="0.1"
-                                      min="0"
-                                      max="1"
-                                      value={ollamaConfig?.topP || ''}
-                                      onChange={(e) => handleConfigChange('topP', e.target.value)}
-                                      placeholder="0.9"
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="top-k">Top K</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Limits token selection to the top K most likely tokens. Lower values make output more predictable. Typical range: 10-100</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="top-k"
-                                      type="number"
-                                      value={ollamaConfig?.topK || ''}
-                                      onChange={(e) => handleConfigChange('topK', e.target.value)}
-                                      placeholder="40"
-                                    />
-                                  </div>
-                                </div>
-
-                                <div className="grid gap-4 md:grid-cols-3">
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="repeat-penalty">Repeat Penalty</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Penalizes repeated tokens to reduce redundancy. Higher values (e.g., 1.2) discourage repetition more strongly. Range: 0-2</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="repeat-penalty"
-                                      type="number"
-                                      step="0.1"
-                                      min="0"
-                                      value={ollamaConfig?.repeatPenalty || ''}
-                                      onChange={(e) => handleConfigChange('repeatPenalty', e.target.value)}
-                                      placeholder="1.1"
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="seed">Seed</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Random seed for reproducible outputs. Use -1 for random generation, or set a specific number to get consistent results</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="seed"
-                                      type="number"
-                                      value={ollamaConfig?.seed || ''}
-                                      onChange={(e) => handleConfigChange('seed', e.target.value)}
-                                      placeholder="-1"
-                                    />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <div className="flex items-center gap-2">
-                                      <Label htmlFor="num-ctx">Context Length</Label>
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                            <Info className="h-4 w-4" />
-                                          </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          <p className="max-w-xs">Maximum context window size in tokens. Determines how much text the model can process at once. Larger values require more memory</p>
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </div>
-                                    <Input
-                                      id="num-ctx"
-                                      type="number"
-                                      value={ollamaConfig?.numCtx || ''}
-                                      onChange={(e) => handleConfigChange('numCtx', e.target.value)}
-                                      placeholder="2048"
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            </CollapsibleContent>
-                          </Collapsible>
-                        </div>
-
-                        <div className="flex gap-3 pt-4 border-t border-border">
-                          <Button onClick={handleTestConnection} variant="outline">
-                            <CheckCircle className="h-4 w-4 mr-2" />
-                            Test Connection
-                          </Button>
-                          <Button onClick={handleSaveConfig}>
-                            <GearSix className="h-4 w-4 mr-2" />
-                            Save Configuration
-                          </Button>
-                        </div>
-                      </div>
-                    </CollapsibleContent>
-                  </div>
-                </Collapsible>
-
-                <div className="flex items-center justify-between rounded-lg border border-border p-4 opacity-60">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      <CloudArrowUp className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <p className="font-semibold">OpenAI + OneDrive</p>
-                      <p className="text-sm text-muted-foreground">Cloud AI with OneDrive integration</p>
-                    </div>
-                  </div>
-                  <Badge variant="secondary">Coming Soon</Badge>
-                </div>
-
-                <Collapsible open={googleExpanded} onOpenChange={setGoogleExpanded}>
-                  <div className="rounded-lg border border-border">
-                    <CollapsibleTrigger asChild>
-                      <button className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                            <CloudArrowUp className="h-5 w-5 text-muted-foreground" />
-                          </div>
-                          <div className="text-left">
-                            <p className="font-semibold">Gemini + Google Drive</p>
-                            <p className="text-sm text-muted-foreground">Google AI with Drive integration</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {googleExpanded ? (
-                            <CaretUp className="h-5 w-5 text-muted-foreground" />
-                          ) : (
-                            <CaretDown className="h-5 w-5 text-muted-foreground" />
-                          )}
-                        </div>
-                      </button>
-                    </CollapsibleTrigger>
-                    
-                    <CollapsibleContent>
-                      <div className="border-t border-border p-6 space-y-6">
-                        <p className="text-sm text-muted-foreground">
-                          Connect your Google account to enable semantic search across your Google Drive documents and use Gemini models.
-                        </p>
-                        <div className="flex gap-3">
-                          <Button onClick={handleGoogleLogin} className="flex-1">
-                             Connect Google Account
-                          </Button>
-                          <Button onClick={handleGoogleLogout} variant="outline" className="flex-1">
-                             Disconnect
-                          </Button>
-                        </div>
-
-                        <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20 mt-4">
-                          <h4 className="font-semibold text-sm">Vertex AI Configuration (Enterprise)</h4>
-                          <p className="text-xs text-muted-foreground">Required for "Vertex AI Agent" mode.</p>
-                          
-                          <div className="space-y-2">
-                            <Label htmlFor="vertex-project">Project ID</Label>
-                            <Input
-                              id="vertex-project"
-                              value={vertexConfig.projectId}
-                              onChange={(e) => setVertexConfig({...vertexConfig, projectId: e.target.value})}
-                              placeholder="my-gcp-project-id"
-                            />
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <Label htmlFor="vertex-location">Location</Label>
-                            <Input
-                              id="vertex-location"
-                              value={vertexConfig.location}
-                              onChange={(e) => setVertexConfig({...vertexConfig, location: e.target.value})}
-                              placeholder="us-central1"
-                            />
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <Label htmlFor="vertex-datastore">Data Store ID</Label>
-                            <Input
-                              id="vertex-datastore"
-                              value={vertexConfig.dataStoreId}
-                              onChange={(e) => setVertexConfig({...vertexConfig, dataStoreId: e.target.value})}
-                              placeholder="my-datastore-id"
-                            />
-                          </div>
-                          
-                          <Button onClick={handleSaveVertexConfig} size="sm" variant="secondary" className="w-full">
-                            Save Vertex Configuration
-                          </Button>
-                        </div>
-                      </div>
-                    </CollapsibleContent>
-                  </div>
-                </Collapsible>
-              </CardContent>
-            </Card>
+            <SettingsDashboard
+              config={ollamaConfig}
+              onConfigChange={handleConfigChange}
+              onSaveConfig={handleSaveConfig}
+              onTestConnection={handleTestConnection}
+              vertexConfig={vertexConfig}
+              onVertexConfigChange={setVertexConfig}
+              onSaveVertexConfig={handleSaveVertexConfig}
+              onGoogleLogin={handleGoogleLogin}
+              onGoogleLogout={handleGoogleLogout}
+            />
           </TabsContent>
         </Tabs>
       </main>

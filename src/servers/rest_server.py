@@ -7,6 +7,7 @@ Run with:
 
 import os
 import sys
+import json
 import logging
 import time
 import threading
@@ -85,6 +86,50 @@ uvicorn_error_logger.disabled = True
 # Ensure log file flushes immediately
 sys.stdout.flush()
 sys.stderr.flush()
+
+# Load configuration from file if it exists
+CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+
+def load_app_config():
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+            
+            # Update environment variables for MCP
+            if "mcpHost" in config:
+                os.environ["MCP_HOST"] = config["mcpHost"]
+            if "mcpPort" in config:
+                os.environ["MCP_PORT"] = str(config["mcpPort"])
+            if "mcpPath" in config:
+                os.environ["MCP_PATH"] = config["mcpPath"]
+                
+            # Update RAG Core configuration
+            import src.core.rag_core as rag_core
+            
+            # Map settings.json keys to rag_core variables
+            if "apiEndpoint" in config:
+                rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
+            elif "ollamaApiUrl" in config:  # Legacy fallback
+                rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
+                
+            if "model" in config:
+                rag_core.LLM_MODEL_NAME = config["model"]
+                rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
+            elif "ollamaModel" in config:  # Legacy fallback
+                rag_core.LLM_MODEL_NAME = config["ollamaModel"]
+                rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
+                
+            if "embeddingModel" in config:
+                rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
+            
+            logger.info(f"Loaded configuration from {CONFIG_FILE}")
+            return config
+        except Exception as e:
+            logger.error(f"Failed to load configuration: {e}")
+    return {}
+
+app_config = load_app_config()
 
 # Get base path
 pth = os.getenv("RAG_PATH", "api")
@@ -225,6 +270,9 @@ class GroundedAnswerReq(BaseModel):
     question: str
     k: Optional[int] = 3
     model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    config: Optional[Dict[str, Any]] = None
 
 class RerankReq(BaseModel):
     """Request model for reranking passages."""
@@ -576,9 +624,14 @@ def api_grounded_answer(req: GroundedAnswerReq):
     try:
         # Pass model if supported by backend
         kwargs = {"k": req.k or 3}
-        if req.model and hasattr(backend, "grounded_answer_manual"):
-             # Only manual mode supports dynamic model switching for now
+        if req.model:
              kwargs["model"] = req.model
+        if req.temperature is not None:
+            kwargs["temperature"] = req.temperature
+        if req.max_tokens is not None:
+            kwargs["max_tokens"] = req.max_tokens
+        if req.config:
+            kwargs.update(req.config)
              
         answer = backend.grounded_answer(req.question, **kwargs)
         return answer
@@ -845,7 +898,6 @@ def auth_setup(request: Request):
 @app.post(f"/{pth}/auth/setup")
 def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
     """Save the provided credentials to secrets/client_secrets.json."""
-    import json
     
     # Basic validation
     if not client_id or not client_secret:
@@ -935,18 +987,27 @@ class ChatMessage(BaseModel):
 class ChatReq(BaseModel):
     messages: List[ChatMessage]
     model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    config: Optional[Dict[str, Any]] = None
 
 @app.post(f"/{pth}/chat")
 def api_chat(req: ChatReq):
     """Conversational chat."""
     logger.info("Chat request received")
     if hasattr(backend, "chat"):
-        # Check if chat accepts model arg
-        import inspect
-        sig = inspect.signature(backend.chat)
-        if "model" in sig.parameters:
-            return backend.chat([m.model_dump() for m in req.messages], model=req.model)
-        return backend.chat([m.model_dump() for m in req.messages])
+        # Prepare kwargs
+        kwargs = {}
+        if req.model:
+            kwargs["model"] = req.model
+        if req.temperature is not None:
+            kwargs["temperature"] = req.temperature
+        if req.max_tokens is not None:
+            kwargs["max_tokens"] = req.max_tokens
+        if req.config:
+            kwargs.update(req.config)
+            
+        return backend.chat([m.model_dump() for m in req.messages], **kwargs)
     raise HTTPException(status_code=501, detail="Backend does not support chat")
 
 @app.get(f"/{pth}/drive/files")
@@ -1010,6 +1071,59 @@ class VertexConfigReq(BaseModel):
     project_id: str
     location: str
     data_store_id: str
+
+class AppConfigReq(BaseModel):
+    api_endpoint: str = Field(alias="apiEndpoint")
+    model: str
+    embedding_model: str = Field(alias="embeddingModel")
+    temperature: str
+    top_p: str = Field(alias="topP")
+    top_k: str = Field(alias="topK")
+    repeat_penalty: str = Field(alias="repeatPenalty")
+    seed: str
+    num_ctx: str = Field(alias="numCtx")
+    mcp_host: str = Field(alias="mcpHost")
+    mcp_port: str = Field(alias="mcpPort")
+    mcp_path: str = Field(alias="mcpPath")
+    rag_host: str = Field(alias="ragHost")
+    rag_port: str = Field(alias="ragPort")
+    rag_path: str = Field(alias="ragPath")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+@app.post(f"/{pth}/config/app")
+def api_save_app_config(req: AppConfigReq):
+    """Save application configuration."""
+    config_dir = Path("config")
+    config_dir.mkdir(exist_ok=True)
+    config_path = config_dir / "settings.json"
+    
+    try:
+        with open(config_path, "w") as f:
+            import json
+            # Dump using aliases to match frontend expectation when reading back, 
+            # or dump by name and let frontend handle it? 
+            # Frontend expects camelCase. Pydantic .model_dump(by_alias=True) does this.
+            json.dump(req.model_dump(by_alias=True), f, indent=2)
+        return {"status": "saved"}
+    except Exception as e:
+        logger.error(f"Failed to save app config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"/{pth}/config/app")
+def api_get_app_config():
+    """Get application configuration."""
+    config_path = Path("config") / "settings.json"
+    try:
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                import json
+                return json.load(f)
+        # Return empty or defaults if not found
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to read app config: {e}")
+        return {}
 
 @app.post(f"/{pth}/config/vertex")
 def api_save_vertex_config(req: VertexConfigReq):

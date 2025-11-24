@@ -34,7 +34,7 @@ try:
     # Set offline mode
     os.environ['HF_HUB_OFFLINE'] = '1'
     
-    embedder = SentenceTransformer(model_name)
+    embedder = SentenceTransformer(model_name, device='cpu', model_kwargs={"low_cpu_mem_usage": False})
     print(f"✓ Model loaded successfully. Dimension: {embedder.get_sentence_embedding_dimension()}")
     
 except Exception as e:

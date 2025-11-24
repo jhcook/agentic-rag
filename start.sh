@@ -524,10 +524,20 @@ pull_ollama_models() {
         return
     fi
 
+    # Ensure variables are bound to avoid set -u errors
+    LLM_MODEL_NAME="${LLM_MODEL_NAME:-}"
+    ASYNC_LLM_MODEL_NAME="${ASYNC_LLM_MODEL_NAME:-}"
+
     # Skip if user requested to skip model pulling
     if [[ "$SKIP_MODEL_PULL" == true ]]; then
         echo -e "${YELLOW}Skipping Ollama model pulling (--skip-model-pull)${NC}"
         return
+    fi
+
+    # Fallback to settings.json if LLM_MODEL_NAME is not set
+    if [[ -z "$LLM_MODEL_NAME" ]] && [[ -f "config/settings.json" ]]; then
+        echo -e "${YELLOW}LLM_MODEL_NAME not set, reading from config/settings.json...${NC}"
+        LLM_MODEL_NAME=$($PYTHON_CMD -c "import json; print(json.load(open('config/settings.json')).get('model', ''))" 2>/dev/null || echo "")
     fi
 
     local models=()

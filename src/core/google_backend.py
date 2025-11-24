@@ -530,7 +530,7 @@ class GoogleGeminiBackend:
             logger.error(f"Gmail search failed: {e}")
             return {"error": str(e)}
 
-    def grounded_answer(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
         Generate an answer using Gemini with content from Drive files.
         Dispatches to the configured mode (manual or vertex_ai_search).
@@ -539,7 +539,7 @@ class GoogleGeminiBackend:
             return self.grounded_answer_vertex(question)
             
         # Default: Manual Drive API + Gemini
-        return self.grounded_answer_manual(question, k, model=model)
+        return self.grounded_answer_manual(question, k, **kwargs)
 
     def grounded_answer_vertex(self, question: str) -> Dict[str, Any]:
         """
@@ -750,18 +750,31 @@ class GoogleGeminiBackend:
             
             # Sort to put newer/pro models first
             def sort_key(name):
-                score = 0
-                if '1.5' in name: score += 100
-                if 'pro' in name: score += 10
-                if 'flash' in name: score += 5
-                return score
+                import re
+                # Extract version (e.g. 1.5, 1.0)
+                version_match = re.search(r'(\d+)\.(\d+)', name)
+                version_score = 0
+                if version_match:
+                    # 1.5 -> 150, 2.0 -> 200
+                    version_score = int(version_match.group(1)) * 100 + int(version_match.group(2)) * 10
+                
+                # Tier score
+                tier_score = 0
+                if 'ultra' in name: tier_score = 3
+                elif 'pro' in name: tier_score = 2
+                elif 'flash' in name: tier_score = 1
+                
+                # Prefer "latest" versions
+                latest_score = 0.5 if 'latest' in name else 0
+                
+                return version_score + tier_score + latest_score
                 
             return sorted(gemini_models, key=sort_key, reverse=True)
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []
 
-    def grounded_answer_manual(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
+    def grounded_answer_manual(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
         Generate an answer using Gemini 1.5 Pro with content from Drive files and Gmail (Manual Mode).
         """
@@ -769,6 +782,10 @@ class GoogleGeminiBackend:
             self.reload_auth()
             if not self.gen_service or not self.drive_service:
                 return {"error": "Not authenticated"}
+
+        model = kwargs.get("model")
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 2048)
 
         target_model = f"models/{model}" if model else self.model_name
         logger.info(f"Generating grounded answer with {target_model} for: {question}")
@@ -814,8 +831,8 @@ class GoogleGeminiBackend:
                     "parts": parts
                 }],
                 "generationConfig": {
-                    "temperature": 0.7,
-                    "maxOutputTokens": 2048
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens
                 }
             }
             
@@ -841,7 +858,7 @@ class GoogleGeminiBackend:
             logger.error(f"Gemini generation failed: {e}")
             return {"error": str(e)}
 
-    def chat(self, messages: List[Dict[str, str]], model: str = None) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """
         Conversational chat with Gemini 1.5 Pro, with RAG context from Drive/Gmail.
         """
@@ -849,6 +866,10 @@ class GoogleGeminiBackend:
             self.reload_auth()
             if not self.gen_service:
                 return {"error": "Not authenticated"}
+
+        model = kwargs.get("model")
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 2048)
 
         target_model = f"models/{model}" if model else self.model_name
         logger.info(f"Chat request received (model={target_model})")
@@ -908,8 +929,8 @@ class GoogleGeminiBackend:
                 },
                 "contents": contents,
                 "generationConfig": {
-                    "temperature": 0.7,
-                    "maxOutputTokens": 2048
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens
                 }
             }
             
@@ -1031,7 +1052,8 @@ class GoogleGeminiBackend:
     def get_available_modes(self) -> List[str]:
         """Get available grounding modes."""
         modes = ["manual"]
-        if HAS_VERTEX_DEPS:
+        # Only enable Vertex AI if dependencies AND configuration are present
+        if HAS_VERTEX_DEPS and os.getenv("VERTEX_PROJECT_ID") and os.getenv("VERTEX_DATA_STORE_ID"):
             modes.append("vertex_ai_search")
         return modes
 

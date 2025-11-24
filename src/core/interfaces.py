@@ -17,7 +17,7 @@ class RAGBackend(Protocol):
         """Index a directory."""
         ...
 
-    def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Generate an answer based on search results."""
         ...
 
@@ -57,6 +57,6 @@ class RAGBackend(Protocol):
         """Get system statistics (health check)."""
         ...
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Conversational chat with the backend."""
         ...

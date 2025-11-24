@@ -84,10 +84,10 @@ class LocalBackend:
 
         return {"indexed": indexed, "uris": indexed_uris}
 
-    def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Generate a grounded answer."""
         self._check_core()
-        return local_core.grounded_answer(question, k=k)
+        return local_core.grounded_answer(question, k=k, **kwargs)
 
     def load_store(self) -> bool:
         """Load the document store."""
@@ -158,6 +158,17 @@ class LocalBackend:
         index, _, _ = local_core.get_faiss_globals()
         docs = len(getattr(store, "docs", {}))
         vectors = index.ntotal if index is not None else 0
+        
+        # Calculate total size of indexed text
+        total_size_bytes = sum(len(text.encode('utf-8')) for text in store.docs.values())
+        
+        # Get store file size
+        store_file_bytes = 0
+        if local_core.DB_PATH and os.path.exists(local_core.DB_PATH):
+            try:
+                store_file_bytes = os.path.getsize(local_core.DB_PATH)
+            except OSError:
+                pass
 
         return {
             "status": "ok",
@@ -165,12 +176,14 @@ class LocalBackend:
             "vectors": vectors,
             "memory_mb": psutil.Process().memory_info().rss / 1024 / 1024,
             "memory_limit_mb": local_core.MAX_MEMORY_MB,
+            "total_size_bytes": total_size_bytes,
+            "store_file_bytes": store_file_bytes,
         }
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Chat with the backend."""
         self._check_core()
-        return local_core.chat(messages)
+        return local_core.chat(messages, **kwargs)
 
 class RemoteBackend:
     """HTTP calls to the REST API."""
@@ -207,11 +220,13 @@ class RemoteBackend:
         resp.raise_for_status()
         return resp.json()
 
-    def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Generate a grounded answer."""
+        payload = {"question": question, "k": k}
+        payload.update(kwargs)
         resp = requests.post(
             f"{self.base_url}/grounded_answer",
-            json={"question": question, "k": k},
+            json=payload,
             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
@@ -283,11 +298,13 @@ class RemoteBackend:
         resp.raise_for_status()
         return resp.json()
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Chat with the backend."""
+        payload = {"messages": messages}
+        payload.update(kwargs)
         resp = requests.post(
             f"{self.base_url}/chat",
-            json={"messages": messages},
+            json=payload,
             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
@@ -297,7 +314,7 @@ class HybridBackend:
     A backend that wraps multiple implementations and allows switching between them.
     """
 
-    def __init__(self):
+    def __init__(self, initial_mode: str = "local"):
         """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
         self.current_mode = "local"
@@ -320,8 +337,7 @@ class HybridBackend:
                     "HybridBackend: Failed to init GoogleGeminiBackend: %s", exc)
 
         # Default to what's available
-        if ("google" in self.backends and
-                os.getenv("RAG_MODE", "local").lower() == "google"):
+        if ("google" in self.backends and initial_mode == "google"):
             self.current_mode = "google"
         elif "local" in self.backends:
             self.current_mode = "local"
@@ -400,16 +416,22 @@ class HybridBackend:
         """Index a directory path."""
         return self._backend.index_path(path, glob)
 
-    def grounded_answer(self, question: str, k: int = 5,
-                        model: Optional[str] = None) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Generate a grounded answer."""
         if hasattr(self._backend, "grounded_answer"):
-            # Check if backend.grounded_answer accepts model
+            # Check if backend.grounded_answer accepts kwargs or specific args
+            # For now, we assume updated backends accept kwargs or we inspect
             import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.grounded_answer)
-            if "model" in sig.parameters:
-                return self._backend.grounded_answer(question, k, model=model)
-            return self._backend.grounded_answer(question, k)
+            
+            # If backend accepts kwargs, pass everything
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                return self._backend.grounded_answer(question, k, **kwargs)
+                
+            # Otherwise, filter kwargs to what is accepted
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+            return self._backend.grounded_answer(question, k, **filtered_kwargs)
+            
         return {"error": "Grounded answer not supported"}
 
     def load_store(self) -> bool:
@@ -458,16 +480,20 @@ class HybridBackend:
             return self._backend.list_models()
         return []
 
-    def chat(self, messages: List[Dict[str, str]],
-             model: str = None) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Chat with the backend."""
         if hasattr(self._backend, "chat"):
-            # Check if backend.chat accepts model
             import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.chat)
-            if "model" in sig.parameters:
-                return self._backend.chat(messages, model=model)
-            return self._backend.chat(messages)
+            
+            # If backend accepts kwargs, pass everything
+            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                return self._backend.chat(messages, **kwargs)
+                
+            # Otherwise, filter kwargs to what is accepted
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+            return self._backend.chat(messages, **filtered_kwargs)
+            
         return {"error": "Chat not supported by current backend"}
 
     def list_drive_files(self, folder_id: str = None) -> List[Dict[str, Any]]:
@@ -507,7 +533,24 @@ class HybridBackend:
 
 def get_rag_backend() -> RAGBackend:
     """Factory to get the configured backend."""
-    mode = os.getenv("RAG_MODE", "local").lower()
+    # Check environment variable first
+    mode = os.getenv("RAG_MODE", "").lower()
+
+    # If not set in env, check settings.json
+    if not mode:
+        try:
+            config_path = pathlib.Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+            if config_path.exists():
+                import json
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                    mode = config.get("ragMode", "").lower()
+        except Exception as exc:
+            logger.warning("Failed to read settings.json: %s", exc)
+
+    # Default to local if still not set
+    if not mode:
+        mode = "local"
 
     if mode == "remote":
         url = os.getenv("RAG_REMOTE_URL", "http://127.0.0.1:8001/api")
@@ -515,4 +558,4 @@ def get_rag_backend() -> RAGBackend:
         return RemoteBackend(url)
 
     logger.info("Initializing HybridBackend (initial mode: %s)", mode)
-    return HybridBackend()
+    return HybridBackend(initial_mode=mode)

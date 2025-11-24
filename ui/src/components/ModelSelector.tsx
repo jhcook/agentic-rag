@@ -63,8 +63,15 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
           const data = await res.json()
           if (Array.isArray(data.models)) {
             setModels(data.models)
-            // Select first model by default if none selected
-            if (data.models.length > 0 && !selectedModel) {
+            
+            // Try to restore from localStorage
+            const savedModel = localStorage.getItem("gemini_model")
+            
+            if (savedModel && data.models.includes(savedModel)) {
+                setSelectedModel(savedModel)
+                onModelSelect(savedModel)
+            } else if (data.models.length > 0) {
+                // Default to first model (which is sorted to be latest pro)
                 const defaultModel = data.models[0]
                 setSelectedModel(defaultModel)
                 onModelSelect(defaultModel)
@@ -83,6 +90,7 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
   const handleSelect = (currentValue: string) => {
     setSelectedModel(currentValue)
     onModelSelect(currentValue)
+    localStorage.setItem("gemini_model", currentValue)
     setOpen(false)
   }
 

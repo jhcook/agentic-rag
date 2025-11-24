@@ -133,7 +133,7 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
                 model_name,
                 device='cpu',
                 backend='torch',
-                model_kwargs={"trust_remote_code": True}
+                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
             )
             _EMBEDDER_NAME = model_name
         except Exception as exc:
@@ -143,7 +143,7 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
                 model_name,
                 device='cpu',
                 backend='torch',
-                model_kwargs={"trust_remote_code": True}
+                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
             )
             _EMBEDDER_NAME = model_name
 
@@ -161,7 +161,7 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
                 model_name,
                 device='cpu',
                 backend='torch',
-                model_kwargs={"trust_remote_code": True}
+                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
             )
             _EMBEDDER_NAME = model_name
         except Exception as inner_exc:
@@ -188,7 +188,7 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
         )
         try:
             _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch')
+            _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch', model_kwargs={"low_cpu_mem_usage": False})
             _EMBEDDER_NAME = fallback
             import torch
             torch.set_num_threads(1)

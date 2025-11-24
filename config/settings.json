@@ -1,0 +1,18 @@
+{
+  "apiEndpoint": "http://localhost:11434",
+  "model": "ollama/qwen2.5:3b",
+  "embeddingModel": "Snowflake/arctic-embed-xs",
+  "temperature": "0.7",
+  "topP": "0.9",
+  "topK": "40",
+  "repeatPenalty": "1.1",
+  "seed": "-1",
+  "numCtx": "2048",
+  "mcpHost": "127.0.0.1",
+  "mcpPort": "8000",
+  "mcpPath": "/mcp",
+  "ragHost": "127.0.0.1",
+  "ragPort": "8001",
+  "ragPath": "api",
+  "ragMode": "local"
+}

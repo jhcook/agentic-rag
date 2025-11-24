@@ -21,6 +21,7 @@ from __future__ import annotations
 import atexit
 import gc
 import os
+import json
 from pathlib import Path
 import signal
 import sys
@@ -70,6 +71,50 @@ patch_streamable_http(access_logger=access_logger)
 # Load environment variables from .env if present before evaluating settings
 load_dotenv()
 
+# Load configuration from file if it exists
+CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+
+def load_app_config():
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+            
+            # Update environment variables for MCP
+            if "mcpHost" in config:
+                os.environ["MCP_HOST"] = config["mcpHost"]
+            if "mcpPort" in config:
+                os.environ["MCP_PORT"] = str(config["mcpPort"])
+            if "mcpPath" in config:
+                os.environ["MCP_PATH"] = config["mcpPath"]
+                
+            # Update RAG Core configuration
+            import src.core.rag_core as rag_core
+            
+            # Map settings.json keys to rag_core variables
+            if "apiEndpoint" in config:
+                rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
+            elif "ollamaApiUrl" in config:  # Legacy fallback
+                rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
+                
+            if "model" in config:
+                rag_core.LLM_MODEL_NAME = config["model"]
+                rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
+            elif "ollamaModel" in config:  # Legacy fallback
+                rag_core.LLM_MODEL_NAME = config["ollamaModel"]
+                rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
+                
+            if "embeddingModel" in config:
+                rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
+            
+            logger.info(f"Loaded configuration from {CONFIG_FILE}")
+            return config
+        except Exception as e:
+            logger.error(f"Failed to load configuration: {e}")
+    return {}
+
+app_config = load_app_config()
+
 # Initialize Backend
 backend: RAGBackend = get_rag_backend()
 
@@ -95,10 +140,12 @@ def _background_load_store():
         return
     STORE_LOADING = True
     try:
+        # Load store and rebuild index in background
         backend.load_store()
+        backend.rebuild_index()
         refresh_prometheus_metrics(OLLAMA_API_BASE)
         STORE_LOADED = True
-        logger.info("Background store load complete")
+        logger.info("Background store load and index rebuild complete")
     except Exception as exc:
         logger.error("Background store load failed: %s", exc, exc_info=True)
     finally:
@@ -516,14 +563,20 @@ def rerank_tool(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, An
         return []
 
 @mcp.tool()
-def grounded_answer_tool(question: str, k: int = 5) -> Dict[str, Any]:
+def grounded_answer_tool(question: str, k: int = 5, model: Optional[str] = None, temperature: Optional[float] = None) -> Dict[str, Any]:
     """
     Generate a grounded answer from the indexed corpus.
 
     This performs a vector search and returns an answer plus citations.
     """
     try:
-        return backend.grounded_answer(question, k=k)
+        kwargs = {}
+        if model:
+            kwargs["model"] = model
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+            
+        return backend.grounded_answer(question, k=k, **kwargs)
     except Exception as e:
         logger.error("Error generating grounded answer: %s", e, exc_info=True)
         return {"error": str(e)}
@@ -597,13 +650,6 @@ if __name__ == "__main__":
         )
         logger.info("Current memory usage: %.1fMB (limit: %dMB)", memory_mb, MAX_MEMORY_MB)
         logger.info("Press Ctrl+C to gracefully shutdown")
-
-        # Ensure index is rebuilt at startup so searches work immediately
-        try:
-            backend.rebuild_index()
-            logger.info("FAISS index rebuild complete at startup")
-        except Exception as exc:
-            logger.error("Startup index rebuild failed: %s", exc, exc_info=True)
 
         # Start server
         mcp.run(transport="streamable-http")

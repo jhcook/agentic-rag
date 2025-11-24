@@ -106,9 +106,16 @@ export function ChatInterface({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-
           messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
-          model: selectedModel || undefined
+          model: selectedModel || config?.model || undefined,
+          temperature: config?.temperature ? parseFloat(config.temperature) : undefined,
+          config: {
+            top_p: config?.topP ? parseFloat(config.topP) : undefined,
+            top_k: config?.topK ? parseInt(config.topK) : undefined,
+            repeat_penalty: config?.repeatPenalty ? parseFloat(config.repeatPenalty) : undefined,
+            seed: config?.seed ? parseInt(config.seed) : undefined,
+            num_ctx: config?.numCtx ? parseInt(config.numCtx) : undefined,
+          }
         })
       })
 
