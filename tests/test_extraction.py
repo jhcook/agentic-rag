@@ -44,7 +44,7 @@ def test_url_extraction(monkeypatch):
         def raise_for_status(self):
             pass
 
-    def dummy_get(_url, _timeout=30):
+    def dummy_get(_url, timeout=30):
         return DummyResponse(b"Web page text")
 
     monkeypatch.setattr("src.core.extractors.requests.get", dummy_get)
@@ -59,7 +59,7 @@ def test_ssl_error(monkeypatch):
         def raise_for_status(self):
             raise Exception("SSL error")
 
-    def dummy_get(_url, _timeout=30):
+    def dummy_get(_url, timeout=30):
         raise Exception("SSL error")
 
     monkeypatch.setattr("src.core.extractors.requests.get", dummy_get)

@@ -185,3 +185,40 @@ def test_verify_grounding():
     )
     assert "answer_conf" in result
     assert "citation_coverage" in result
+
+
+from unittest.mock import MagicMock
+
+def test_grounded_answer_with_config(monkeypatch):
+    """Test grounded answer with custom configuration."""
+    import src.core.rag_core as rag_core
+    
+    # Mock completion
+    mock_completion = MagicMock()
+    mock_completion.return_value = {"choices": [{"message": {"content": "Test answer"}}]}
+    monkeypatch.setattr("src.core.rag_core.completion", mock_completion)
+    
+    # Setup store
+    rag_core._STORE = Store()
+    rag_core._STORE.add("doc1.txt", "Content")
+    
+    # Mock vector search to return hits so we don't hit "I don't know" early return
+    # Text must be long enough to pass _is_low_signal filter (>= 12 words)
+    long_text = "This is a sample document content that is long enough to pass the low signal filter check in the grounded answer function."
+    def mock_search(*args, **kwargs):
+        return [{"uri": "doc1.txt", "text": long_text, "score": 1.0}]
+    monkeypatch.setattr("src.core.rag_core._vector_search", mock_search)
+    
+    # Call with config
+    rag_core.grounded_answer(
+        "Question", 
+        model="custom-model", 
+        temperature=0.7,
+        num_ctx=2048
+    )
+    
+    # Verify call args
+    call_kwargs = mock_completion.call_args.kwargs
+    assert call_kwargs["model"] == "custom-model"
+    assert call_kwargs["temperature"] == 0.7
+    assert call_kwargs["num_ctx"] == 2048

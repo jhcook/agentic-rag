@@ -128,7 +128,15 @@ src/servers/mcp_server.py
 - Returns list of document URIs
 - No content retrieval (metadata only)
 
-## Server Configuration
+### Server Configuration
+
+### Initialization and Background Indexing
+
+To ensure the server starts up immediately and remains responsive, the FAISS index rebuilding process runs in a background thread upon startup.
+
+- **Non-blocking Startup**: The server accepts connections immediately.
+- **Background Loading**: The `_background_load_store` method handles loading the document store and rebuilding the vector index asynchronously.
+- **Status Availability**: Search operations will use the currently available index while the rebuild completes.
 
 ### Transport Layer
 

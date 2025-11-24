@@ -12,7 +12,14 @@ The Agentic RAG system uses multiple AI models working together to provide retri
 
 ## Model Configuration
 
-All models are configured through environment variables in the `.env` file:
+The Agentic RAG system uses a hierarchical configuration system:
+
+1. **Environment Variables (`.env`)**: Define infrastructure settings, secrets, and default values.
+2. **Runtime Configuration (`config/settings.json`)**: Stores dynamic settings that can be modified via the UI or API without restarting.
+
+### Environment Variables (`.env`)
+
+These settings are loaded at startup and define the baseline configuration:
 
 ```dotenv
 EMBED_MODEL_NAME=Snowflake/arctic-embed-xs
@@ -23,6 +30,19 @@ OLLAMA_KEEP_ALIVE=-1
 LLM_TEMPERATURE=0.1
 RAG_BACKEND_TYPE=local  # or 'remote'
 ```
+
+### Runtime Configuration (`config/settings.json`)
+
+The system supports dynamic configuration updates. Settings stored in `config/settings.json` override the environment defaults. This allows users to:
+
+- Switch LLM models on the fly
+- Adjust temperature and generation parameters
+- Modify search settings (top-k, context window)
+- Update system prompts
+
+**Managing Configuration:**
+- **Web UI**: Use the "Settings" dashboard to view and modify configuration.
+- **API**: The REST API exposes endpoints (`/api/config`) to read and update settings.
 
 ## Embedding Model (`EMBED_MODEL_NAME`)
 

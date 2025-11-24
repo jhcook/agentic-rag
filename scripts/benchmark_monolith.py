@@ -1,7 +1,8 @@
-import time
-import requests
+"""Benchmark script for the monolith RAG server."""
 import statistics
-import json
+import time
+
+import requests
 
 BASE_URL = "http://127.0.0.1:8001/api"
 QUERIES = [
@@ -11,8 +12,11 @@ QUERIES = [
     "what companies has he worked for?",
     "does he know python?"
 ]
+TIMEOUT = 30
+
 
 def benchmark():
+    """Run benchmark queries against the monolith server."""
     print(f"Benchmarking Monolith at {BASE_URL}...")
     latencies = []
     success_count = 0
@@ -20,7 +24,10 @@ def benchmark():
     # Warmup
     print("Warming up...")
     try:
-        requests.post(f"{BASE_URL}/search", json={"query": "warmup"})
+        requests.post(
+            f"{BASE_URL}/search",
+            json={"query": "warmup"},
+            timeout=TIMEOUT)
     except Exception:
         pass
 
@@ -28,19 +35,23 @@ def benchmark():
     for i, query in enumerate(QUERIES):
         start_time = time.time()
         try:
-            response = requests.post(f"{BASE_URL}/search", json={"query": query})
+            response = requests.post(
+                f"{BASE_URL}/search",
+                json={"query": query},
+                timeout=TIMEOUT)
             end_time = time.time()
-            
+
             if response.status_code == 200:
                 latency = end_time - start_time
                 latencies.append(latency)
                 success_count += 1
                 print(f"Query {i+1}: '{query}' - {latency:.2f}s (Success)")
             else:
-                print(f"Query {i+1}: '{query}' - Failed with status {response.status_code}")
+                print(f"Query {i+1}: '{query}' - "
+                      f"Failed with status {response.status_code}")
                 print(response.text)
-        except Exception as e:
-            print(f"Query {i+1}: '{query}' - Error: {e}")
+        except Exception as exc:
+            print(f"Query {i+1}: '{query}' - Error: {exc}")
 
     if latencies:
         avg_latency = statistics.mean(latencies)

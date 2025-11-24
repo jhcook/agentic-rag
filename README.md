@@ -92,6 +92,12 @@ agentic-rag$ pip install -r requirements.txt
 
 ### Configuration
 
+The system uses a dual-layer configuration approach:
+1. **Environment Variables (`.env`)**: For secrets, infrastructure settings, and defaults.
+2. **Runtime Configuration (`config/settings.json`)**: For dynamic application settings that can be changed via the UI.
+
+#### Environment Setup (`.env`)
+
 Copy the example environment file and customize as needed:
 
 ```bash
@@ -109,6 +115,16 @@ Key configuration options in `.env`:
 - `MCP_HOST`/`MCP_PORT`: MCP server binding (default: 127.0.0.1:8000)
 - `REST_HOST`/`REST_PORT`: REST API binding (default: 127.0.0.1:8001)
 - `MAX_MEMORY_MB`: Memory limit for HTTP server (default: 75% of system RAM)
+
+#### Runtime Configuration (`config/settings.json`)
+
+Application settings like model selection, temperature, and search parameters can be modified at runtime without restarting the server. These settings are stored in `config/settings.json` and can be managed via the **Settings Dashboard** in the web UI.
+
+Available runtime settings:
+- **Model Selection**: Switch between available Ollama models
+- **Temperature**: Adjust generation creativity
+- **Search Parameters**: Configure top-k results and context window size
+- **System Prompts**: Customize the persona and instructions for the RAG agent
 
 ## Quick Start
 

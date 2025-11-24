@@ -116,18 +116,25 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
             return ""
 
 
-def _extract_text_from_file(file_path: pathlib.Path) -> str:
+from typing import Union
+
+def _extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
-    if file_path.name in {".DS_Store"}:
-        return ""
-
+    
     if file_str.startswith(('http://', 'https://')):
         content = _download_from_url(file_str)
         if not content:
             return ""
         return extract_text_from_bytes(content, file_str)
+
+    # If not URL, treat as path
+    if isinstance(file_path, str):
+        file_path = pathlib.Path(file_path)
+
+    if file_path.name in {".DS_Store"}:
+        return ""
 
     # Local file
     try:

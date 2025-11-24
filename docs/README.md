@@ -5,7 +5,6 @@ This directory contains project documentation, guides, and specifications.
 ## Directory Structure
 
 - `docs/` - Project documentation and guides
-- `documents/` - Indexable source documents (PDF, DOCX, TXT, etc.)
 - `config/mcp/` - MCP configuration files
 
 ## Documentation Index
@@ -29,7 +28,7 @@ This directory contains project documentation, guides, and specifications.
 - [Testing MCP Integration](mcp/testing.md) - Testing strategies and procedures
 
 ### APIs and Interfaces
-- [REST API](../api.md) - RESTful API documentation
+- [REST API Reference](api_reference.md) - RESTful API documentation and OpenAPI specs
 - [CLI Client](../cli.md) - Command-line interface guide
 
 ## Contributing
@@ -39,6 +38,5 @@ When adding documentation:
 1. **General Documentation**: Place in this `docs/` directory
 2. **MCP-Specific**: Place in `docs/mcp/` subdirectory
 3. **Configuration Files**: Place in `config/` directory
-4. **Indexable Content**: Place in `documents/` directory
 
 Use lowercase filenames with `.md` extension and link documents together for easy navigation.

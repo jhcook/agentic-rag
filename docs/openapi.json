@@ -1,0 +1,1902 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "retrieval-rest-server",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/upsert_document": {
+      "post": {
+        "summary": "Api Upsert",
+        "description": "Upsert a document into the store.",
+        "operationId": "api_upsert_api_upsert_document_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/index_path": {
+      "post": {
+        "summary": "Api Index Path",
+        "description": "Index a filesystem path into the retrieval store.",
+        "operationId": "api_index_path_api_index_path_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexPathReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "post": {
+        "summary": "Api Search",
+        "description": "Search the retrieval store.",
+        "operationId": "api_search_api_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/load_store": {
+      "post": {
+        "summary": "Api Load",
+        "description": "Send the current store to the LLM.",
+        "operationId": "api_load_api_load_store_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoadStoreReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Metrics Endpoint",
+        "description": "Expose Prometheus metrics for the REST server.",
+        "operationId": "metrics_endpoint_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/grounded_answer": {
+      "post": {
+        "summary": "Api Grounded Answer",
+        "description": "Return a grounded answer using vector search + synthesis.",
+        "operationId": "api_grounded_answer_api_grounded_answer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundedAnswerReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rerank": {
+      "post": {
+        "summary": "Api Rerank",
+        "description": "Rerank provided passages for a query.",
+        "operationId": "api_rerank_api_rerank_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerankReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify_grounding": {
+      "post": {
+        "summary": "Api Verify",
+        "description": "Verify grounding against store using citation URIs.",
+        "operationId": "api_verify_api_verify_grounding_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify_grounding_simple": {
+      "post": {
+        "summary": "Api Verify Simple",
+        "description": "Simple grounding verification against provided passages.",
+        "operationId": "api_verify_simple_api_verify_grounding_simple_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifySimpleReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Api Health",
+        "description": "Lightweight health check with basic store and index stats.",
+        "operationId": "api_health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/documents": {
+      "get": {
+        "summary": "Api Documents",
+        "description": "List indexed document URIs and their approximate text size (bytes).",
+        "operationId": "api_documents_api_documents_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentsResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/documents/delete": {
+      "post": {
+        "summary": "Api Documents Delete",
+        "description": "Delete documents by URI from the store and rebuild index.",
+        "operationId": "api_documents_delete_api_documents_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteDocsReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/mode": {
+      "get": {
+        "summary": "Api Get Mode",
+        "description": "Get the current backend mode.",
+        "operationId": "api_get_mode_api_config_mode_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Api Set Mode",
+        "description": "Set the backend mode (e.g., 'local', 'google').",
+        "operationId": "api_set_mode_api_config_mode_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigModeReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/models": {
+      "get": {
+        "summary": "Api List Models",
+        "description": "List available models for the current backend.",
+        "operationId": "api_list_models_api_config_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "summary": "Api Jobs",
+        "description": "List async indexing jobs (pass-through to MCP).",
+        "operationId": "api_jobs_api_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Api Jobs Api Jobs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "summary": "Api Job",
+        "description": "Get a single async indexing job (pass-through to MCP).",
+        "operationId": "api_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Api Job Api Jobs  Job Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search/jobs/{job_id}": {
+      "get": {
+        "summary": "Api Search Job",
+        "description": "Get status/result for an async search job.",
+        "operationId": "api_search_job_api_search_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Api Search Job Api Search Jobs  Job Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/flush_cache": {
+      "post": {
+        "summary": "Api Flush Cache",
+        "description": "Flush the document store and delete the backing DB file.",
+        "operationId": "api_flush_cache_api_flush_cache_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics/quality": {
+      "get": {
+        "summary": "Api Quality Metrics",
+        "description": "Return aggregated quality metrics for searches.",
+        "operationId": "api_quality_metrics_api_metrics_quality_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QualityMetricsResp"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "get": {
+        "summary": "Auth Login",
+        "description": "Initiate Google OAuth2 flow.",
+        "operationId": "auth_login_api_auth_login_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/setup": {
+      "get": {
+        "summary": "Auth Setup",
+        "description": "Show the setup page for Google Auth.",
+        "operationId": "auth_setup_api_auth_setup_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Auth Setup Post",
+        "description": "Save the provided credentials to secrets/client_secrets.json.",
+        "operationId": "auth_setup_post_api_auth_setup_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_auth_setup_post_api_auth_setup_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/callback": {
+      "get": {
+        "summary": "Auth Callback",
+        "description": "Handle Google OAuth2 callback.",
+        "operationId": "auth_callback_api_auth_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "get": {
+        "summary": "Auth Logout",
+        "description": "Log out by deleting the stored token.",
+        "operationId": "auth_logout_api_auth_logout_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "summary": "Api Chat",
+        "description": "Conversational chat.",
+        "operationId": "api_chat_api_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/drive/files": {
+      "get": {
+        "summary": "Api Drive Files",
+        "description": "List Drive files.",
+        "operationId": "api_drive_files_api_drive_files_get",
+        "parameters": [
+          {
+            "name": "folder_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Folder Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/drive/upload": {
+      "post": {
+        "summary": "Api Drive Upload",
+        "description": "Upload file to Drive.",
+        "operationId": "api_drive_upload_api_drive_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_api_drive_upload_api_drive_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/drive/files/{file_id}": {
+      "delete": {
+        "summary": "Api Drive Delete",
+        "description": "Delete a file or folder from Google Drive.",
+        "operationId": "api_drive_delete_api_drive_files__file_id__delete",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/drive/folders": {
+      "post": {
+        "summary": "Api Drive Create Folder",
+        "description": "Create a folder in Google Drive.",
+        "operationId": "api_drive_create_folder_api_drive_folders_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_api_drive_create_folder_api_drive_folders_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/extract": {
+      "post": {
+        "summary": "Api Extract",
+        "description": "Extract text from an uploaded file (in-memory, no storage).",
+        "operationId": "api_extract_api_extract_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_api_extract_api_extract_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/app": {
+      "get": {
+        "summary": "Api Get App Config",
+        "description": "Get application configuration.",
+        "operationId": "api_get_app_config_api_config_app_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Api Save App Config",
+        "description": "Save application configuration.",
+        "operationId": "api_save_app_config_api_config_app_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppConfigReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/vertex": {
+      "get": {
+        "summary": "Api Get Vertex Config",
+        "description": "Get Vertex AI configuration.",
+        "operationId": "api_get_vertex_config_api_config_vertex_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Api Save Vertex Config",
+        "description": "Save Vertex AI configuration.",
+        "operationId": "api_save_vertex_config_api_config_vertex_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VertexConfigReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/{log_type}": {
+      "get": {
+        "summary": "Api Get Logs",
+        "description": "Get log file contents.\n\nArgs:\n    log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)\n    lines: Number of lines to return from the end of the file (default: 500)\n\nReturns:\n    JSON with log lines, total count, and file path",
+        "operationId": "api_get_logs_api_logs__log_type__get",
+        "parameters": [
+          {
+            "name": "log_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Log Type"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 500,
+              "title": "Lines"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/{log_type}/stream": {
+      "get": {
+        "summary": "Api Stream Logs",
+        "description": "Stream log file contents using Server-Sent Events (SSE).\n\nArgs:\n    log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)\n    request: FastAPI request object for client disconnect detection\n\nReturns:\n    StreamingResponse with SSE format",
+        "operationId": "api_stream_logs_api_logs__log_type__stream_get",
+        "parameters": [
+          {
+            "name": "log_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Log Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AppConfigReq": {
+        "properties": {
+          "apiEndpoint": {
+            "type": "string",
+            "title": "Apiendpoint"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "embeddingModel": {
+            "type": "string",
+            "title": "Embeddingmodel"
+          },
+          "temperature": {
+            "type": "string",
+            "title": "Temperature"
+          },
+          "topP": {
+            "type": "string",
+            "title": "Topp"
+          },
+          "topK": {
+            "type": "string",
+            "title": "Topk"
+          },
+          "repeatPenalty": {
+            "type": "string",
+            "title": "Repeatpenalty"
+          },
+          "seed": {
+            "type": "string",
+            "title": "Seed"
+          },
+          "numCtx": {
+            "type": "string",
+            "title": "Numctx"
+          },
+          "mcpHost": {
+            "type": "string",
+            "title": "Mcphost"
+          },
+          "mcpPort": {
+            "type": "string",
+            "title": "Mcpport"
+          },
+          "mcpPath": {
+            "type": "string",
+            "title": "Mcppath"
+          },
+          "ragHost": {
+            "type": "string",
+            "title": "Raghost"
+          },
+          "ragPort": {
+            "type": "string",
+            "title": "Ragport"
+          },
+          "ragPath": {
+            "type": "string",
+            "title": "Ragpath"
+          }
+        },
+        "type": "object",
+        "required": [
+          "apiEndpoint",
+          "model",
+          "embeddingModel",
+          "temperature",
+          "topP",
+          "topK",
+          "repeatPenalty",
+          "seed",
+          "numCtx",
+          "mcpHost",
+          "mcpPort",
+          "mcpPath",
+          "ragHost",
+          "ragPort",
+          "ragPath"
+        ],
+        "title": "AppConfigReq"
+      },
+      "Body_api_drive_create_folder_api_drive_folders_post": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "Body_api_drive_create_folder_api_drive_folders_post"
+      },
+      "Body_api_drive_upload_api_drive_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "folder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_api_drive_upload_api_drive_upload_post"
+      },
+      "Body_api_extract_api_extract_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_api_extract_api_extract_post"
+      },
+      "Body_auth_setup_post_api_auth_setup_post": {
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "title": "Client Id"
+          },
+          "client_secret": {
+            "type": "string",
+            "title": "Client Secret"
+          }
+        },
+        "type": "object",
+        "required": [
+          "client_id",
+          "client_secret"
+        ],
+        "title": "Body_auth_setup_post_api_auth_setup_post"
+      },
+      "ChatMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatMessage"
+      },
+      "ChatReq": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          }
+        },
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "title": "ChatReq"
+      },
+      "ConfigModeReq": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "title": "ConfigModeReq",
+        "description": "Request model for setting the backend mode."
+      },
+      "DeleteDocsReq": {
+        "properties": {
+          "uris": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Uris"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uris"
+        ],
+        "title": "DeleteDocsReq",
+        "description": "Request model for deleting documents by URI."
+      },
+      "DocumentInfo": {
+        "properties": {
+          "uri": {
+            "type": "string",
+            "title": "Uri"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uri",
+          "size_bytes"
+        ],
+        "title": "DocumentInfo",
+        "description": "Document metadata for listings."
+      },
+      "DocumentsResp": {
+        "properties": {
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentInfo"
+            },
+            "type": "array",
+            "title": "Documents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "documents"
+        ],
+        "title": "DocumentsResp"
+      },
+      "GroundedAnswerReq": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "K",
+            "default": 3
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "GroundedAnswerReq",
+        "description": "Request model for grounded answer generation."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResp": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "base_path": {
+            "type": "string",
+            "title": "Base Path"
+          },
+          "documents": {
+            "type": "integer",
+            "title": "Documents"
+          },
+          "vectors": {
+            "type": "integer",
+            "title": "Vectors"
+          },
+          "memory_mb": {
+            "type": "number",
+            "title": "Memory Mb"
+          },
+          "memory_limit_mb": {
+            "type": "integer",
+            "title": "Memory Limit Mb"
+          },
+          "total_size_bytes": {
+            "type": "integer",
+            "title": "Total Size Bytes",
+            "default": 0
+          },
+          "store_file_bytes": {
+            "type": "integer",
+            "title": "Store File Bytes",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "base_path",
+          "documents",
+          "vectors",
+          "memory_mb",
+          "memory_limit_mb"
+        ],
+        "title": "HealthResp",
+        "description": "Response model for health checks."
+      },
+      "IndexPathReq": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "glob": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Glob",
+            "default": "**/*.txt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "IndexPathReq",
+        "description": "Request model for indexing a filesystem path."
+      },
+      "LoadStoreReq": {
+        "properties": {},
+        "type": "object",
+        "title": "LoadStoreReq",
+        "description": "Request model for sending the store to an LLM."
+      },
+      "QualityMetricsResp": {
+        "properties": {
+          "total_searches": {
+            "type": "integer",
+            "title": "Total Searches"
+          },
+          "failed_searches": {
+            "type": "integer",
+            "title": "Failed Searches"
+          },
+          "responses_with_sources": {
+            "type": "integer",
+            "title": "Responses With Sources"
+          },
+          "total_sources": {
+            "type": "integer",
+            "title": "Total Sources"
+          },
+          "fallback_responses": {
+            "type": "integer",
+            "title": "Fallback Responses"
+          },
+          "success_rate": {
+            "type": "number",
+            "title": "Success Rate"
+          },
+          "avg_sources": {
+            "type": "number",
+            "title": "Avg Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_searches",
+          "failed_searches",
+          "responses_with_sources",
+          "total_sources",
+          "fallback_responses",
+          "success_rate",
+          "avg_sources"
+        ],
+        "title": "QualityMetricsResp",
+        "description": "Aggregated quality metrics for searches."
+      },
+      "RerankReq": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "passages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Passages"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "passages"
+        ],
+        "title": "RerankReq",
+        "description": "Request model for reranking passages."
+      },
+      "SearchReq": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "async": {
+            "type": "boolean",
+            "title": "Async",
+            "default": false
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds",
+            "default": 300
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchReq",
+        "description": "Request model for performing a search."
+      },
+      "UpsertReq": {
+        "properties": {
+          "uri": {
+            "type": "string",
+            "title": "Uri"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "binary_base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binary Base64"
+          }
+        },
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "title": "UpsertReq",
+        "description": "Request model for upserting a document."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerifyReq": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "draft_answer": {
+            "type": "string",
+            "title": "Draft Answer"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Citations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "draft_answer",
+          "citations"
+        ],
+        "title": "VerifyReq",
+        "description": "Request model for grounding verification (citations)."
+      },
+      "VerifySimpleReq": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "draft_answer": {
+            "type": "string",
+            "title": "Draft Answer"
+          },
+          "passages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Passages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "draft_answer",
+          "passages"
+        ],
+        "title": "VerifySimpleReq",
+        "description": "Request model for grounding verification (passages provided)."
+      },
+      "VertexConfigReq": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "location": {
+            "type": "string",
+            "title": "Location"
+          },
+          "data_store_id": {
+            "type": "string",
+            "title": "Data Store Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "location",
+          "data_store_id"
+        ],
+        "title": "VertexConfigReq"
+      }
+    }
+  }
+}

@@ -1,17 +1,17 @@
 # Agentic RAG Control Panel
-Single-page console for managing an agentic document retrieval-and-chat system. The UI mocks end-to-end workflows—indexing local files, configuring an Ollama backend, monitoring metrics, and watching logs—so you can plug in real services when ready.
+Single-page console for managing the agentic document retrieval-and-chat system. The UI connects to the backend services to manage indexing, configuration, and search operations.
 
 ## What’s here
-- Dashboards: system status cards and onboarding steps to start services, add content, and begin querying.
-- Indexing: pick files or directories from disk, track size/date metadata, and remove items; state is persisted via `useKV` storage.
-- Search surface: conversational search layout with empty states and placeholders for query/reply flows.
-- Metrics & health: Grafana-style charts (mock data) for latency, usage, quality, CPU/memory, and cache rates.
-- Logs: tabbed log viewers for Ollama, MCP, and REST API streams with start/pause/stop, filtering, download, and clear.
-- Settings: Ollama connection + model parameters (temperature, top-p, top-k, context, seed) with save/test actions; future OpenAI/OneDrive and Gemini/Drive entries marked as “coming soon.”
+- **Dashboards**: System status cards and onboarding steps.
+- **Indexing**: File manager to index local files and directories. Connects to the backend to process documents.
+- **Search surface**: Conversational interface for RAG-based search and chat.
+- **Metrics & health**: Real-time visualization of system metrics.
+- **Logs**: Log viewers for system components.
+- **Settings**: Dynamic configuration management. Update models, temperature, and system prompts in real-time without restarting services.
 
 ## Tech stack
 - React 19 + TypeScript + Vite
-- Tailwind CSS 4 + GitHub Spark UI primitives (shadcn-style components)
+- Tailwind CSS 4 + shadcn/ui components
 - Recharts for charts, Sonner for toasts, Phosphor icons for system glyphs
 
 ## Run it locally
@@ -23,16 +23,18 @@ Single-page console for managing an agentic document retrieval-and-chat system. 
 Requires Node 18+.
 
 ## Project map
-- `src/App.tsx`: top-level tabs (Dashboard, Index, Search, Metrics, Logs, Settings) and feature wiring.
-- `src/components/MetricsDashboard.tsx`: metric cards and chart groupings.
-- `src/components/LogsViewer.tsx`: mock streaming log panels with controls and filters.
-- `src/components/MetricsChart.tsx`: reusable recharts wrapper with mock data generation.
-- `src/styles`, `src/index.css`, `src/main.css`: theme and layout styles; `main.tsx` mounts the app with Spark providers.
+- `src/App.tsx`: Main application layout and routing.
+- `src/components/SettingsDashboard.tsx`: Configuration management interface.
+- `src/components/ChatInterface.tsx`: RAG search and chat interface.
+- `src/components/FileManager.tsx`: Document indexing management.
+- `src/components/MetricsDashboard.tsx`: System metrics visualization.
+- `src/components/LogsViewer.tsx`: Log file viewer.
 
-## Extending to a real stack
-- Replace mock data generators (`MetricsChart`, `LogsViewer`) with API calls to your observability and log backends.
-- Swap `useKV` storage (Spark-provided KV persistence) for real index/query endpoints; hook `handleAddFile/Directory` and search submission to your ingestion + RAG services.
-- Wire `ollamaConfig` values into real connectivity checks and start/stop controls backed by your orchestrator.
+## Integration
+The UI communicates with the backend services via REST API:
+- **Configuration**: Reads/writes to `config/settings.json` via `/api/config` endpoints.
+- **Indexing**: Triggers document processing via `/api/index_path`.
+- **Search**: Performs RAG search via `/api/search`.
 
 ## License
 MIT (see `LICENSE`).
