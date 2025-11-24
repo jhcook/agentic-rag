@@ -9,13 +9,12 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 from typing import Any, Dict
 
 import requests
+from requests.exceptions import HTTPError
 from urllib3.exceptions import ReadTimeoutError
-from requests.exceptions import ConnectionError, HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +26,15 @@ def post(path: str, payload: Dict[str, Any], timeout: int = 60):
         r = requests.post(f"{BASE}{path}", json=payload, timeout=timeout)
         r.raise_for_status()
         return r.json()
-    except (ConnectionError, ReadTimeoutError, HTTPError) as e:
-        logger.error("HTTP error during POST to %s: %s", path, e)
-        return {"error": str(e)}
+    except (requests.exceptions.ConnectionError, ReadTimeoutError,
+            HTTPError) as exc:
+        logger.error("HTTP error during POST to %s: %s", path, exc)
+        return {"error": str(exc)}
 
-def index_path(path: str, glob: str="**/*.txt"):
+def index_path(path: str, glob: str = "**/*.txt"):
     """Invoke the REST indexer for a local path."""
     return post("/api/index_path", {"path": path, "glob": glob})
+
 
 def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
     """Invoke the REST search endpoint. In async mode, returns a job and polls."""
@@ -41,7 +42,10 @@ def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
         return post("/api/search", {"query": query}, timeout=timeout_seconds)
 
     # Async flow: request async search, then poll for completion/messages
-    kick = post("/api/search", {"query": query, "async": True, "timeout_seconds": timeout_seconds}, timeout=30)
+    kick = post(
+        "/api/search",
+        {"query": query, "async": True, "timeout_seconds": timeout_seconds},
+        timeout=30)
     job_id = kick.get("job_id")
     if not job_id:
         return kick
@@ -53,7 +57,8 @@ def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
 
     while elapsed < deadline:
         try:
-            r = requests.get(f"{BASE}/api/search/jobs/{job_id}", timeout=30)
+            r = requests.get(
+                f"{BASE}/api/search/jobs/{job_id}", timeout=30)
             r.raise_for_status()
             status = r.json()
         except ReadTimeoutError:
@@ -63,21 +68,26 @@ def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
             return {"error": f"failed to poll search job: {exc}"}
 
         if status:
-            msg = status.get("message")
-            if msg and msg != last_message:
-                print(msg)
-                last_message = msg
+            status_msg = status.get("message")
+            if status_msg and status_msg != last_message:
+                print(status_msg)
+                last_message = status_msg
 
             if status.get("status") in {"completed", "timeout", "failed"}:
-                res = status.get("result") or status
-                return res
+                search_result = status.get("result") or status
+                return search_result
 
         time.sleep(poll_interval)
         elapsed += poll_interval
 
-    return {"error": "search timeout", "message": last_message, "job_id": job_id}
+    return {
+        "error": "search timeout",
+        "message": last_message,
+        "job_id": job_id
+    }
 
-def control_loop(q: str, idx: str | None=None, async_mode: bool = False, timeout_seconds: int = 300):
+def control_loop(q: str, idx: str | None = None, async_mode: bool = False,
+                  timeout_seconds: int = 300):
     """Optionally index a path, then perform a search."""
     if idx:
         index_path(path=idx)
@@ -107,10 +117,10 @@ def extract_message_content(result: Any) -> str:
             choices = result.get("choices")
             if choices and isinstance(choices, list):
                 first = choices[0] or {}
-                msg = first.get("message", {}) if isinstance(first, dict) else {}
-                content = msg.get("content") if isinstance(msg, dict) else None
-                if content:
-                    base = str(content).strip()
+                msg_dict = first.get("message", {}) if isinstance(first, dict) else {}
+                msg_content = msg_dict.get("content") if isinstance(msg_dict, dict) else None
+                if msg_content:
+                    base = str(msg_content).strip()
                 elif "text" in first:
                     base = str(first.get("text", "")).strip()
             if not base and "answer" in result:
@@ -124,17 +134,35 @@ def extract_message_content(result: Any) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
-    parser = argparse.ArgumentParser(description="CLI agent for the retrieval REST server.")
-    parser.add_argument("user_input", help="Query text or 'index <path>' command")
-    parser.add_argument("index_path", nargs="?", help="Optional path to index before search")
-    parser.add_argument("--verbose", action="store_true", help="Print full JSON responses and verbose logs")
-    parser.add_argument("--async", dest="async_mode", action="store_true", help="Use async search with polling/heartbeats")
-    parser.add_argument("--timeout", dest="timeout_seconds", type=int, default=300, help="Search timeout seconds (async and sync)")
-    return parser
+    arg_parser = argparse.ArgumentParser(
+        description="CLI agent for the retrieval REST server.")
+    arg_parser.add_argument(
+        "user_input",
+        help="Query text or 'index <path>' command")
+    arg_parser.add_argument(
+        "index_path",
+        nargs="?",
+        help="Optional path to index before search")
+    arg_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print full JSON responses and verbose logs")
+    arg_parser.add_argument(
+        "--async",
+        dest="async_mode",
+        action="store_true",
+        help="Use async search with polling/heartbeats")
+    arg_parser.add_argument(
+        "--timeout",
+        dest="timeout_seconds",
+        type=int,
+        default=300,
+        help="Search timeout seconds (async and sync)")
+    return arg_parser
 
 if __name__ == "__main__":
-    parser = build_parser()
-    args = parser.parse_args()
+    main_parser = build_parser()
+    args = main_parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.CRITICAL,
@@ -144,13 +172,17 @@ if __name__ == "__main__":
     command_type, content = parse_command(args.user_input)
 
     if command_type == "index":
-        result = index_path(path=content)
+        search_result = index_path(path=content)
     else:
-        result = control_loop(content, args.index_path, async_mode=args.async_mode, timeout_seconds=args.timeout_seconds)
+        search_result = control_loop(
+            content,
+            args.index_path,
+            async_mode=args.async_mode,
+            timeout_seconds=args.timeout_seconds)
 
     if args.verbose:
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(search_result, ensure_ascii=False))
     else:
-        msg = extract_message_content(result)
-        if msg:
-            print(msg)
+        output_msg = extract_message_content(search_result)
+        if output_msg:
+            print(output_msg)

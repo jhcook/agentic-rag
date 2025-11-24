@@ -1,10 +1,14 @@
-import pytest
+"""Pytest configuration and fixtures."""
 import logging
+
+import pytest
 
 logging.basicConfig(level=logging.DEBUG)
 
+
 @pytest.fixture(autouse=True)
 def log_test_info(request):
-    logging.info(f'Starting test: {request.node.name}')
+    """Log test start and finish."""
+    logging.info('Starting test: %s', request.node.name)
     yield
-    logging.info(f'Finished test: {request.node.name}')
+    logging.info('Finished test: %s', request.node.name)

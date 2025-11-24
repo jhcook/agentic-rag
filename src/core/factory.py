@@ -1,8 +1,10 @@
-import os
+"""Factory for creating RAG backend instances."""
 import logging
+import os
 import pathlib
-import psutil
 from typing import Dict, Any, Optional, List
+
+import psutil
 import requests
 
 from src.core.interfaces import RAGBackend
@@ -33,20 +35,24 @@ logger = logging.getLogger(__name__)
 
 class LocalBackend:
     """Direct calls to rag_core functions."""
-    
+
     def _check_core(self):
+        """Check if local core is available."""
         if local_core is None:
             raise RuntimeError("Local core dependencies not available")
 
     def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        """Search for documents."""
         self._check_core()
         return local_core.search(query, top_k=top_k)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
+        """Add or update a document."""
         self._check_core()
         return local_core.upsert_document(uri, text)
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
+        """Index a directory path."""
         self._check_core()
         try:
             base = local_core.resolve_input_path(path)
@@ -56,12 +62,12 @@ class LocalBackend:
         # Normalize glob
         if not glob or not glob.strip():
             glob = "**/*"
-        
+
         if base.is_file():
             files = [base]
         else:
             files = list(base.rglob(glob))
-            
+
         indexed = 0
         indexed_uris = []
         for file_path in files:
@@ -73,43 +79,51 @@ class LocalBackend:
                     local_core.upsert_document(str(file_path), content)
                     indexed += 1
                     indexed_uris.append(str(file_path))
-            except Exception as e:
-                logger.warning(f"Failed to index {file_path}: {e}")
-                
+            except Exception as exc:
+                logger.warning("Failed to index %s: %s", file_path, exc)
+
         return {"indexed": indexed, "uris": indexed_uris}
 
     def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
+        """Generate a grounded answer."""
         self._check_core()
         return local_core.grounded_answer(question, k=k)
 
     def load_store(self) -> bool:
+        """Load the document store."""
         self._check_core()
         local_core.load_store()
         return True
 
     def save_store(self) -> bool:
+        """Save the document store."""
         self._check_core()
         local_core.save_store()
         return True
 
     def list_documents(self) -> List[str]:
+        """List all document URIs."""
         self._check_core()
         store = local_core.get_store()
         return list(store.docs.keys())
 
     def rebuild_index(self) -> None:
+        """Rebuild the vector index."""
         self._check_core()
-        local_core._rebuild_faiss_index()
+        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Rerank passages by relevance."""
         self._check_core()
         return local_core.rerank(query, passages)
 
     def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
+        """Verify answer grounding."""
         self._check_core()
         return local_core.verify_grounding(question, answer, citations)
 
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
+        """Delete documents by URI."""
         self._check_core()
         store = local_core.get_store()
         deleted = 0
@@ -118,10 +132,11 @@ class LocalBackend:
                 del store.docs[uri]
                 deleted += 1
         local_core.save_store()
-        local_core._rebuild_faiss_index()
+        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
         return {"deleted": deleted}
 
     def flush_cache(self) -> Dict[str, Any]:
+        """Clear the document cache."""
         self._check_core()
         store = local_core.get_store()
         store.docs.clear()
@@ -133,16 +148,17 @@ class LocalBackend:
             except OSError:
                 removed = False
         local_core.save_store()
-        local_core._rebuild_faiss_index()
+        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
         return {"status": "flushed", "db_removed": removed, "documents": 0}
 
     def get_stats(self) -> Dict[str, Any]:
+        """Get system statistics."""
         self._check_core()
         store = local_core.get_store()
         index, _, _ = local_core.get_faiss_globals()
         docs = len(getattr(store, "docs", {}))
         vectors = index.ntotal if index is not None else 0
-        
+
         return {
             "status": "ok",
             "documents": docs,
@@ -152,78 +168,126 @@ class LocalBackend:
         }
 
     def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Chat with the backend."""
         self._check_core()
         return local_core.chat(messages)
 
 class RemoteBackend:
     """HTTP calls to the REST API."""
-    
+
     def __init__(self, base_url: str):
+        """Initialize remote backend with base URL."""
         self.base_url = base_url.rstrip("/")
+        self.timeout = 30  # Default timeout in seconds
 
     def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/search", json={"query": query, "k": top_k})
+        """Search for documents."""
+        resp = requests.post(
+            f"{self.base_url}/search",
+            json={"query": query, "k": top_k},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/upsert_document", json={"uri": uri, "text": text})
+        """Add or update a document."""
+        resp = requests.post(
+            f"{self.base_url}/upsert_document",
+            json={"uri": uri, "text": text},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/index_path", json={"path": path, "glob": glob})
+        """Index a directory path."""
+        resp = requests.post(
+            f"{self.base_url}/index_path",
+            json={"path": path, "glob": glob},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/grounded_answer", json={"question": question, "k": k})
+        """Generate a grounded answer."""
+        resp = requests.post(
+            f"{self.base_url}/grounded_answer",
+            json={"question": question, "k": k},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def load_store(self) -> bool:
-        resp = requests.post(f"{self.base_url}/load_store", json={})
+        """Load the document store."""
+        resp = requests.post(
+            f"{self.base_url}/load_store",
+            json={},
+            timeout=self.timeout)
         return resp.status_code == 200
 
     def save_store(self) -> bool:
+        """Save the document store."""
         return True
 
     def list_documents(self) -> List[str]:
-        resp = requests.get(f"{self.base_url}/documents")
+        """List all document URIs."""
+        resp = requests.get(f"{self.base_url}/documents", timeout=self.timeout)
         resp.raise_for_status()
         data = resp.json()
         return [doc["uri"] for doc in data.get("documents", [])]
 
     def rebuild_index(self) -> None:
+        """Rebuild the vector index."""
         pass
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        resp = requests.post(f"{self.base_url}/rerank", json={"query": query, "passages": passages})
+        """Rerank passages by relevance."""
+        resp = requests.post(
+            f"{self.base_url}/rerank",
+            json={"query": query, "passages": passages},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json().get("results", [])
 
     def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/verify_grounding", json={"question": question, "draft_answer": answer, "citations": citations})
+        """Verify answer grounding."""
+        resp = requests.post(
+            f"{self.base_url}/verify_grounding",
+            json={"question": question, "draft_answer": answer,
+                  "citations": citations},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/documents/delete", json={"uris": uris})
+        """Delete documents by URI."""
+        resp = requests.post(
+            f"{self.base_url}/documents/delete",
+            json={"uris": uris},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def flush_cache(self) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/flush_cache", json={})
+        """Clear the document cache."""
+        resp = requests.post(
+            f"{self.base_url}/flush_cache",
+            json={},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def get_stats(self) -> Dict[str, Any]:
-        resp = requests.get(f"{self.base_url}/health")
+        """Get system statistics."""
+        resp = requests.get(f"{self.base_url}/health", timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        resp = requests.post(f"{self.base_url}/chat", json={"messages": messages})
+        """Chat with the backend."""
+        resp = requests.post(
+            f"{self.base_url}/chat",
+            json={"messages": messages},
+            timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
@@ -231,28 +295,32 @@ class HybridBackend:
     """
     A backend that wraps multiple implementations and allows switching between them.
     """
+
     def __init__(self):
+        """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
         self.current_mode = "local"
-        
+
         # Initialize Local
         if HAS_LOCAL_CORE:
             try:
                 self.backends["local"] = LocalBackend()
                 logger.info("HybridBackend: LocalBackend initialized")
-            except Exception as e:
-                logger.error(f"HybridBackend: Failed to init LocalBackend: {e}")
-        
+            except Exception as exc:
+                logger.error("HybridBackend: Failed to init LocalBackend: %s", exc)
+
         # Initialize Google
         if HAS_GOOGLE_BACKEND and GoogleGeminiBackend:
             try:
                 self.backends["google"] = GoogleGeminiBackend()
                 logger.info("HybridBackend: GoogleGeminiBackend initialized")
-            except Exception as e:
-                logger.error(f"HybridBackend: Failed to init GoogleGeminiBackend: {e}")
-                
+            except Exception as exc:
+                logger.error(
+                    "HybridBackend: Failed to init GoogleGeminiBackend: %s", exc)
+
         # Default to what's available
-        if "google" in self.backends and os.getenv("RAG_MODE", "local").lower() == "google":
+        if ("google" in self.backends and
+                os.getenv("RAG_MODE", "local").lower() == "google"):
             self.current_mode = "google"
         elif "local" in self.backends:
             self.current_mode = "local"
@@ -260,6 +328,7 @@ class HybridBackend:
             logger.warning("HybridBackend: No backends available!")
 
     def set_mode(self, mode: str) -> bool:
+        """Set the active backend mode."""
         # Handle top-level switching
         if mode == "local":
             if "local" in self.backends:
@@ -267,7 +336,7 @@ class HybridBackend:
                 logger.info("HybridBackend: Switched to local")
                 return True
             return False
-            
+
         # Handle Google sub-modes
         if "google" in self.backends:
             google_backend = self.backends["google"]
@@ -276,9 +345,9 @@ class HybridBackend:
                 if mode in google_backend.get_available_modes():
                     self.current_mode = "google"
                     google_backend.set_mode(mode)
-                    logger.info(f"HybridBackend: Switched to google ({mode})")
+                    logger.info("HybridBackend: Switched to google (%s)", mode)
                     return True
-            
+
             # Fallback for legacy "google" mode request -> manual
             if mode == "google":
                 self.current_mode = "google"
@@ -289,6 +358,7 @@ class HybridBackend:
         return False
 
     def get_mode(self) -> str:
+        """Get the current backend mode."""
         if self.current_mode == "google":
             # Return the specific google mode (manual or vertex_ai_search)
             if hasattr(self.backends["google"], "get_mode"):
@@ -296,6 +366,7 @@ class HybridBackend:
         return self.current_mode
 
     def get_available_modes(self) -> List[str]:
+        """Get list of available backend modes."""
         modes = []
         if "local" in self.backends:
             modes.append("local")
@@ -308,24 +379,32 @@ class HybridBackend:
 
     @property
     def _backend(self) -> RAGBackend:
+        """Get the current backend instance."""
         if self.current_mode not in self.backends:
-            raise RuntimeError(f"Current mode {self.current_mode} not available in backends: {list(self.backends.keys())}")
+            raise RuntimeError(
+                f"Current mode {self.current_mode} not available in backends: "
+                f"{list(self.backends.keys())}")
         return self.backends[self.current_mode]
 
     # Delegate all methods
     def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        """Search for documents."""
         return self._backend.search(query, top_k)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
+        """Add or update a document."""
         return self._backend.upsert_document(uri, text)
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
+        """Index a directory path."""
         return self._backend.index_path(path, glob)
 
-    def grounded_answer(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5,
+                        model: Optional[str] = None) -> Dict[str, Any]:
+        """Generate a grounded answer."""
         if hasattr(self._backend, "grounded_answer"):
-             # Check if backend.grounded_answer accepts model
-            import inspect
+            # Check if backend.grounded_answer accepts model
+            import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.grounded_answer)
             if "model" in sig.parameters:
                 return self._backend.grounded_answer(question, k, model=model)
@@ -333,44 +412,57 @@ class HybridBackend:
         return {"error": "Grounded answer not supported"}
 
     def load_store(self) -> bool:
+        """Load the document store."""
         return self._backend.load_store()
 
     def save_store(self) -> bool:
+        """Save the document store."""
         return self._backend.save_store()
 
     def list_documents(self) -> List[str]:
+        """List all document URIs."""
         return self._backend.list_documents()
 
     def rebuild_index(self) -> None:
+        """Rebuild the vector index."""
         self._backend.rebuild_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Rerank passages by relevance."""
         return self._backend.rerank(query, passages)
 
-    def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
+    def verify_grounding(self, question: str, answer: str,
+                         citations: List[str]) -> Dict[str, Any]:
+        """Verify answer grounding."""
         return self._backend.verify_grounding(question, answer, citations)
 
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
+        """Delete documents by URI."""
         return self._backend.delete_documents(uris)
 
     def flush_cache(self) -> Dict[str, Any]:
+        """Clear the document cache."""
         return self._backend.flush_cache()
 
     def get_stats(self) -> Dict[str, Any]:
+        """Get system statistics."""
         stats = self._backend.get_stats()
         stats["mode"] = self.current_mode
         stats["available_modes"] = self.get_available_modes()
         return stats
 
     def list_models(self) -> List[str]:
+        """List available models."""
         if hasattr(self._backend, "list_models"):
             return self._backend.list_models()
         return []
 
-    def chat(self, messages: List[Dict[str, str]], model: str = None) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]],
+             model: str = None) -> Dict[str, Any]:
+        """Chat with the backend."""
         if hasattr(self._backend, "chat"):
             # Check if backend.chat accepts model
-            import inspect
+            import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.chat)
             if "model" in sig.parameters:
                 return self._backend.chat(messages, model=model)
@@ -378,11 +470,14 @@ class HybridBackend:
         return {"error": "Chat not supported by current backend"}
 
     def list_drive_files(self, folder_id: str = None) -> List[Dict[str, Any]]:
+        """List Google Drive files."""
         if hasattr(self._backend, "list_drive_files"):
             return self._backend.list_drive_files(folder_id)
         return []
 
-    def upload_file(self, name: str, content: bytes, mime_type: str) -> Dict[str, Any]:
+    def upload_file(self, name: str, content: bytes,
+                    mime_type: str) -> Dict[str, Any]:
+        """Upload a file."""
         if hasattr(self._backend, "upload_file"):
             return self._backend.upload_file(name, content, mime_type)
         return {"error": "Upload not supported by current backend"}
@@ -392,14 +487,15 @@ class HybridBackend:
         if hasattr(self._backend, "reload_auth"):
             self._backend.reload_auth()
 
+
 def get_rag_backend() -> RAGBackend:
     """Factory to get the configured backend."""
     mode = os.getenv("RAG_MODE", "local").lower()
-    
+
     if mode == "remote":
         url = os.getenv("RAG_REMOTE_URL", "http://127.0.0.1:8001/api")
-        logger.info(f"Initializing RemoteBackend at {url}")
+        logger.info("Initializing RemoteBackend at %s", url)
         return RemoteBackend(url)
-    
-    logger.info(f"Initializing HybridBackend (initial mode: {mode})")
+
+    logger.info("Initializing HybridBackend (initial mode: %s)", mode)
     return HybridBackend()

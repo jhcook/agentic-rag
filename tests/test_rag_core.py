@@ -1,7 +1,9 @@
-import pytest
+"""Tests for RAG core functionality."""
 import logging
-from pathlib import Path
 import tempfile
+
+import pytest
+
 from src.core.rag_core import (
     Store, save_store, load_store, upsert_document,
     index_path, search, rerank, synthesize_answer,
@@ -25,11 +27,14 @@ def temp_db_path():
         yield f.name
 
 def test_store_initialization():
+    """Test store initialization."""
     store = Store()
     assert store.docs == {}
     assert store.last_loaded == 0.0
 
+
 def test_store_add():
+    """Test adding documents to store."""
     store = Store()
     store.add("test.txt", "Test content")
     assert "test.txt" in store.docs
@@ -39,61 +44,55 @@ def test_save_and_load_store(temp_db_path, monkeypatch):
     """Test saving and loading store with proper cleanup."""
     # Configure test environment
     monkeypatch.setattr("src.core.rag_core.DB_PATH", temp_db_path)
-    logger.info(f"Using temporary DB path: {temp_db_path}")
-    
+    logger.info("Using temporary DB path: %s", temp_db_path)
+
     # Reset global store
-    import src.core.rag_core as rag_core
-    rag_core._STORE = Store()
-    
+    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
+    rag_core._STORE = Store()  # pylint: disable=protected-access
+
     # Add test content
     test_content = "Test content for persistence"
-    rag_core._STORE.add("test.txt", test_content)
+    rag_core._STORE.add("test.txt", test_content)  # pylint: disable=protected-access
     logger.info("Added test document to store")
-    
+
     # Save store
     save_store()
     logger.info("Saved store to disk")
-    
+
     # Create new store instance
-    rag_core._STORE = Store()
-    assert len(rag_core._STORE.docs) == 0, "Expected empty store after reset"
-    
+    rag_core._STORE = Store()  # pylint: disable=protected-access
+    assert len(rag_core._STORE.docs) == 0, "Expected empty store after reset"  # pylint: disable=protected-access
+
     # Load from disk
     load_store()
-    logger.info(f"Loaded store. Contents: {rag_core._STORE.docs}")
-    
+    logger.info("Loaded store. Contents: %s", rag_core._STORE.docs)  # pylint: disable=protected-access
+
     # Verify
-    assert "test.txt" in rag_core._STORE.docs, f"Expected 'test.txt' in {list(rag_core._STORE.docs.keys())}"
-    assert rag_core._STORE.docs["test.txt"] == test_content
+    assert "test.txt" in rag_core._STORE.docs, (  # pylint: disable=protected-access
+        f"Expected 'test.txt' in {list(rag_core._STORE.docs.keys())}")  # pylint: disable=protected-access
+    assert rag_core._STORE.docs["test.txt"] == test_content  # pylint: disable=protected-access
 
 def test_upsert_document(temp_db_path, monkeypatch):
     """Test document upsert with proper store reset."""
     monkeypatch.setattr("src.core.rag_core.DB_PATH", temp_db_path)
-    
+
     # Reset store
-    import src.core.rag_core as rag_core
-    rag_core._STORE = Store()
-    
+    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
+    rag_core._STORE = Store()  # pylint: disable=protected-access
+
     # Perform upsert
     test_content = "Test content for upsert"
     result = upsert_document("test_doc.txt", test_content)
-    logger.info(f"Upsert result: {result}")
-    
+    logger.info("Upsert result: %s", result)
+
     # Verify
     assert result["upserted"] is True
-    assert "test_doc.txt" in rag_core._STORE.docs
-    assert rag_core._STORE.docs["test_doc.txt"] == test_content
+    assert "test_doc.txt" in rag_core._STORE.docs  # pylint: disable=protected-access
+    assert rag_core._STORE.docs["test_doc.txt"] == test_content  # pylint: disable=protected-access
 
 
 def test_index_path(tmp_path):
-    # Create temporary directory with test files
-    (tmp_path / "test1.txt").write_text("Content 1")
-    (tmp_path / "test2.txt").write_text("Content 2")
-    
-    result = index_path(str(tmp_path))
-    assert result["indexed"] == 2
-
-def test_index_path(tmp_path):
+    """Test indexing a directory path."""
     # Create temporary directory with test files
     (tmp_path / "test1.txt").write_text("Content 1")
     (tmp_path / "test2.txt").write_text("Content 2")
@@ -102,20 +101,21 @@ def test_index_path(tmp_path):
     assert result["indexed"] == 2
 
 def test_search():
+    """Test search functionality."""
     # Clear the store first
-    from src.core.rag_core import _STORE
-    global _STORE
-    _STORE = Store()
-    
+    from src.core.rag_core import _STORE  # pylint: disable=import-outside-toplevel
+    global _STORE  # pylint: disable=global-statement
+    _STORE = Store()  # pylint: disable=protected-access
+
     # Add test document
     test_doc = "This is a test document about artificial intelligence"
-    _STORE.add("test.txt", test_doc)
-    logger.info(f"Added test document to store: {test_doc}")
-    
+    _STORE.add("test.txt", test_doc)  # pylint: disable=protected-access
+    logger.info("Added test document to store: %s", test_doc)
+
     # Perform search
     results = search("artificial intelligence", top_k=5)
-    logger.info(f"Search results: {results}")
-    
+    logger.info("Search results: %s", results)
+
     # Verify results
     # search returns a dict with 'choices' (LLM response) or 'answer' (fallback)
     # It does NOT return a list of results directly anymore.
@@ -123,7 +123,9 @@ def test_search():
     if isinstance(results, dict):
         assert "choices" in results or "answer" in results or "error" in results
 
+
 def test_rerank():
+    """Test reranking functionality."""
     passages = [
         {"text": "AI and machine learning", "score": 0.5},
         {"text": "Database systems", "score": 0.3}
@@ -132,7 +134,9 @@ def test_rerank():
     assert len(results) == 2
     assert results[0]["score"] >= results[1]["score"]
 
+
 def test_synthesize_answer():
+    """Test answer synthesis."""
     passages = [
         {"text": "AI is a field of computer science", "uri": "doc1.txt"},
         {"text": "Machine learning is a subset of AI", "uri": "doc2.txt"}
@@ -141,15 +145,19 @@ def test_synthesize_answer():
     assert "answer" in result
     assert "citations" in result
 
+
 def test_grounded_answer():
-    import src.core.rag_core as rag_core
-    rag_core._STORE = Store()
-    rag_core._STORE.add("ai_doc.txt", "AI is artificial intelligence")
+    """Test grounded answer generation."""
+    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
+    rag_core._STORE = Store()  # pylint: disable=protected-access
+    rag_core._STORE.add("ai_doc.txt", "AI is artificial intelligence")  # pylint: disable=protected-access
     result = grounded_answer("What is AI?", k=1)
     assert "answer" in result
     assert "sources" in result
 
+
 def test_verify_grounding_simple():
+    """Test simple grounding verification."""
     passages = [
         {"text": "AI is artificial intelligence", "uri": "doc1.txt"},
         {"text": "Machine learning is part of AI", "uri": "doc2.txt"}
@@ -163,11 +171,13 @@ def test_verify_grounding_simple():
     assert "citation_coverage" in result
     assert "missing_facts" in result
 
+
 def test_verify_grounding():
-    from src.core.rag_core import _STORE
-    global _STORE
-    _STORE = Store()
-    _STORE.add("doc1.txt", "AI is artificial intelligence")
+    """Test grounding verification."""
+    from src.core.rag_core import _STORE  # pylint: disable=import-outside-toplevel
+    global _STORE  # pylint: disable=global-statement
+    _STORE = Store()  # pylint: disable=protected-access
+    _STORE.add("doc1.txt", "AI is artificial intelligence")  # pylint: disable=protected-access
     result = verify_grounding(
         "What is AI?",
         "AI is artificial intelligence [1].",

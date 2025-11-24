@@ -495,7 +495,7 @@ def _extract_text_from_file(file_path: Union[pathlib.Path, str]) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
-    
+
     # Handle string input that might not have .name attribute
     if isinstance(file_path, pathlib.Path) and file_path.name in {".DS_Store"}:
         return ""
@@ -1154,11 +1154,11 @@ def chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
             stream=False,
             timeout=300,
         )
-        
+
         if isinstance(resp, dict) and "choices" in resp:
-             content = resp["choices"][0]["message"]["content"]
-             return {"role": "assistant", "content": content}
-        
+            content = resp["choices"][0]["message"]["content"]
+            return {"role": "assistant", "content": content}
+
         # Handle other response formats if needed
         return {"role": "assistant", "content": str(resp)}
 

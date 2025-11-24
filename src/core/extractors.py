@@ -1,7 +1,7 @@
+"""Text extraction from various file formats."""
 import io
 import logging
 import pathlib
-from typing import Optional
 
 try:
     from pypdf import PdfReader  # type: ignore
@@ -50,7 +50,7 @@ def _download_from_url(url: str) -> bytes:
 def extract_text_from_bytes(content: bytes, filename: str) -> str:
     """Extract text from file content (bytes) based on filename extension."""
     suffix = pathlib.Path(filename).suffix.lower()
-    
+
     if suffix == '.pdf':
         if PdfReader is None:
             logger.warning("PDF support not available. Install pypdf: pip install pypdf")
@@ -85,7 +85,9 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
 
     elif suffix in ['.html', '.htm']:
         if BeautifulSoup is None:
-            logger.warning("HTML support not available. Install beautifulsoup4: pip install beautifulsoup4")
+            logger.warning(
+                "HTML support not available. Install beautifulsoup4: "
+                "pip install beautifulsoup4")
             return ""
         try:
             html_content = content.decode('utf-8', errors='ignore')
@@ -94,7 +96,8 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
                 script.decompose()
             text = soup.get_text(separator='\n')
             lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            chunks = (phrase.strip() for line in lines
+                      for phrase in line.split("  "))
             text = '\n'.join(chunk for chunk in chunks if chunk)
             return text
         except Exception as exc:
@@ -125,7 +128,7 @@ def _extract_text_from_file(file_path: pathlib.Path) -> str:
         if not content:
             return ""
         return extract_text_from_bytes(content, file_str)
-    
+
     # Local file
     try:
         with open(file_path, "rb") as f:

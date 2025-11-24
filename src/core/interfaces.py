@@ -1,5 +1,7 @@
-from typing import Protocol, List, Dict, Any, Optional
+"""Protocol interfaces for RAG backends."""
+from typing import Protocol, List, Dict, Any
 
+# pylint: disable=unnecessary-ellipsis
 class RAGBackend(Protocol):
     """Interface for RAG operations (Local or Remote)."""
 
