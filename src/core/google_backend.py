@@ -19,6 +19,8 @@ try:
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaIoBaseUpload
+    import httplib2
+    from google_auth_httplib2 import AuthorizedHttp
     HAS_GOOGLE_DEPS = True
 except ImportError:
     HAS_GOOGLE_DEPS = False
@@ -44,6 +46,8 @@ except ImportError:
     GoogleAuthManager = None
 
 logger = logging.getLogger(__name__)
+
+TIMEOUT_SECONDS = 300  # 5 minutes timeout for large context operations
 
 class GoogleGeminiBackend:
     """
@@ -89,14 +93,18 @@ class GoogleGeminiBackend:
 
         # Initialize Drive Service
         try:
-            self.drive_service = build('drive', 'v3', credentials=self.creds)
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            authorized_http = AuthorizedHttp(self.creds, http=http_client)
+            self.drive_service = build('drive', 'v3', http=authorized_http)
         except Exception as e:
             logger.warning(f"Failed to initialize Drive service (offline?): {e}")
             self.drive_service = None
         
         # Initialize Gmail Service
         try:
-            self.gmail_service = build('gmail', 'v1', credentials=self.creds)
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            authorized_http = AuthorizedHttp(self.creds, http=http_client)
+            self.gmail_service = build('gmail', 'v1', http=authorized_http)
         except Exception as e:
             logger.warning(f"Failed to initialize Gmail service (offline?): {e}")
             self.gmail_service = None
@@ -106,7 +114,9 @@ class GoogleGeminiBackend:
         # For OAuth, we use the lower-level googleapiclient or configure genai if supported.
         # Here we use googleapiclient for the model to ensure OAuth compliance.
         try:
-            self.gen_service = build('generativelanguage', 'v1beta', credentials=self.creds, static_discovery=False)
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            authorized_http = AuthorizedHttp(self.creds, http=http_client)
+            self.gen_service = build('generativelanguage', 'v1beta', static_discovery=False, http=authorized_http)
         except Exception as e:
             logger.warning(f"Failed to initialize Gemini service (offline?): {e}")
             self.gen_service = None
@@ -153,9 +163,14 @@ class GoogleGeminiBackend:
         self.creds = self.auth_manager.authenticate()
         
         if self.creds:
-            self.drive_service = build('drive', 'v3', credentials=self.creds)
-            self.gmail_service = build('gmail', 'v1', credentials=self.creds)
-            self.gen_service = build('generativelanguage', 'v1beta', credentials=self.creds, static_discovery=False)
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            self.drive_service = build('drive', 'v3', http=AuthorizedHttp(self.creds, http=http_client))
+            
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            self.gmail_service = build('gmail', 'v1', http=AuthorizedHttp(self.creds, http=http_client))
+            
+            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
+            self.gen_service = build('generativelanguage', 'v1beta', static_discovery=False, http=AuthorizedHttp(self.creds, http=http_client))
             logger.info("Google services re-initialized.")
         else:
             logger.warning("Reload failed: No valid credentials found.")
@@ -340,7 +355,9 @@ class GoogleGeminiBackend:
         Search Gmail for emails matching the query.
         """
         if not self.gmail_service:
-            return {"error": "Not authenticated"}
+            self.reload_auth()
+            if not self.gmail_service:
+                return {"error": "Not authenticated"}
 
         # Try to generate a smart query first
         smart_query = self._generate_smart_query(query)
@@ -749,7 +766,9 @@ class GoogleGeminiBackend:
         Generate an answer using Gemini 1.5 Pro with content from Drive files and Gmail (Manual Mode).
         """
         if not self.gen_service or not self.drive_service:
-            return {"error": "Not authenticated"}
+            self.reload_auth()
+            if not self.gen_service or not self.drive_service:
+                return {"error": "Not authenticated"}
 
         target_model = f"models/{model}" if model else self.model_name
         logger.info(f"Generating grounded answer with {target_model} for: {question}")
@@ -827,7 +846,9 @@ class GoogleGeminiBackend:
         Conversational chat with Gemini 1.5 Pro, with RAG context from Drive/Gmail.
         """
         if not self.gen_service:
-            return {"error": "Not authenticated"}
+            self.reload_auth()
+            if not self.gen_service:
+                return {"error": "Not authenticated"}
 
         target_model = f"models/{model}" if model else self.model_name
         logger.info(f"Chat request received (model={target_model})")

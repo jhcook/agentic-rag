@@ -9,6 +9,7 @@ import os
 from typing import Optional
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -71,8 +72,28 @@ class GoogleAuthManager:
                 # Save refreshed token
                 with open(self.token_path, 'w', encoding='utf-8') as token:
                     token.write(self.creds.to_json())
-            except Exception as exc:
+            except TransportError as exc:
+                logger.warning("Token refresh failed due to network issue: %s. Keeping token for retry.", exc)
+                # Keep the file, but don't return invalid creds for now
+                self.creds = None
+            except RefreshError as exc:
                 logger.warning("Token refresh failed: %s.", exc)
+                # Only delete if it's likely a permanent error (invalid_grant)
+                # If it's a temporary server error (5xx), we might want to keep it, 
+                # but RefreshError usually means the token is bad.
+                # We'll be conservative and only delete on explicit invalid_grant/unauthorized.
+                error_str = str(exc).lower()
+                if "invalid_grant" in error_str or "unauthorized_client" in error_str or "access_denied" in error_str:
+                    try:
+                        os.remove(self.token_path)
+                        logger.info("Deleted invalid token file after failed refresh.")
+                    except OSError:
+                        pass
+                else:
+                    logger.info("Keeping token file in case failure is temporary.")
+                self.creds = None
+            except Exception as exc:
+                logger.warning("Token refresh failed (unexpected): %s.", exc)
                 # Delete invalid token file
                 try:
                     os.remove(self.token_path)
