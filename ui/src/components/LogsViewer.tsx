@@ -171,32 +171,251 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     mcp?: ReturnType<typeof setInterval>
     rest?: ReturnType<typeof setInterval>
   }>({})
+  
+  const eventSourceRefs = useRef<{
+    ollama?: EventSource
+    mcp?: EventSource
+    rest?: EventSource
+  }>({})
+  
+  const lastLineCounts = useRef<{
+    ollama: number
+    mcp: number
+    rest: number
+  }>({ ollama: 0, mcp: 0, rest: 0 })
 
   useEffect(() => {
     return () => {
+      // Cleanup intervals
       Object.values(intervalRefs.current).forEach(interval => {
         if (interval) clearInterval(interval)
+      })
+      // Cleanup event sources
+      Object.values(eventSourceRefs.current).forEach(eventSource => {
+        if (eventSource) eventSource.close()
       })
     }
   }, [])
 
-  const startStreaming = (source: 'ollama' | 'mcp' | 'rest') => {
-    if (intervalRefs.current[source]) return
+  const parseLogLine = (line: string, source: string): LogEntry | null => {
+    if (!line.trim()) return null
+    
+    // Try to parse REST/MCP server logs: "YYYY-MM-DD HH:MM:SS - name - LEVEL - message"
+    const standardLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?) - [^-]+ - (\w+) - (.+)$/)
+    if (standardLogMatch) {
+      const [, timestampStr, levelStr, message] = standardLogMatch
+      const level = (levelStr.toLowerCase() as LogLevel) || 'info'
+      // Handle timestamp with or without milliseconds
+      const timestamp = new Date(timestampStr.replace(',', '.'))
+      return {
+        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
+        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
+        level: ['info', 'warn', 'error', 'debug'].includes(level) ? level : 'info',
+        source,
+        message: message.trim()
+      }
+    }
+    
+    // Try to parse access logs: Apache combined format with milliseconds
+    const accessLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - .+$/)
+    if (accessLogMatch) {
+      const [, timestampStr] = accessLogMatch
+      const timestamp = new Date(timestampStr.replace(',', '.'))
+      // Determine log level from status code in access log
+      const statusMatch = line.match(/\s(\d{3})\s/)
+      let level: LogLevel = 'info'
+      if (statusMatch) {
+        const status = parseInt(statusMatch[1])
+        if (status >= 500) level = 'error'
+        else if (status >= 400) level = 'warn'
+      }
+      return {
+        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
+        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
+        level,
+        source,
+        message: line.trim()
+      }
+    }
+    
+    // Try to parse Python logging format: "YYYY-MM-DD HH:MM:SS,mmm - logger - LEVEL - message"
+    const pythonLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - \S+ - (\w+) - (.+)$/)
+    if (pythonLogMatch) {
+      const [, timestampStr, levelStr, message] = pythonLogMatch
+      const level = (levelStr.toLowerCase() as LogLevel) || 'info'
+      const timestamp = new Date(timestampStr.replace(',', '.'))
+      return {
+        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
+        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
+        level: ['info', 'warn', 'error', 'debug'].includes(level) ? level : 'info',
+        source,
+        message: message.trim()
+      }
+    }
+    
+    // Fallback: treat as info log with current timestamp
+    return {
+      id: `${source}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      timestamp: new Date(),
+      level: 'info',
+      source,
+      message: line.trim()
+    }
+  }
 
+  const fetchLogs = async (source: 'ollama' | 'mcp' | 'rest') => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const logTypeMap: Record<string, string> = {
+      'ollama': 'ollama',
+      'mcp': 'mcp',
+      'rest': 'rest'
+    }
+    
+    const logType = logTypeMap[source]
+    if (!logType) return
+    
+    try {
+      const url = `http://${host}:${port}/${base}/logs/${logType}?lines=500`
+      const res = await fetch(url, { cache: 'no-store' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      
+      const data = await res.json()
+      const lines = data.lines || []
+      
+      const setLogs = source === 'ollama' ? setOllamaLogs : source === 'mcp' ? setMcpLogs : setRestLogs
+      
+      // Only add new lines
+      const currentCount = lastLineCounts.current[source]
+      if (lines.length > currentCount) {
+        const newLines = lines.slice(currentCount)
+        const newLogs = newLines
+          .map(line => parseLogLine(line, source))
+          .filter((log): log is LogEntry => log !== null)
+        
+        setLogs(prev => {
+          // Use a Set to deduplicate by id, then combine
+          const existingIds = new Set(prev.map(log => log.id))
+          const uniqueNewLogs = newLogs.filter(log => !existingIds.has(log.id))
+          const combined = [...prev, ...uniqueNewLogs]
+          return combined.slice(-500) // Keep last 500 entries
+        })
+        
+        lastLineCounts.current[source] = lines.length
+      } else if (lines.length < currentCount || lines.length === 0) {
+        // Log file was rotated, cleared, or is empty - reload all
+        const allLogs = lines
+          .map(line => parseLogLine(line, source))
+          .filter((log): log is LogEntry => log !== null)
+        setLogs(allLogs.slice(-500))
+        lastLineCounts.current[source] = lines.length
+      }
+    } catch (err) {
+      console.error(`Failed to fetch ${source} logs:`, err)
+      // Don't show error toast on every failed fetch to avoid spam
+    }
+  }
+
+  const streamLogs = (source: 'ollama' | 'mcp' | 'rest') => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const logTypeMap: Record<string, string> = {
+      'ollama': 'ollama',
+      'mcp': 'mcp',
+      'rest': 'rest'
+    }
+    
+    const logType = logTypeMap[source]
+    if (!logType) return null
+    
+    const url = `http://${host}:${port}/${base}/logs/${logType}/stream`
+    const eventSource = new EventSource(url)
+    
     const setLogs = source === 'ollama' ? setOllamaLogs : source === 'mcp' ? setMcpLogs : setRestLogs
+    
+    eventSource.onmessage = (event) => {
+      const line = event.data
+      if (line && line.trim()) {
+        const logEntry = parseLogLine(line, source)
+        if (logEntry) {
+          setLogs(prev => {
+            // Check for duplicates
+            const existingIds = new Set(prev.map(log => log.id))
+            if (existingIds.has(logEntry.id)) {
+              return prev
+            }
+            const combined = [...prev, logEntry]
+            return combined.slice(-500) // Keep last 500 entries
+          })
+        }
+      }
+    }
+    
+    eventSource.onerror = (error) => {
+      console.error(`EventSource error for ${source} logs:`, error)
+      eventSource.close()
+      // Fallback to polling if SSE fails
+      if (intervalRefs.current[source]) {
+        clearInterval(intervalRefs.current[source])
+        intervalRefs.current[source] = setInterval(() => {
+          fetchLogs(source)
+        }, 2000)
+      }
+    }
+    
+    return eventSource
+  }
+
+  const startStreaming = (source: 'ollama' | 'mcp' | 'rest') => {
+    // Close existing event source or interval
+    if (eventSourceRefs.current[source]) {
+      eventSourceRefs.current[source]?.close()
+      eventSourceRefs.current[source] = undefined
+    }
+    if (intervalRefs.current[source]) {
+      clearInterval(intervalRefs.current[source])
+      intervalRefs.current[source] = undefined
+    }
+
     const setState = source === 'ollama' ? setOllamaState : source === 'mcp' ? setMcpState : setRestState
 
     setState(s => ({ ...s, isStreaming: true }))
+    
+    // Try SSE streaming first, fallback to polling
+    try {
+      const eventSource = streamLogs(source)
+      if (eventSource) {
+        eventSourceRefs.current[source] = eventSource
+        // Initial fetch to get existing logs
+        fetchLogs(source)
+        toast.success(`${source.toUpperCase()} log streaming started (SSE)`)
+        return
+      }
+    } catch (err) {
+      console.warn(`SSE not available for ${source}, falling back to polling:`, err)
+    }
+    
+    // Fallback to polling
+    fetchLogs(source).then(() => {
+      intervalRefs.current[source] = setInterval(() => {
+        fetchLogs(source)
+      }, 2000)
+    })
 
-    intervalRefs.current[source] = setInterval(() => {
-      const newLog = generateMockLog(source)
-      setLogs(prev => [...prev, newLog].slice(-200))
-    }, Math.random() * 2000 + 1000)
-
-    toast.success(`${source.toUpperCase()} log streaming started`)
+    toast.success(`${source.toUpperCase()} log streaming started (polling)`)
   }
 
   const stopStreaming = (source: 'ollama' | 'mcp' | 'rest') => {
+    // Close event source
+    if (eventSourceRefs.current[source]) {
+      eventSourceRefs.current[source]?.close()
+      eventSourceRefs.current[source] = undefined
+    }
+    // Clear interval
     if (intervalRefs.current[source]) {
       clearInterval(intervalRefs.current[source])
       intervalRefs.current[source] = undefined
@@ -204,6 +423,9 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
 
     const setState = source === 'ollama' ? setOllamaState : source === 'mcp' ? setMcpState : setRestState
     setState(s => ({ ...s, isStreaming: false, isPaused: false }))
+    
+    // Reset line count when stopped
+    lastLineCounts.current[source] = 0
 
     toast.info(`${source.toUpperCase()} log streaming stopped`)
   }
@@ -214,9 +436,30 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
 
     if (state.isPaused) {
       setState(s => ({ ...s, isPaused: false }))
-      startStreaming(source)
+      // Resume streaming - recreate connections
+      if (!eventSourceRefs.current[source] && !intervalRefs.current[source]) {
+        // Try SSE first
+        try {
+          const eventSource = streamLogs(source)
+          if (eventSource) {
+            eventSourceRefs.current[source] = eventSource
+            return
+          }
+        } catch (err) {
+          console.warn(`SSE not available, using polling:`, err)
+        }
+        // Fallback to polling
+        intervalRefs.current[source] = setInterval(() => {
+          fetchLogs(source)
+        }, 2000)
+      }
     } else {
       setState(s => ({ ...s, isPaused: true }))
+      // Pause by temporarily closing connections
+      if (eventSourceRefs.current[source]) {
+        eventSourceRefs.current[source]?.close()
+        eventSourceRefs.current[source] = undefined
+      }
       if (intervalRefs.current[source]) {
         clearInterval(intervalRefs.current[source])
         intervalRefs.current[source] = undefined
@@ -317,8 +560,8 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
           </div>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-[400px] w-full rounded-lg border border-border bg-muted/20 p-4">
-            <div ref={scrollRef} className="space-y-1 font-mono text-xs">
+          <ScrollArea viewportRef={scrollRef} className="h-[400px] w-full rounded-lg border border-border bg-muted/20 p-4">
+            <div className="space-y-1 font-mono text-xs">
               {filteredLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-[380px] text-muted-foreground">
                   <Terminal className="h-12 w-12 mb-4 opacity-50" />
@@ -352,23 +595,24 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     )
   }
 
+  // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (ollamaScrollRef.current && ollamaState.isStreaming) {
+    if (ollamaScrollRef.current && ollamaState.isStreaming && !ollamaState.isPaused) {
       ollamaScrollRef.current.scrollTop = ollamaScrollRef.current.scrollHeight
     }
-  }, [ollamaLogs, ollamaState.isStreaming])
+  }, [ollamaLogs, ollamaState.isStreaming, ollamaState.isPaused])
 
   useEffect(() => {
-    if (mcpScrollRef.current && mcpState.isStreaming) {
+    if (mcpScrollRef.current && mcpState.isStreaming && !mcpState.isPaused) {
       mcpScrollRef.current.scrollTop = mcpScrollRef.current.scrollHeight
     }
-  }, [mcpLogs, mcpState.isStreaming])
+  }, [mcpLogs, mcpState.isStreaming, mcpState.isPaused])
 
   useEffect(() => {
-    if (restScrollRef.current && restState.isStreaming) {
+    if (restScrollRef.current && restState.isStreaming && !restState.isPaused) {
       restScrollRef.current.scrollTop = restScrollRef.current.scrollHeight
     }
-  }, [restLogs, restState.isStreaming])
+  }, [restLogs, restState.isStreaming, restState.isPaused])
 
   return (
     <div className="space-y-6">

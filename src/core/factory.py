@@ -476,11 +476,27 @@ class HybridBackend:
         return []
 
     def upload_file(self, name: str, content: bytes,
-                    mime_type: str) -> Dict[str, Any]:
+                    mime_type: str, folder_id: str = None) -> Dict[str, Any]:
         """Upload a file."""
         if hasattr(self._backend, "upload_file"):
+            import inspect
+            sig = inspect.signature(self._backend.upload_file)
+            if "folder_id" in sig.parameters:
+                return self._backend.upload_file(name, content, mime_type, folder_id)
             return self._backend.upload_file(name, content, mime_type)
         return {"error": "Upload not supported by current backend"}
+
+    def delete_drive_file(self, file_id: str) -> Dict[str, Any]:
+        """Delete a file or folder from Google Drive."""
+        if hasattr(self._backend, "delete_drive_file"):
+            return self._backend.delete_drive_file(file_id)
+        return {"error": "Delete not supported by current backend"}
+
+    def create_drive_folder(self, name: str, parent_id: str = None) -> Dict[str, Any]:
+        """Create a folder in Google Drive."""
+        if hasattr(self._backend, "create_drive_folder"):
+            return self._backend.create_drive_folder(name, parent_id)
+        return {"error": "Folder creation not supported by current backend"}
 
     def reload_auth(self) -> None:
         """Reload authentication for the current backend if supported."""

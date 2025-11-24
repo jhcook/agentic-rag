@@ -34,6 +34,7 @@ import { LogsViewer } from '@/components/LogsViewer'
 import { ProviderSelector } from '@/components/ProviderSelector'
 import { FileManager } from '@/components/FileManager'
 import { ChatInterface, Message } from '@/components/ChatInterface'
+import { ConversationSidebar, Conversation } from '@/components/ConversationSidebar'
 
 type IndexedItem = {
   id: string
@@ -119,6 +120,179 @@ function App() {
     visible: boolean
   }>({ total: 0, completed: 0, failed: 0, visible: false })
   const [chatMessages, setChatMessages] = useState<Message[]>([])
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [activeMode, setActiveMode] = useState<string>('local')
+
+  // Fetch active mode
+  useEffect(() => {
+    const fetchMode = async () => {
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      try {
+        const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
+        if (res.ok) {
+          const data = await res.json()
+          setActiveMode(data.mode || 'local')
+        }
+      } catch (e) {
+        console.error("Failed to fetch mode", e)
+      }
+    }
+    fetchMode()
+    // Poll for mode changes
+    const interval = setInterval(fetchMode, 5000)
+    return () => clearInterval(interval)
+  }, [ollamaConfig])
+
+  // Load conversations from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('conversations')
+      if (saved) {
+        const parsed = JSON.parse(saved) as Conversation[]
+        setConversations(parsed)
+        // Restore active conversation if it exists
+        const activeId = localStorage.getItem('activeConversationId')
+        if (activeId && parsed.find(c => c.id === activeId)) {
+          setActiveConversationId(activeId)
+          const activeConv = parsed.find(c => c.id === activeId)
+          if (activeConv) {
+            setChatMessages(activeConv.messages)
+          }
+        } else if (parsed.length > 0) {
+          // Use most recent conversation
+          const mostRecent = parsed.sort((a, b) => b.updatedAt - a.updatedAt)[0]
+          setActiveConversationId(mostRecent.id)
+          setChatMessages(mostRecent.messages)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load conversations:', e)
+    }
+  }, [])
+
+  // Save conversations to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('conversations', JSON.stringify(conversations))
+      if (activeConversationId) {
+        localStorage.setItem('activeConversationId', activeConversationId)
+      } else {
+        localStorage.removeItem('activeConversationId')
+      }
+    } catch (e) {
+      console.error('Failed to save conversations:', e)
+    }
+  }, [conversations, activeConversationId])
+
+  // Update active conversation when messages change
+  useEffect(() => {
+    if (chatMessages.length > 0) {
+      if (activeConversationId) {
+        // Update existing conversation
+        setConversations(prev => {
+          const existing = prev.find(c => c.id === activeConversationId)
+          if (existing) {
+            return prev.map(conv => {
+              if (conv.id === activeConversationId) {
+                return {
+                  ...conv,
+                  messages: chatMessages,
+                  updatedAt: Date.now()
+                }
+              }
+              return conv
+            })
+          } else {
+            // Create new conversation with existing ID
+            const newConv: Conversation = {
+              id: activeConversationId,
+              title: 'New Conversation',
+              messages: chatMessages,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            }
+            return [newConv, ...prev]
+          }
+        })
+      } else {
+        // No active conversation but messages exist - create one
+        const newId = crypto.randomUUID()
+        const newConv: Conversation = {
+          id: newId,
+          title: 'New Conversation',
+          messages: chatMessages,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+        setConversations(prev => [newConv, ...prev])
+        setActiveConversationId(newId)
+      }
+    }
+  }, [chatMessages, activeConversationId])
+
+  // Save conversation when switching away from search tab
+  useEffect(() => {
+    if (activeTab !== 'search' && activeConversationId && chatMessages.length > 0) {
+      setConversations(prev => {
+        return prev.map(conv => {
+          if (conv.id === activeConversationId) {
+            return {
+              ...conv,
+              messages: chatMessages,
+              updatedAt: Date.now()
+            }
+          }
+          return conv
+        })
+      })
+    }
+  }, [activeTab, activeConversationId, chatMessages])
+
+  const createNewConversation = () => {
+    const newId = crypto.randomUUID()
+    const newConv: Conversation = {
+      id: newId,
+      title: 'New Conversation',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }
+    setConversations(prev => [newConv, ...prev])
+    setActiveConversationId(newId)
+    setChatMessages([])
+  }
+
+  const selectConversation = (id: string) => {
+    const conv = conversations.find(c => c.id === id)
+    if (conv) {
+      setActiveConversationId(id)
+      setChatMessages(conv.messages)
+      setSidebarOpen(false) // Close sidebar on mobile after selection
+    }
+  }
+
+  const deleteConversation = (id: string) => {
+    setConversations(prev => {
+      const filtered = prev.filter(c => c.id !== id)
+      // If deleting active conversation, switch to another or create new
+      if (id === activeConversationId) {
+        if (filtered.length > 0) {
+          const mostRecent = filtered.sort((a, b) => b.updatedAt - a.updatedAt)[0]
+          setActiveConversationId(mostRecent.id)
+          setChatMessages(mostRecent.messages)
+        } else {
+          setActiveConversationId(null)
+          setChatMessages([])
+        }
+      }
+      return filtered
+    })
+    toast.success('Conversation deleted')
+  }
 
   // Fetch Vertex config on mount
   useEffect(() => {
@@ -892,15 +1066,65 @@ function App() {
               <h2 className="text-2xl font-semibold tracking-tight mb-2">File Indexing</h2>
               <p className="text-muted-foreground">Manage your indexed files and directories</p>
             </div>
-            <FileManager config={ollamaConfig} />
+            <FileManager config={ollamaConfig} activeMode={activeMode} />
           </TabsContent>
 
           <TabsContent value="search" className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-2">Conversational Search</h2>
-              <p className="text-muted-foreground">Ask questions about your indexed documents</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold tracking-tight mb-2">Conversational Search</h2>
+                <p className="text-muted-foreground">Ask questions about your indexed documents</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="md:hidden"
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+              >
+                <ListBullets className="h-4 w-4 mr-2" />
+                Conversations
+              </Button>
             </div>
-            <ChatInterface config={ollamaConfig} messages={chatMessages} setMessages={setChatMessages} />
+            <div className="flex gap-4 relative">
+              <div className={sidebarOpen ? 'block md:block' : 'hidden md:block'}>
+                <ConversationSidebar
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelectConversation={selectConversation}
+                  onDeleteConversation={deleteConversation}
+                  onNewConversation={createNewConversation}
+                  onClose={() => setSidebarOpen(false)}
+                  isOpen={sidebarOpen}
+                />
+              </div>
+              {sidebarOpen && (
+                <div
+                  className="fixed inset-0 bg-black/50 z-40 md:hidden"
+                  onClick={() => setSidebarOpen(false)}
+                />
+              )}
+              <div className="flex-1">
+                {activeConversationId === null && conversations.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center p-12 border rounded-lg bg-muted/20">
+                    <ChatCircle className="h-12 w-12 mb-4 text-muted-foreground opacity-50" />
+                    <p className="text-muted-foreground mb-4">No conversations yet</p>
+                    <Button onClick={createNewConversation}>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Start New Conversation
+                    </Button>
+                  </div>
+                ) : (
+                  <ChatInterface
+                    config={ollamaConfig}
+                    messages={chatMessages}
+                    setMessages={setChatMessages}
+                    onNewConversation={createNewConversation}
+                    onDeleteConversation={deleteConversation}
+                    activeConversationId={activeConversationId}
+                  />
+                )}
+              </div>
+            </div>
           </TabsContent>
 
           <TabsContent value="metrics" className="space-y-6">

@@ -1,0 +1,169 @@
+import { useState, useEffect } from 'react'
+import { MessageSquare, Plus, Trash2, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/utils'
+import { Message } from './ChatInterface'
+
+export type Conversation = {
+  id: string
+  title: string
+  messages: Message[]
+  createdAt: number
+  updatedAt: number
+}
+
+interface ConversationSidebarProps {
+  conversations: Conversation[]
+  activeConversationId: string | null
+  onSelectConversation: (id: string) => void
+  onDeleteConversation: (id: string) => void
+  onNewConversation: () => void
+  onClose?: () => void
+  isOpen: boolean
+}
+
+export function ConversationSidebar({
+  conversations,
+  activeConversationId,
+  onSelectConversation,
+  onDeleteConversation,
+  onNewConversation,
+  onClose,
+  isOpen
+}: ConversationSidebarProps) {
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+
+  const getConversationTitle = (conv: Conversation) => {
+    if (conv.title && conv.title !== 'New Conversation') {
+      return conv.title
+    }
+    // Generate title from first user message
+    const firstUserMessage = conv.messages.find(m => m.role === 'user')
+    if (firstUserMessage) {
+      const content = firstUserMessage.content || firstUserMessage.displayContent || ''
+      const preview = content.substring(0, 50).trim()
+      return preview || 'New Conversation'
+    }
+    return 'New Conversation'
+  }
+
+  const formatDate = (timestamp: number) => {
+    const date = new Date(timestamp)
+    const now = new Date()
+    const diff = now.getTime() - date.getTime()
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+    
+    if (days === 0) {
+      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    } else if (days === 1) {
+      return 'Yesterday'
+    } else if (days < 7) {
+      return `${days} days ago`
+    } else {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'fixed left-0 top-0 h-full w-64 bg-background border-r border-border z-50 transition-transform duration-300 ease-in-out',
+        isOpen ? 'translate-x-0' : '-translate-x-full',
+        'md:relative md:translate-x-0 md:z-auto'
+      )}
+    >
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h2 className="text-lg font-semibold">Conversations</h2>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onNewConversation}
+              title="New conversation"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            {onClose && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 md:hidden"
+                onClick={onClose}
+                title="Close sidebar"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        </div>
+        
+        <ScrollArea className="flex-1">
+          <div className="p-2 space-y-1">
+            {conversations.length === 0 ? (
+              <div className="flex flex-col items-center justify-center p-8 text-center text-muted-foreground">
+                <MessageSquare className="h-12 w-12 mb-4 opacity-50" />
+                <p className="text-sm">No conversations yet</p>
+                <p className="text-xs mt-1">Start a new conversation to begin</p>
+              </div>
+            ) : (
+              conversations
+                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .map((conv) => (
+                  <div
+                    key={conv.id}
+                    className={cn(
+                      'group relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors',
+                      activeConversationId === conv.id
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-muted'
+                    )}
+                    onMouseEnter={() => setHoveredId(conv.id)}
+                    onMouseLeave={() => setHoveredId(null)}
+                    onClick={() => onSelectConversation(conv.id)}
+                  >
+                    <MessageSquare className="h-4 w-4 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {getConversationTitle(conv)}
+                      </p>
+                      <p className={cn(
+                        'text-xs truncate',
+                        activeConversationId === conv.id
+                          ? 'text-primary-foreground/70'
+                          : 'text-muted-foreground'
+                      )}>
+                        {formatDate(conv.updatedAt)}
+                      </p>
+                    </div>
+                    {hoveredId === conv.id && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-6 w-6 shrink-0',
+                          activeConversationId === conv.id
+                            ? 'text-primary-foreground hover:bg-primary-foreground/20'
+                            : ''
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDeleteConversation(conv.id)
+                        }}
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                ))
+            )}
+          </div>
+        </ScrollArea>
+      </div>
+    </div>
+  )
+}
+

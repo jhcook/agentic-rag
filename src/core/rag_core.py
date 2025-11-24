@@ -14,7 +14,7 @@ import gc
 import zipfile
 import io
 
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
@@ -27,6 +27,8 @@ from src.core.faiss_index import (
     get_faiss_globals as _get_faiss_globals,
     get_rebuild_lock,
 )
+from src.core.extractors import _extract_text_from_file
+from src.core.extractors import _extract_text_from_file
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -46,6 +48,11 @@ try:
     from docx import Document
 except ImportError:
     Document = None
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x, **kwargs: x  # type: ignore
 
 try:
     from bs4 import BeautifulSoup
@@ -321,18 +328,27 @@ def _rebuild_faiss_index():
         batch_size = 8
 
         # Process each document separately to avoid accumulating all chunks in memory
-        for uri, text in list(_STORE.docs.items()):
-            logger.debug("Document %s: %d chars", uri, len(text))
+        doc_items = list(_STORE.docs.items())
+        for uri, text in tqdm(doc_items, desc="Rebuilding FAISS index", unit="doc"):
+            logger.info("Document %s: %d chars", uri, len(text))
+            if not text or not text.strip():
+                logger.warning("Document %s is empty, skipping", uri)
+                continue
             chunks, metadata = _chunk_document(text, uri)
-            logger.debug("Created %d chunks from %s", len(chunks), uri)
+            logger.info("Created %d chunks from %s", len(chunks), uri)
 
             if not chunks:
+                logger.warning("No chunks created from document %s (text length: %d)", uri, len(text))
                 continue
 
             # Process chunks from this document in small batches
             for i in range(0, len(chunks), batch_size):
                 batch_chunks = chunks[i:i+batch_size]
                 batch_meta = metadata[i:i+batch_size]
+
+                if embedder is None:
+                    logger.error("Embedder is None, cannot create embeddings")
+                    continue
 
                 embeddings = _encode_with_metrics(
                     embedder,
@@ -343,8 +359,14 @@ def _rebuild_faiss_index():
                     show_progress_bar=False,
                 )
 
+                if embeddings is None or len(embeddings) == 0:
+                    logger.warning("No embeddings generated for batch from %s", uri)
+                    continue
+
                 if index is not None:
                     embeddings_array = np.array(embeddings, dtype=np.float32)
+                    if len(embeddings_array.shape) == 1:
+                        embeddings_array = embeddings_array.reshape(1, -1)
                     index.add(embeddings_array)  # type: ignore
 
                     current_index = index.ntotal - len(batch_chunks)  # type: ignore
@@ -470,235 +492,8 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     return files, resolved
 
 
-def _download_from_url(url: str) -> bytes:
-    """Download content from a URL."""
-    if requests is None:
-        logger.warning("URL support not available. Install requests: pip install requests")
-        return b""
-    try:
-        logger.info("Downloading from %s", url)
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.SSLError as ssl_exc:
-        logger.error("SSL error downloading %s: %s", url, ssl_exc)
-        return b"[SSL ERROR: Could not connect to %s]" % url.encode()
-    except requests.exceptions.ConnectionError as conn_exc:
-        logger.error("Connection error downloading %s: %s", url, conn_exc)
-        return b"[CONNECTION ERROR: Could not connect to %s]" % url.encode()
-    except Exception as exc:
-        logger.error("Failed to download %s: %s", url, exc)
-        return b"[ERROR: Could not download %s: %s]" % (url.encode(), str(exc).encode())
-
-
-def _extract_text_from_file(file_path: Union[pathlib.Path, str]) -> str:
-    """Extract text from various file types (txt, pdf, docx, html) or URLs."""
-    # Check if it's a URL and normalize single-slash URLs
-    file_str = str(file_path)
-
-    # Handle string input that might not have .name attribute
-    if isinstance(file_path, pathlib.Path) and file_path.name in {".DS_Store"}:
-        return ""
-
-    # Ensure file_path is a Path object if it's not a URL, so we can use .suffix, .read_text(), etc.
-    if not file_str.startswith(('http://', 'https://')) and not isinstance(file_path, pathlib.Path):
-        file_path = pathlib.Path(file_path)
-
-    def _read_head(path: pathlib.Path, size: int = 512) -> bytes:
-        try:
-            with open(path, "rb") as f:
-                return f.read(size)
-        except Exception:
-            return b""
-
-    def _is_probably_text_bytes(buf: bytes) -> bool:
-        if not buf:
-            return False
-        printable = sum((chr(b).isprintable() or chr(b).isspace()) for b in buf)
-        density = printable / max(1, len(buf))
-        return density >= 0.8
-
-    head = None
-    if not file_str.startswith(("http://", "https://")):
-        head = _read_head(file_path, 512)
-    if file_str.startswith('http:/') and not file_str.startswith('http://'):
-        file_str = file_str.replace('http:/', 'http://', 1)
-    elif file_str.startswith('https:/') and not file_str.startswith('https://'):
-        file_str = file_str.replace('https:/', 'https://', 1)
-
-    def _normalize_suffix_from_head(default_suffix: str, head_bytes: Optional[bytes]) -> str:
-        if head_bytes is None:
-            return default_suffix
-        if head_bytes.startswith(b"%PDF-"):
-            return ".pdf"
-        if head_bytes.startswith(b"PK"):
-            # could be zip-based formats: docx, pages, ods, etc.
-            if default_suffix.lower() in (".docx", ".pages"):
-                return default_suffix.lower()
-            return ".zip"
-        return default_suffix
-
-    if file_str.startswith(('http://', 'https://')):
-        content = _download_from_url(file_str)
-        if not content:
-            return ""
-        # Determine file type from URL or content
-        if file_str.endswith('.pdf'):
-            suffix = '.pdf'
-        elif file_str.endswith(('.docx', '.doc')):
-            suffix = '.docx'
-        elif file_str.endswith(('.html', '.htm')):
-            suffix = '.html'
-        else:
-            # Try to detect HTML
-            try:
-                decoded = content.decode('utf-8', errors='ignore')
-                if decoded.strip().startswith(('<html', '<!DOCTYPE', '<!doctype')):
-                    suffix = '.html'
-                else:
-                    suffix = '.txt'
-            except Exception:
-                suffix = '.txt'
-    else:
-        content = None
-        suffix = _normalize_suffix_from_head(file_path.suffix.lower(), head)
-
-    if suffix == '.pdf':
-        if PdfReader is None:
-            logger.warning("PDF support not available. Install pypdf: pip install pypdf")
-            return ""
-        try:
-            if content:
-                # PDF from URL
-                import io
-                reader = PdfReader(io.BytesIO(content))
-            else:
-                # PDF from file
-                reader = PdfReader(str(file_path))
-            text_parts = []
-            for page in reader.pages:
-                page_text = page.extract_text() or ""
-                if page_text:
-                    text_parts.append(page_text)
-            joined = "\n".join(text_parts).strip()
-            if not joined:
-                logger.warning("No text extracted from PDF %s", file_path)
-                return ""
-            return joined
-        except Exception as exc:
-            logger.error("Failed to read PDF %s: %s", file_path, exc)
-            return ""
-
-    elif suffix == '.pages':
-        # Pages files are zip archives that usually contain a PDF preview
-        try:
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                names = zf.namelist()
-                # Prefer QuickLook/Preview.pdf if present
-                pdf_candidates = []
-                for name in names:
-                    lower = name.lower()
-                    if lower.endswith(".pdf"):
-                        # Weight QuickLook/Preview higher
-                        priority = 0 if "quicklook/preview.pdf" in lower else 1
-                        pdf_candidates.append((priority, name))
-                pdf_candidates.sort()
-                for _, pdf_name in pdf_candidates:
-                    try:
-                        pdf_bytes = zf.read(pdf_name)
-                        reader = PdfReader(io.BytesIO(pdf_bytes)) if PdfReader else None
-                        if reader is None:
-                            logger.warning("PDF support not available to read %s inside %s", pdf_name, file_path)
-                            break
-                        pages = []
-                        for page in reader.pages:
-                            page_text = page.extract_text() or ""
-                            if page_text:
-                                pages.append(page_text)
-                        joined = "\n".join(pages).strip()
-                        if joined:
-                            return joined
-                    except Exception as exc:
-                        logger.debug("Failed to read embedded PDF %s in %s: %s", pdf_name, file_path, exc)
-                        continue
-
-                # Fallback to any XML/HTML/text files inside the archive
-                text_candidates = [n for n in names if n.lower().endswith((".xml", ".html", ".htm", ".txt"))]
-                for name in text_candidates:
-                    try:
-                        raw = zf.read(name)
-                        text = raw.decode("utf-8", errors="ignore").strip()
-                        if text:
-                            return text
-                    except Exception:
-                        continue
-        except Exception as exc:
-            logger.error("Failed to read Pages file %s: %s", file_path, exc)
-        return ""
-
-    elif suffix in ['.docx', '.doc']:
-        if Document is None:
-            logger.warning("DOCX support not available. Install python-docx: pip install python-docx")
-            return ""
-        try:
-            if content:
-                # DOCX from URL
-                import io
-                doc = Document(io.BytesIO(content))
-            else:
-                # DOCX from file
-                doc = Document(str(file_path))
-            text_parts = [paragraph.text for paragraph in doc.paragraphs]
-            return "\n".join(text_parts)
-        except Exception as exc:
-            logger.error("Failed to read DOCX %s: %s", file_path, exc)
-            return ""
-
-    elif suffix in ['.html', '.htm']:
-        if BeautifulSoup is None:
-            logger.warning("HTML support not available. Install beautifulsoup4: pip install beautifulsoup4")
-            return ""
-        try:
-            if content:
-                # HTML from URL
-                html_content = content.decode('utf-8', errors='ignore')
-            else:
-                # HTML from file
-                html_content = file_path.read_text(encoding="utf-8", errors="ignore")
-            soup = BeautifulSoup(html_content, 'html.parser')
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-            # Get text
-            text = soup.get_text(separator='\n')
-            # Clean up whitespace
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            return text
-        except Exception as exc:
-            logger.error("Failed to read HTML %s: %s", file_path, exc)
-            return ""
-
-    else:
-        # Default to plain text, but guard against binaries by header and printable ratio
-        try:
-            if content:
-                # Text from URL
-                text = content.decode('utf-8', errors='ignore')
-            else:
-                # Text from file
-                if head is not None and not _is_probably_text_bytes(head):
-                    return ""
-                text = file_path.read_text(encoding="utf-8", errors="ignore")
-            # Quick binary guard: PDFs, zips, binaries often leave telltale headers
-            lower_text = text[:8]
-            if lower_text.startswith("%PDF-") or lower_text.startswith("PK"):
-                return ""
-            return text
-        except Exception as exc:
-            logger.error("Failed to read file %s: %s", file_path, exc)
-            return ""
+# _extract_text_from_file is now imported from extractors module
+# Removed duplicate implementation (209 lines) - use extractors._extract_text_from_file instead
 
 
 def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
@@ -766,8 +561,14 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
     return text
 
 
-def index_path(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
-    """Index all text files in a given path matching the glob pattern."""
+def index_path(path: str, glob: str = "**/*.txt", progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+    """Index all text files in a given path matching the glob pattern.
+    
+    Args:
+        path: Directory path to index
+        glob: File pattern to match
+        progress_callback: Optional callback(current, total) called during indexing
+    """
     index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
 
@@ -790,8 +591,11 @@ def index_path(path: str, glob: str = "**/*.txt") -> Dict[str, Any]:
             "error": message,
         }
 
+    total_files = len(files)
     texts = []
-    for file_path in files:
+    for idx, file_path in enumerate(tqdm(files, desc="Indexing files", unit="file"), 1):
+        if progress_callback:
+            progress_callback(idx, total_files)
         try:
             text = _process_file(file_path, index, index_to_meta, embedder)
             texts.append(text)
@@ -882,10 +686,73 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
     return hits
 
 
-def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
-    """Search the indexed documents and ask the LLM using only those documents as context."""
-    logger.info("Vector searching for: %s", query)
+def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Normalize LLM response (ModelResponse or dict) to a consistent dict format.
+    
+    Args:
+        resp: Response from LiteLLM (can be ModelResponse object or dict)
+        sources: Optional list of source URIs to include
+        
+    Returns:
+        Dict with 'answer' or 'content' key and optional 'sources'
+    """
+    if resp is None:
+        return {"error": "No response from LLM"}
+    
+    # Handle ModelResponse objects from LiteLLM
+    if hasattr(resp, 'choices') and resp.choices:
+        # Extract content from ModelResponse
+        message = getattr(resp.choices[0], 'message', None)
+        content = getattr(message, 'content', None) if message else None
+        result = {
+            "answer": content or str(resp),
+            "model": getattr(resp, 'model', 'unknown'),
+        }
+        if hasattr(resp, 'usage'):
+            result["usage"] = getattr(resp, 'usage', {})
+        if sources:
+            result["sources"] = sources
+        return result
+    
+    # Handle dict responses
+    if isinstance(resp, dict):
+        # Ensure sources are included
+        if sources and "sources" not in resp:
+            resp["sources"] = sources
+        # Extract content if it's in choices format
+        if "choices" in resp and isinstance(resp["choices"], list) and len(resp["choices"]) > 0:
+            choice = resp["choices"][0]
+            if isinstance(choice, dict) and "message" in choice:
+                message = choice["message"]
+                if isinstance(message, dict) and "content" in message:
+                    resp["answer"] = message["content"]
+        return resp
+    
+    # Fallback: convert to string
+    return {"answer": str(resp), "sources": sources or []}
+
+
+def _build_rag_context(
+    query: str,
+    top_k: int = SEARCH_TOP_K,
+    max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS
+) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """
+    Build RAG context from indexed documents for a query.
+    
+    Args:
+        query: Search query
+        top_k: Number of candidates to retrieve
+        max_context_chars: Maximum characters of context to include
+        
+    Returns:
+        Tuple of (context_string, sources_list, candidates_list)
+        Returns empty context if no documents found
+    """
+    logger.info("Building RAG context for query: %s", query)
     candidates = _vector_search(query, k=top_k)
+    
     if not candidates:
         # If we have docs but no vectors, force a rebuild once
         store = get_store()
@@ -895,29 +762,43 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
             candidates = _vector_search(query, k=top_k)
         if not candidates:
             logger.info("No vector hits; refusing to answer from outside sources.")
-            return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
-    # Re-rank to downweight signatures/short snippets and prioritize query overlap
+            return ("", [], [])
+    
+    # Re-rank to prioritize query overlap
     candidates = rerank(query, candidates)[:top_k]
     sources = [c.get("uri", "") for c in candidates if c.get("uri")]
 
+    # Build context from document content only (no file names/metadata)
     context_parts, total_chars = [], 0
     for entry in candidates:
-        part = "Source: %s\nContent:\n%s\n" % (entry["uri"], entry["text"])
-        if total_chars + len(part) > max_context_chars:
+        text_content = entry.get("text", "").strip()
+        if not text_content:
+            continue
+        if total_chars + len(text_content) > max_context_chars:
             break
-        context_parts.append(part)  # type: ignore
-        total_chars += len(part)
-    context = "\n".join(context_parts)  # type: ignore
+        context_parts.append(text_content)
+        total_chars += len(text_content)
+    
+    context = "\n\n---\n\n".join(context_parts) if context_parts else ""
+    return (context, sources, candidates)
+
+
+def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
+    """Search the indexed documents and ask the LLM using only those documents as context."""
+    context, sources, candidates = _build_rag_context(query, top_k, max_context_chars)
+    
+    if not context:
+        return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
 
     system_msg = (
-        "You are a helpful assistant. Answer the user's question using ONLY the documents provided. "
-        "Only use the document's name and file metadata for citation purposes. "
-        "Do NOT offer any personal information other than name, role, and employer unless specifically asked. "
-        "Cite the exact source URI for each fact. Include a final 'Sources:' section listing the URIs you used. "
-        "If the answer is not contained in the documents, reply exactly: \"I don't know.\" Do not use "
-        "any external knowledge or make assumptions."
+        "You are a helpful assistant. Answer the user's question using ONLY the document content provided below. "
+        "You must base your answer strictly on the content in the documents. "
+        "Do NOT use any external knowledge, general knowledge, or make assumptions beyond what is explicitly stated in the documents. "
+        "If the answer is not contained in the provided documents, reply exactly: \"I don't know.\" "
+        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used. "
+        "The source URIs will be provided separately for citation purposes."
     )
-    user_msg = "Documents:\n%s\n\nQuestion: %s" % (context, query)
+    user_msg = "Document Content:\n%s\n\nQuestion: %s" % (context, query)
 
     try:
         if completion is None:
@@ -932,9 +813,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
             stream=False,
             timeout=300,
         )
-        if isinstance(resp, dict):
-            resp.setdefault("sources", sources)
-        return resp
+        return _normalize_llm_response(resp, sources)
     except (ValueError, OllamaError, APIConnectionError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)
     except (OSError, RuntimeError) as exc:  # type: ignore
@@ -1065,12 +944,16 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
     total_chars = 0
     max_chars = SEARCH_MAX_CONTEXT_CHARS
     for entry in filtered:
-        part = "Source: %s\nContent:\n%s\n" % (entry.get("uri", ""), entry.get("text", ""))
-        if total_chars + len(part) > max_chars:
+        # Only include the text content, not file names or metadata
+        # File names are only used for citations (handled separately via sources list)
+        text_content = entry.get("text", "").strip()
+        if not text_content:
+            continue
+        if total_chars + len(text_content) > max_chars:
             break
-        context_parts.append(part)
-        total_chars += len(part)
-    context = "\n".join(context_parts)
+        context_parts.append(text_content)
+        total_chars += len(text_content)
+    context = "\n\n---\n\n".join(context_parts)
 
     # If no LLM available, deterministic synthesis
     if completion is None:
@@ -1079,13 +962,16 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
         return synthesized
 
     system_msg = (
-        "You are a careful assistant. Write a concise professional summary using ONLY the provided documents. "
+        "You are a careful assistant. Write a concise professional summary using ONLY the document content provided below. "
+        "You must base your answer strictly on the content in the documents. "
         "Capture roles, companies, key achievements, and timelines when present. "
         "Strictly exclude greetings, sign-offs, and speculative content. "
+        "Do NOT use any external knowledge or make assumptions beyond what is explicitly stated in the documents. "
         "If the documents do not clearly support the answer, reply exactly: \"I don't know.\" "
-        "End with a 'Sources:' section listing the URIs you used."
+        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used. "
+        "The source URIs will be provided separately for citation purposes."
     )
-    user_msg = f"Documents:\n{context}\n\nQuestion: {question}"
+    user_msg = f"Document Content:\n{context}\n\nQuestion: {question}"
 
     try:
         resp = completion(  # type: ignore
@@ -1097,9 +983,7 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K) -> Dict[str, Any]:
             stream=False,
             timeout=90,
         )
-        if isinstance(resp, dict):
-            resp.setdefault("sources", sources)
-        return resp
+        return _normalize_llm_response(resp, sources)
     except Exception as exc:  # pragma: no cover
         logger.error("grounded_answer completion failed: %s", exc)
         synthesized = synthesize_answer(question, filtered)
@@ -1140,27 +1024,66 @@ def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> 
 
 def chat(messages: List[Dict[str, str]]) -> Dict[str, Any]:
     """
-    Conversational chat using Ollama.
+    Conversational chat using Ollama with RAG context from indexed documents.
+    Only uses indexed document content - no external knowledge.
     """
     if completion is None:
         return {"error": "LiteLLM not available"}
 
+    # Extract the latest user message to use as search query
+    last_user_msg = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    if not last_user_msg:
+        return {"error": "No user message found"}
+
+    query = last_user_msg.get("content", "").strip()
+    if not query:
+        return {"error": "Empty query"}
+
+    # Search for relevant documents using RAG
+    context, sources, candidates = _build_rag_context(query, SEARCH_TOP_K, SEARCH_MAX_CONTEXT_CHARS)
+    
+    if not context:
+        return {
+            "role": "assistant",
+            "content": "I don't know. No relevant documents were found in the indexed corpus to answer your question."
+        }
+
+    # Build system message that restricts to only indexed documents
+    system_msg = (
+        "You are a helpful assistant. Answer the user's question using ONLY the document content provided below. "
+        "You must base your answer strictly on the content in the documents. "
+        "Do NOT use any external knowledge, general knowledge, training data, or make assumptions beyond what is explicitly stated in the documents. "
+        "If the answer is not contained in the provided documents, reply exactly: \"I don't know.\" "
+        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used."
+    )
+
+    # Build messages with context: keep conversation history but add document context to the last user message
+    enhanced_messages = []
+    for i, msg in enumerate(messages):
+        if i == len(messages) - 1 and msg.get("role") == "user":
+            # Add document context to the last user message
+            enhanced_content = f"Document Content:\n{context}\n\nQuestion: {msg.get('content', '')}"
+            enhanced_messages.append({"role": "user", "content": enhanced_content})
+        else:
+            enhanced_messages.append(msg)
+
+    # Add system message at the beginning
+    final_messages = [{"role": "system", "content": system_msg}] + enhanced_messages
+
     try:
         resp = completion(
             model=LLM_MODEL_NAME,
-            messages=messages,
+            messages=final_messages,
             api_base=OLLAMA_API_BASE,
             temperature=LLM_TEMPERATURE,
             stream=False,
             timeout=300,
         )
 
-        if isinstance(resp, dict) and "choices" in resp:
-            content = resp["choices"][0]["message"]["content"]
-            return {"role": "assistant", "content": content}
-
-        # Handle other response formats if needed
-        return {"role": "assistant", "content": str(resp)}
+        # Normalize response to extract content
+        normalized = _normalize_llm_response(resp, sources)
+        content = normalized.get("answer") or normalized.get("content") or str(resp)
+        return {"role": "assistant", "content": content, "sources": sources}
 
     except Exception as exc:
         logger.error("Chat completion failed: %s", exc)

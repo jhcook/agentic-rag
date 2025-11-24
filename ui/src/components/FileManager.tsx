@@ -2,11 +2,13 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowLeft, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ } from 'lucide-react'
+import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server } from 'lucide-react'
 import { toast } from 'sonner'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 
 type DriveFile = {
   id: string
@@ -22,14 +24,28 @@ type DriveFile = {
 type SortOption = 'name' | 'date' | 'size'
 type SortDirection = 'asc' | 'desc'
 
-export function FileManager({ config }: { config: any }) {
+type LocalFile = {
+  uri: string
+  size_bytes: number
+}
+
+export function FileManager({ config, activeMode }: { config: any, activeMode?: string }) {
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([])
+  const [localFiles, setLocalFiles] = useState<LocalFile[]>([])
   const [loading, setLoading] = useState(false)
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [folderStack, setFolderStack] = useState<{id: string | null, name: string}[]>([{id: null, name: 'Root'}])
   const [sortBy, setSortBy] = useState<SortOption>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [deleteConfirm, setDeleteConfirm] = useState<{id: string, name: string, type: 'file' | 'folder'} | null>(null)
+  const [createFolderDialog, setCreateFolderDialog] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const directoryInputRef = useRef<HTMLInputElement>(null)
+
+  const mode = activeMode || 'local'
+  const isLocalMode = mode === 'local'
 
   const fetchDriveFiles = async (folderId: string | null = null) => {
     setLoading(true)
@@ -60,9 +76,34 @@ export function FileManager({ config }: { config: any }) {
     }
   }
 
+  const fetchLocalFiles = async () => {
+    setLoading(true)
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/documents`)
+      if (res.ok) {
+        const data = await res.json()
+        setLocalFiles(data.documents || [])
+      } else {
+        throw new Error(`HTTP ${res.status}`)
+      }
+    } catch (e: any) {
+      console.error("Failed to fetch local files", e)
+      toast.error("Failed to load indexed files")
+    } finally {
+      setLoading(false)
+    }
+  }
+
   useEffect(() => {
-    fetchDriveFiles(currentFolderId)
-  }, [config, currentFolderId])
+    if (isLocalMode) {
+      fetchLocalFiles()
+    } else {
+      fetchDriveFiles(currentFolderId)
+    }
+  }, [config, currentFolderId, activeMode])
 
   const handleNavigate = (folder: DriveFile) => {
     if (folder.mimeType.includes('folder')) {
@@ -86,7 +127,7 @@ export function FileManager({ config }: { config: any }) {
     setCurrentFolderId(newStack[newStack.length - 1].id)
   }
 
-  const sortedFiles = [...driveFiles].sort((a, b) => {
+  const sortedDriveFiles = [...driveFiles].sort((a, b) => {
     let comparison = 0
     if (sortBy === 'name') {
       comparison = a.name.localeCompare(b.name)
@@ -98,6 +139,16 @@ export function FileManager({ config }: { config: any }) {
       const sizeA = Number(a.size || 0)
       const sizeB = Number(b.size || 0)
       comparison = sizeA - sizeB
+    }
+    return sortDirection === 'asc' ? comparison : -comparison
+  })
+
+  const sortedLocalFiles = [...localFiles].sort((a, b) => {
+    let comparison = 0
+    if (sortBy === 'name') {
+      comparison = a.uri.localeCompare(b.uri)
+    } else if (sortBy === 'size') {
+      comparison = a.size_bytes - b.size_bytes
     }
     return sortDirection === 'asc' ? comparison : -comparison
   })
@@ -130,10 +181,196 @@ export function FileManager({ config }: { config: any }) {
     }
   }
 
+  const handleDeleteDriveFile = async (fileId: string) => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const toastId = toast.loading('Deleting...')
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/drive/files/${fileId}`, {
+        method: 'DELETE'
+      })
+      
+      if (!res.ok) throw new Error('Delete failed')
+      
+      toast.success('Deleted successfully', { id: toastId })
+      fetchDriveFiles(currentFolderId)
+      setDeleteConfirm(null)
+    } catch (e) {
+      toast.error('Failed to delete', { id: toastId })
+    }
+  }
+
+  const handleDeleteLocalFile = async (uri: string) => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const toastId = toast.loading('Deleting...')
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/documents/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uris: [uri] })
+      })
+      
+      if (!res.ok) throw new Error('Delete failed')
+      
+      toast.success('Deleted successfully', { id: toastId })
+      fetchLocalFiles()
+      setDeleteConfirm(null)
+    } catch (e) {
+      toast.error('Failed to delete', { id: toastId })
+    }
+  }
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return
+    
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const formData = new FormData()
+    formData.append('name', newFolderName.trim())
+    if (currentFolderId) {
+      formData.append('parent_id', currentFolderId)
+    }
+    
+    const toastId = toast.loading('Creating folder...')
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/drive/folders`, {
+        method: 'POST',
+        body: formData
+      })
+      
+      if (!res.ok) throw new Error('Create failed')
+      
+      toast.success('Folder created', { id: toastId })
+      fetchDriveFiles(currentFolderId)
+      setCreateFolderDialog(false)
+      setNewFolderName('')
+    } catch (e) {
+      toast.error('Failed to create folder', { id: toastId })
+    }
+  }
+
   const handleDropToDrive = (e: React.DragEvent) => {
     e.preventDefault()
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       Array.from(e.dataTransfer.files).forEach(handleUploadToDrive)
+    }
+  }
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.readAsDataURL(file)
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1]
+        resolve(base64)
+      }
+      reader.onerror = reject
+    })
+  }
+
+  const handleAddFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const visibleFiles = Array.from(files).filter(f => !f.name.startsWith('.'))
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const url = `http://${host}:${port}/${base}/upsert_document`
+    const toastId = 'upload-files'
+    toast.loading('Queuing files for indexing...', { id: toastId })
+
+    let success = 0
+    let skipped = files.length - visibleFiles.length
+
+    for (const file of visibleFiles) {
+      try {
+        const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
+        let payload: Record<string, unknown> = { uri: file.name }
+        if (isBinary) {
+          payload.binary_base64 = await fileToBase64(file)
+        } else {
+          payload.text = await file.text()
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        const data = await res.json()
+        if (!res.ok || data?.error) {
+          throw new Error(data?.error || `HTTP ${res.status}`)
+        }
+        success += 1
+      } catch (err) {
+        console.error('Upload failed for', file.name, err)
+        skipped += 1
+      }
+    }
+
+    toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    fetchLocalFiles()
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleAddDirectory = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const visibleFiles = Array.from(files).filter(f => !f.name.startsWith('.'))
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const url = `http://${host}:${port}/${base}/upsert_document`
+    const toastId = 'upload-dir'
+    toast.loading('Queuing directory for indexing...', { id: toastId })
+
+    let success = 0
+    let skipped = files.length - visibleFiles.length
+
+    for (const file of visibleFiles) {
+      try {
+        const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
+        let payload: Record<string, unknown> = { uri: file.webkitRelativePath || file.name }
+        if (isBinary) {
+          payload.binary_base64 = await fileToBase64(file)
+        } else {
+          payload.text = await file.text()
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        const data = await res.json()
+        if (!res.ok || data?.error) {
+          throw new Error(data?.error || `HTTP ${res.status}`)
+        }
+        success += 1
+      } catch (err) {
+        console.error('Upload failed for', file.name, err)
+        skipped += 1
+      }
+    }
+
+    toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    fetchLocalFiles()
+    // Reset input
+    if (directoryInputRef.current) {
+      directoryInputRef.current.value = ''
     }
   }
 
@@ -152,25 +389,103 @@ export function FileManager({ config }: { config: any }) {
     return new Date(dateString).toLocaleDateString()
   }
 
+  const getFileName = (uri: string) => {
+    return uri.split('/').pop() || uri
+  }
+
   return (
     <div className="h-[600px]">
-      {/* Google Drive Pane */}
       <Card className="flex flex-col h-full">
         <CardHeader className="pb-3">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2">
-                <Cloud className="h-5 w-5" />
-                Google Drive
+                {isLocalMode ? (
+                  <>
+                    <Server className="h-5 w-5" />
+                    Local Indexed Files
+                  </>
+                ) : (
+                  <>
+                    <Cloud className="h-5 w-5" />
+                    Google Drive
+                  </>
+                )}
               </CardTitle>
               <div className="flex items-center gap-2">
+                {isLocalMode ? (
+                  <>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      multiple
+                      accept=".txt,.pdf,.doc,.docx,.md,.json,.csv,.xml"
+                      onChange={handleAddFiles}
+                    />
+                    <input
+                      type="file"
+                      ref={directoryInputRef}
+                      className="hidden"
+                      {...({ webkitdirectory: '' } as any)}
+                      multiple
+                      onChange={handleAddDirectory}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <FileIcon className="h-4 w-4 mr-2" />
+                      Add Files
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => directoryInputRef.current?.click()}
+                    >
+                      <Folder className="h-4 w-4 mr-2" />
+                      Add Directory
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCreateFolderDialog(true)}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      New Folder
+                    </Button>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      multiple
+                      onChange={(e) => {
+                        if (e.target.files) {
+                          Array.from(e.target.files).forEach(handleUploadToDrive)
+                        }
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Upload className="h-4 w-4 mr-2" />
+                      Upload
+                    </Button>
+                  </>
+                )}
                 <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
                   <SelectTrigger className="w-[120px] h-8">
                     <SelectValue placeholder="Sort by" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="name">Name</SelectItem>
-                    <SelectItem value="date">Date</SelectItem>
+                    {!isLocalMode && <SelectItem value="date">Date</SelectItem>}
                     <SelectItem value="size">Size</SelectItem>
                   </SelectContent>
                 </Select>
@@ -182,104 +497,171 @@ export function FileManager({ config }: { config: any }) {
                 >
                   {sortDirection === 'asc' ? <ArrowUpAZ className="h-4 w-4" /> : <ArrowDownAZ className="h-4 w-4" />}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => fetchDriveFiles(currentFolderId)} disabled={loading}>
+                <Button 
+                  size="sm" 
+                  variant="ghost" 
+                  onClick={() => isLocalMode ? fetchLocalFiles() : fetchDriveFiles(currentFolderId)} 
+                  disabled={loading}
+                >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
               </div>
             </div>
             
-            {/* Navigation Bar */}
-            <div className="flex items-center gap-2 text-sm bg-muted/30 p-2 rounded-md">
-              <Button 
-                size="sm" 
-                variant="ghost" 
-                disabled={folderStack.length <= 1}
-                onClick={handleNavigateUp}
-                className="h-6 w-6 p-0"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </Button>
-              <div className="flex items-center gap-1 overflow-hidden">
-                {folderStack.map((folder, index) => (
-                  <div key={index} className="flex items-center">
-                    {index > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                    <button 
-                      onClick={() => handleBreadcrumbClick(index)}
-                      className={`hover:underline truncate max-w-[150px] ${index === folderStack.length - 1 ? 'font-semibold' : 'text-muted-foreground'}`}
-                    >
-                      {folder.name}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="flex-1 min-h-0">
-          <div 
-            className="h-full border-2 border-transparent rounded-lg transition-colors hover:bg-muted/10"
-            onDragOver={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.add('border-primary/50', 'bg-primary/5')
-            }}
-            onDragLeave={(e) => {
-                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
-            }}
-            onDrop={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
-                handleDropToDrive(e)
-            }}
-          >
-            {sortedFiles.length === 0 && !loading ? (
-              <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
-                <Cloud className="h-10 w-10 mb-2 opacity-50" />
-                <p>No files found in this folder</p>
-                <p className="text-xs mt-1">Drop files here to upload</p>
-              </div>
-            ) : (
-              <ScrollArea className="h-full">
-                <div className="space-y-2 p-1">
-                  {sortedFiles.map((f) => (
-                    <div 
-                      key={f.id} 
-                      className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
-                      onDoubleClick={() => f.mimeType.includes('folder') ? handleNavigate(f) : setPreviewFile(f)}
-                    >
-                      <div className="flex items-center gap-3 overflow-hidden flex-1">
-                        {f.mimeType.includes('folder') ? (
-                          <Folder className="h-8 w-8 shrink-0 text-blue-500 fill-blue-500/20" />
-                        ) : (
-                          <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
-                        )}
-                        <div className="truncate flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{f.name}</p>
-                          <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
-                            <span>{formatSize(f.size)}</span>
-                            <span className="flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {formatDate(f.modifiedTime)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {f.mimeType.includes('folder') ? (
-                          <Button size="sm" variant="ghost" onClick={() => handleNavigate(f)}>
-                            Open
-                          </Button>
-                        ) : (
-                          <Button size="sm" variant="ghost" onClick={() => setPreviewFile(f)}>
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
+            {!isLocalMode && (
+              <div className="flex items-center gap-2 text-sm bg-muted/30 p-2 rounded-md">
+                <Button 
+                  size="sm" 
+                  variant="ghost" 
+                  disabled={folderStack.length <= 1}
+                  onClick={handleNavigateUp}
+                  className="h-6 w-6 p-0"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+                <div className="flex items-center gap-1 overflow-hidden">
+                  {folderStack.map((folder, index) => (
+                    <div key={index} className="flex items-center">
+                      {index > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                      <button 
+                        onClick={() => handleBreadcrumbClick(index)}
+                        className={`hover:underline truncate max-w-[150px] ${index === folderStack.length - 1 ? 'font-semibold' : 'text-muted-foreground'}`}
+                      >
+                        {folder.name}
+                      </button>
                     </div>
                   ))}
                 </div>
-              </ScrollArea>
+              </div>
             )}
           </div>
+        </CardHeader>
+        <CardContent className="flex-1 min-h-0">
+          {isLocalMode ? (
+            <div className="h-full">
+              {sortedLocalFiles.length === 0 && !loading ? (
+                <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+                  <HardDrive className="h-10 w-10 mb-2 opacity-50" />
+                  <p>No indexed files</p>
+                  <p className="text-xs mt-1">Files will appear here after indexing</p>
+                </div>
+              ) : (
+                <ScrollArea className="h-full">
+                  <div className="space-y-2 p-1">
+                    {sortedLocalFiles.map((f) => (
+                      <div 
+                        key={f.uri} 
+                        className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-3 overflow-hidden flex-1">
+                          <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
+                          <div className="truncate flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{getFileName(f.uri)}</p>
+                            <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
+                              <span>{formatSize(f.size_bytes)}</span>
+                              <span className="truncate">{f.uri}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button 
+                            size="sm" 
+                            variant="ghost" 
+                            onClick={() => setDeleteConfirm({ id: f.uri, name: getFileName(f.uri), type: 'file' })}
+                          >
+                            <Trash className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+          ) : (
+            <div 
+              className="h-full border-2 border-transparent rounded-lg transition-colors hover:bg-muted/10"
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.currentTarget.classList.add('border-primary/50', 'bg-primary/5')
+              }}
+              onDragLeave={(e) => {
+                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
+                handleDropToDrive(e)
+              }}
+            >
+              {sortedDriveFiles.length === 0 && !loading ? (
+                <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+                  <Cloud className="h-10 w-10 mb-2 opacity-50" />
+                  <p>No files found in this folder</p>
+                  <p className="text-xs mt-1">Drop files here to upload</p>
+                </div>
+              ) : (
+                <ScrollArea className="h-full">
+                  <div className="space-y-2 p-1">
+                    {sortedDriveFiles.map((f) => (
+                      <div 
+                        key={f.id} 
+                        className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
+                        onDoubleClick={() => f.mimeType.includes('folder') ? handleNavigate(f) : setPreviewFile(f)}
+                      >
+                        <div className="flex items-center gap-3 overflow-hidden flex-1">
+                          {f.mimeType.includes('folder') ? (
+                            <Folder className="h-8 w-8 shrink-0 text-blue-500 fill-blue-500/20" />
+                          ) : (
+                            <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
+                          )}
+                          <div className="truncate flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{f.name}</p>
+                            <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
+                              <span>{formatSize(f.size)}</span>
+                              <span className="flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {formatDate(f.modifiedTime)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {f.mimeType.includes('folder') ? (
+                            <>
+                              <Button size="sm" variant="ghost" onClick={() => handleNavigate(f)}>
+                                Open
+                              </Button>
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'folder' })}
+                              >
+                                <Trash className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button size="sm" variant="ghost" onClick={() => setPreviewFile(f)}>
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'file' })}
+                              >
+                                <Trash className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -300,6 +682,63 @@ export function FileManager({ config }: { config: any }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={createFolderDialog} onOpenChange={setCreateFolderDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create New Folder</DialogTitle>
+          </DialogHeader>
+          <Input
+            placeholder="Folder name"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleCreateFolder()
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setCreateFolderDialog(false)
+              setNewFolderName('')
+            }}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateFolder} disabled={!newFolderName.trim()}>
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!deleteConfirm} onOpenChange={(o) => !o && setDeleteConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteConfirm?.type === 'folder' ? 'Folder' : 'File'}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{deleteConfirm?.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (deleteConfirm) {
+                  if (isLocalMode) {
+                    handleDeleteLocalFile(deleteConfirm.id)
+                  } else {
+                    handleDeleteDriveFile(deleteConfirm.id)
+                  }
+                }
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

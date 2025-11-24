@@ -11,13 +11,15 @@ import logging
 import time
 import threading
 import queue
+import asyncio
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
 
 import psutil
+import requests
 from fastapi import FastAPI, Request, Response, HTTPException, Form, UploadFile, File
-from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from prometheus_client import (
@@ -92,6 +94,56 @@ from contextlib import asynccontextmanager
 # Initialize Backend
 backend: RAGBackend = get_rag_backend()
 auth_manager = GoogleAuthManager()
+
+# MCP proxy configuration
+MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
+MCP_PORT = os.getenv("MCP_PORT", "8000")
+MCP_PATH = os.getenv("MCP_PATH", "/mcp")
+
+def _mcp_base() -> str:
+    """Get the base URL for MCP server."""
+    prefix = MCP_PATH.strip("/")
+    base = f"http://{MCP_HOST}:{MCP_PORT}"
+    return f"{base}/{prefix}" if prefix else base
+
+def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
+    """
+    Proxy to MCP; tries prefixed path first, then fallback to root path if 404.
+    Raises HTTPException on failure so callers can return proper errors.
+    """
+    prefix_base = _mcp_base()
+    urls = []
+    if path.startswith("/"):
+        urls.append(f"{prefix_base}{path}")
+        if prefix_base.endswith("/"):
+            urls.append(f"{prefix_base[:-1]}{path}")
+    else:
+        urls.append(f"{prefix_base}/{path}")
+    # Fallback to host root if prefix path not found
+    urls.append(f"http://{MCP_HOST}:{MCP_PORT}{path if path.startswith('/') else '/' + path}")
+
+    last_exc = None
+    # Allow long-running searches: bump timeout for /search
+    timeout = 300 if "/search" in path else 30
+
+    for url in urls:
+        try:
+            resp = requests.request(method, url, json=json_payload, timeout=timeout)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except requests.exceptions.JSONDecodeError:
+                return {"status": "ok", "message": resp.text}
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            continue
+    
+    # If all URLs failed, raise HTTPException
+    error_msg = f"MCP proxy failed: {last_exc}" if last_exc else "MCP proxy failed: no response"
+    logger.error(error_msg)
+    raise HTTPException(status_code=502, detail=error_msg)
 
 # Mutable server state
 class ServerState:
@@ -407,8 +459,8 @@ def api_upsert(req: UpsertReq):
     try:
         if not req.text and not req.binary_base64:
             return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
-        # TODO: Handle binary_base64 if needed, for now assuming text
-        return backend.upsert_document(req.uri, req.text or "")
+        # Proxy to MCP worker which creates jobs for progress tracking
+        return _proxy_to_mcp("POST", "/rest/upsert_document", {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64})
     except Exception as e:
         logger.error(f"Error upserting document {req.uri}: {e}")
         raise
@@ -447,6 +499,9 @@ def api_search(req: SearchReq):
     try:
         result = backend.search(req.query)
         _record_quality_metrics(result)
+        # Ensure result is JSON-serializable (already normalized by _normalize_llm_response)
+        if hasattr(result, 'model_dump'):
+            result = result.model_dump()
         return result
     except HTTPException as e:
         _record_quality_metrics(None, error=e)
@@ -621,13 +676,13 @@ def api_list_models():
 @app.get(f"/{pth}/jobs", response_model=dict)
 def api_jobs():
     """List async indexing jobs (pass-through to MCP)."""
-    # Jobs are currently managed by MCP worker.
-    # If we are in Local mode, we don't have access to MCP worker jobs unless we import it.
-    # But rest_server has its own SEARCH_JOBS.
-    # The original code proxied to MCP for jobs.
-    # If we want to support jobs, we should probably move job management to backend or keep it local.
-    # For now, return local search jobs.
-    return {"jobs": list(state.search_jobs.values())}
+    # Proxy to MCP server for jobs
+    try:
+        return _proxy_to_mcp("GET", "/rest/jobs")
+    except HTTPException:
+        # If MCP is not available, return local search jobs as fallback
+        jobs = list(state.search_jobs.values())
+        return {"jobs": jobs}
 
 @app.get(f"/{pth}/jobs/{{job_id}}", response_model=dict)
 def api_job(job_id: str):
@@ -884,8 +939,37 @@ async def api_drive_upload(file: UploadFile = File(...), folder_id: Optional[str
     """Upload file to Drive."""
     if hasattr(backend, "upload_file"):
         content = await file.read()
-        return backend.upload_file(file.filename, content, file.content_type)
+        # Check if upload_file accepts folder_id parameter
+        import inspect
+        sig = inspect.signature(backend.upload_file)
+        if "folder_id" in sig.parameters:
+            result = backend.upload_file(file.filename, content, file.content_type, folder_id)
+        else:
+            result = backend.upload_file(file.filename, content, file.content_type)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
     raise HTTPException(status_code=501, detail="Backend does not support drive upload")
+
+@app.delete(f"/{pth}/drive/files/{{file_id}}")
+def api_drive_delete(file_id: str):
+    """Delete a file or folder from Google Drive."""
+    if hasattr(backend, "delete_drive_file"):
+        result = backend.delete_drive_file(file_id)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    raise HTTPException(status_code=501, detail="Backend does not support drive delete")
+
+@app.post(f"/{pth}/drive/folders")
+def api_drive_create_folder(name: str = Form(...), parent_id: Optional[str] = Form(None)):
+    """Create a folder in Google Drive."""
+    if hasattr(backend, "create_drive_folder"):
+        result = backend.create_drive_folder(name, parent_id)
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    raise HTTPException(status_code=501, detail="Backend does not support folder creation")
 
 @app.post(f"/{pth}/extract")
 async def api_extract(file: UploadFile = File(...)):
@@ -941,6 +1025,152 @@ def api_get_vertex_config():
     except Exception as e:
         logger.error(f"Failed to read vertex config: {e}")
         return {}
+
+@app.get(f"/{pth}/logs/{{log_type}}")
+def api_get_logs(log_type: str, lines: int = 500):
+    """
+    Get log file contents.
+    
+    Args:
+        log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
+        lines: Number of lines to return from the end of the file (default: 500)
+    
+    Returns:
+        JSON with log lines, total count, and file path
+    """
+    log_files = {
+        'rest': LOG_DIR / 'rest_server.log',
+        'rest_access': LOG_DIR / 'rest_server_access.log',
+        'mcp': LOG_DIR / 'mcp_server.log',
+        'mcp_access': LOG_DIR / 'mcp_server_access.log',
+        'ollama': LOG_DIR / 'ollama_server.log',
+    }
+    
+    if log_type not in log_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
+    
+    log_path = log_files[log_type]
+    if not log_path.exists():
+        return {"lines": [], "total": 0, "file": str(log_path)}
+    
+    try:
+        # Read file efficiently, getting last N lines
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read all lines for small files, or use efficient tail for large files
+            all_lines = f.readlines()
+        
+        total = len(all_lines)
+        # Get last N lines
+        start_idx = max(0, total - lines)
+        selected_lines = all_lines[start_idx:] if total > 0 else []
+        
+        return {
+            "lines": [line.rstrip('\n\r') for line in selected_lines],
+            "total": total,
+            "file": str(log_path),
+            "start": start_idx,
+            "end": total
+        }
+    except Exception as e:
+        logger.error("Failed to read log file %s: %s", log_type, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(f"/{pth}/logs/{{log_type}}/stream")
+async def api_stream_logs(log_type: str, request: Request):
+    """
+    Stream log file contents using Server-Sent Events (SSE).
+    
+    Args:
+        log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
+        request: FastAPI request object for client disconnect detection
+    
+    Returns:
+        StreamingResponse with SSE format
+    """
+    log_files = {
+        'rest': LOG_DIR / 'rest_server.log',
+        'rest_access': LOG_DIR / 'rest_server_access.log',
+        'mcp': LOG_DIR / 'mcp_server.log',
+        'mcp_access': LOG_DIR / 'mcp_server_access.log',
+        'ollama': LOG_DIR / 'ollama_server.log',
+    }
+    
+    if log_type not in log_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
+    
+    log_path = log_files[log_type]
+    
+    async def generate_log_stream():
+        """Generate SSE stream of log lines."""
+        last_position = 0
+        if log_path.exists():
+            # Get initial file size
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                f.seek(0, 2)  # Seek to end
+                last_position = f.tell()
+        
+        # Send initial data
+        if log_path.exists():
+            try:
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    f.seek(max(0, last_position - 10000))  # Read last 10KB initially
+                    initial_lines = f.readlines()[-100:]  # Last 100 lines
+                    for line in initial_lines:
+                        if await request.is_disconnected():
+                            break
+                        yield f"data: {line.rstrip()}\n\n"
+            except Exception as e:
+                logger.error("Error reading initial log lines: %s", e)
+                yield f"data: [ERROR] Failed to read log file: {e}\n\n"
+        
+        # Stream new lines
+        while not await request.is_disconnected():
+            try:
+                if log_path.exists():
+                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        current_size = f.seek(0, 2)  # Get file size
+                        
+                        if current_size > last_position:
+                            # New content available
+                            f.seek(last_position)
+                            new_lines = f.readlines()
+                            for line in new_lines:
+                                if await request.is_disconnected():
+                                    break
+                                yield f"data: {line.rstrip()}\n\n"
+                            last_position = current_size
+                        elif current_size < last_position:
+                            # File was rotated or truncated
+                            last_position = 0
+                            f.seek(0)
+                            recent_lines = f.readlines()[-50:]  # Last 50 lines
+                            for line in recent_lines:
+                                if await request.is_disconnected():
+                                    break
+                                yield f"data: {line.rstrip()}\n\n"
+                            last_position = f.tell()
+                
+                # Wait before checking again
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error("Error streaming logs: %s", e)
+                yield f"data: [ERROR] {e}\n\n"
+                await asyncio.sleep(2)
+    
+    return StreamingResponse(
+        generate_log_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 if __name__ == "__main__":
     try:

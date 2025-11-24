@@ -3,12 +3,11 @@
 @import './styles/theme.css';
 @import './index.css';
 @import "tw-animate-css";
-/*
-  ---break---
-*/
-@custom-variant dark (&:is(.dark *));
 
 @config '../tailwind.config.js';
+
+/* Tailwind v4 dark mode variant */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /*
   The default border color has changed to `currentColor` in Tailwind CSS v4,
@@ -69,6 +68,7 @@
 /*
   ---break---
 */
+html.dark,
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);

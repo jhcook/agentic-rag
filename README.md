@@ -405,6 +405,25 @@ pytest tests/
 
 For more details, see `tests/README.md`.
 
+## Development Standards
+
+This project follows strict coding standards enforced by:
+
+- **PEP-8**: Python style guide compliance (enforced via `.pylintrc`)
+- **Cursor Rules**: Project-specific rules in `.cursor/rules/` directory
+  - Code quality and documentation standards
+  - Testing requirements
+  - UI/UX guidelines
+  - See `.cursor/rules/README.md` for details
+
+All code must:
+- Pass pylint checks (minimum score: 7.0/10)
+- Include comprehensive docstrings
+- Have corresponding tests
+- Follow import organization (standard → third-party → local)
+- Use explicit encoding for file operations
+- Include timeout arguments for HTTP requests
+
 ## Resources
 
 - [Ollama - llama3.2](https://ollama.com/library/llama3.2)

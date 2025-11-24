@@ -56,6 +56,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   const [qualityError, setQualityError] = useState<string | null>(null)
   const [restData, setRestMetrics] = useState<Record<string, number>>({})
   const [restMetricsError, setRestMetricsError] = useState<string | null>(null)
+  const [metricHistory, setMetricHistory] = useState<Record<string, Array<{ timestamp: string; value: number }>>>({})
 
   useEffect(() => {
     const controller = new AbortController()
@@ -70,29 +71,72 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body = await res.text()
         const metrics: Record<string, number> = {}
+        const now = new Date().toISOString()
 
-        // Parse average latency: sum / count
-        const sumMatch = body.match(/rest_http_request_duration_seconds_sum\{.*\}\\s+(\\d+(?:\\.\\d+)?)/)
-        const countMatch = body.match(/rest_http_request_duration_seconds_count\{.*\}\\s+(\\d+(?:\\.\\d+)?)/)
+        // Parse average latency: sum / count (convert seconds to ms)
+        const sumMatch = body.match(/rest_http_request_duration_seconds_sum\{[^}]*\}\s+(\d+(?:\.\d+)?)/)
+        const countMatch = body.match(/rest_http_request_duration_seconds_count\{[^}]*\}\s+(\d+(?:\.\d+)?)/)
         const sum = sumMatch ? Number(sumMatch[1]) : 0
         const count = countMatch ? Number(countMatch[1]) : 0
         if (count > 0) {
-          metrics['rest_http_request_duration_avg'] = sum / count
+          const avgSeconds = sum / count
+          metrics['rest_http_request_duration_avg'] = avgSeconds * 1000 // Convert to ms
+          // Update history for latency
+          setMetricHistory(prev => {
+            const history = prev['query_latency'] || []
+            const newHistory = [...history, { timestamp: now, value: avgSeconds * 1000 }].slice(-60) // Keep last 60 points
+            return { ...prev, 'query_latency': newHistory }
+          })
         }
 
         // Total requests (all statuses)
-        const reqRegex = /rest_http_requests_total\\{.*\\}\\s+(\\d+(?:\\.\\d+)?)/g
+        const reqRegex = /rest_http_requests_total\{[^}]*\}\s+(\d+(?:\.\d+)?)/g
         let reqSum = 0
         let m: RegExpExecArray | null
         while ((m = reqRegex.exec(body)) !== null) {
           reqSum += Number(m[1])
         }
         metrics['rest_http_requests_total'] = reqSum
+        // Update history for query count
+        setMetricHistory(prev => {
+          const history = prev['query_count'] || []
+          const lastValue = history.length > 0 ? history[history.length - 1].value : 0
+          const delta = reqSum - lastValue
+          if (delta > 0 || history.length === 0) {
+            const newHistory = [...history, { timestamp: now, value: reqSum }].slice(-60)
+            return { ...prev, 'query_count': newHistory }
+          }
+          return prev
+        })
 
         // Inflight gauge
-        const inflight = body.match(/rest_inflight_requests\\s+(\\d+(?:\\.\\d+)?)/)
+        const inflight = body.match(/rest_inflight_requests\s+(\d+(?:\.\d+)?)/)
         if (inflight) {
           metrics['rest_inflight_requests'] = Number(inflight[1])
+          // Update history for active connections
+          setMetricHistory(prev => {
+            const history = prev['active_connections'] || []
+            const newHistory = [...history, { timestamp: now, value: Number(inflight[1]) }].slice(-60)
+            return { ...prev, 'active_connections': newHistory }
+          })
+        }
+
+        // Parse memory usage
+        const memMatch = body.match(/rest_memory_usage_megabytes\s+(\d+(?:\.\d+)?)/)
+        if (memMatch) {
+          metrics['rest_memory_usage_mb'] = Number(memMatch[1])
+        }
+
+        // Parse documents indexed from REST metrics
+        const docsMatch = body.match(/rest_documents_indexed_total\s+(\d+(?:\.\d+)?)/)
+        if (docsMatch) {
+          metrics['rest_documents_indexed'] = Number(docsMatch[1])
+          // Update history for documents indexed
+          setMetricHistory(prev => {
+            const history = prev['documents_indexed'] || []
+            const newHistory = [...history, { timestamp: now, value: Number(docsMatch[1]) }].slice(-60)
+            return { ...prev, 'documents_indexed': newHistory }
+          })
         }
 
         setRestMetrics(metrics)
@@ -308,6 +352,13 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
               unit="ms"
               chartType="area"
               color="#3b82f6"
+              dataOverride={metricHistory['query_latency'] || null}
+              summaryOverride={restAvgLatency !== null ? {
+                current: restAvgLatency,
+                avg: restAvgLatency,
+                max: restAvgLatency,
+                min: restAvgLatency
+              } : undefined}
             />
             
             <MetricsChart
@@ -349,6 +400,13 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
               metricKey="query_count"
               chartType="bar"
               color="#3b82f6"
+              dataOverride={metricHistory['query_count'] || null}
+              summaryOverride={restReqCount !== null ? {
+                current: restReqCount,
+                avg: restReqCount,
+                max: restReqCount,
+                min: 0
+              } : undefined}
             />
             
             <MetricsChart
@@ -357,6 +415,13 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
               metricKey="active_connections"
               chartType="area"
               color="#f59e0b"
+              dataOverride={metricHistory['active_connections'] || null}
+              summaryOverride={restInflight !== null ? {
+                current: restInflight,
+                avg: restInflight,
+                max: restInflight,
+                min: 0
+              } : undefined}
             />
           </div>
 
@@ -367,6 +432,13 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
               metricKey="documents_indexed"
               chartType="line"
               color="#8b5cf6"
+              dataOverride={metricHistory['documents_indexed'] || null}
+              summaryOverride={docCount > 0 ? {
+                current: docCount,
+                avg: docCount,
+                max: docCount,
+                min: 0
+              } : undefined}
             />
             
             <MetricsChart
@@ -380,7 +452,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
           </div>
         </TabsContent>
         <TabsContent value="system" className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
@@ -425,6 +497,74 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
                     <WarningCircle className="h-3 w-3" /> {mcpError}
                   </p>
                 )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Avg Latency</CardTitle>
+                  <Timer className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {restAvgLatency !== null ? `${restAvgLatency.toFixed(0)} ms` : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">From REST /metrics</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    {restAvgLatency !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+                {restMetricsError && (
+                  <p className="text-xs text-destructive mt-2 flex items-center gap-1">
+                    <WarningCircle className="h-3 w-3" /> {restMetricsError}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Total Requests</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {restReqCount !== null ? restReqCount.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">From REST /metrics</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    {restReqCount !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Inflight Requests</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {restInflight !== null ? restInflight.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">From REST /metrics</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    {restInflight !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
               </CardContent>
             </Card>
           </div>

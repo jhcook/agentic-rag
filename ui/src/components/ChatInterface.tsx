@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, User, Bot, Download, Paperclip, X, Trash } from 'lucide-react'
+import { Send, User, Bot, Download, Paperclip, X, Trash, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -33,7 +33,21 @@ function MarkdownRenderer({ content }: { content: string }) {
   return <div className="prose prose-sm dark:prose-invert max-w-none [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4 [&>a]:text-blue-500 [&>a]:underline" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-export function ChatInterface({ config, messages, setMessages }: { config: any, messages: Message[], setMessages: React.Dispatch<React.SetStateAction<Message[]>> }) {
+export function ChatInterface({ 
+  config, 
+  messages, 
+  setMessages,
+  onNewConversation,
+  onDeleteConversation,
+  activeConversationId
+}: { 
+  config: any
+  messages: Message[]
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>
+  onNewConversation?: () => void
+  onDeleteConversation?: (id: string) => void
+  activeConversationId?: string | null
+}) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [attachments, setAttachments] = useState<{name: string, content: string}[]>([])
@@ -71,7 +85,12 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
     }
 
     const userMsg: Message = { role: 'user', content, displayContent, timestamp: Date.now() }
-    setMessages(prev => [...prev, userMsg])
+    setMessages(prev => {
+      const updated = [...prev, userMsg]
+      // If this is the first message and onNewConversation exists, it means we need to create a conversation
+      // This will be handled by the parent component's useEffect that watches messages
+      return updated
+    })
     setInput('')
     setAttachments([])
     setLoading(true)
@@ -208,7 +227,23 @@ export function ChatInterface({ config, messages, setMessages }: { config: any, 
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
         <div className="text-sm font-medium text-muted-foreground">Conversation</div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => setMessages([])} title="Clear conversation">
+          {onNewConversation && (
+            <Button variant="ghost" size="icon" onClick={onNewConversation} title="New conversation">
+              <Plus className="h-4 w-4" />
+            </Button>
+          )}
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => {
+              if (onDeleteConversation && activeConversationId) {
+                onDeleteConversation(activeConversationId)
+              } else {
+                setMessages([])
+              }
+            }} 
+            title={onDeleteConversation && activeConversationId ? "Delete conversation" : "Clear conversation"}
+          >
             <Trash className="h-4 w-4" />
           </Button>
           <ModelSelector config={config} onModelSelect={setSelectedModel} />

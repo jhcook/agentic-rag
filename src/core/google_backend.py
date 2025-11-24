@@ -927,13 +927,15 @@ class GoogleGeminiBackend:
             logger.error(f"Drive list failed: {e}")
             return []
 
-    def upload_file(self, name: str, content: bytes, mime_type: str) -> Dict[str, Any]:
+    def upload_file(self, name: str, content: bytes, mime_type: str, folder_id: str = None) -> Dict[str, Any]:
         """Upload a file to Google Drive."""
         if not self.drive_service:
             return {"error": "Not authenticated"}
 
         try:
             file_metadata = {'name': name}
+            if folder_id:
+                file_metadata['parents'] = [folder_id]
             media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime_type, resumable=True)
             file = self.drive_service.files().create(
                 body=file_metadata, 
@@ -943,6 +945,39 @@ class GoogleGeminiBackend:
             return file
         except Exception as e:
             logger.error(f"Drive upload failed: {e}")
+            return {"error": str(e)}
+
+    def delete_drive_file(self, file_id: str) -> Dict[str, Any]:
+        """Delete a file or folder from Google Drive."""
+        if not self.drive_service:
+            return {"error": "Not authenticated"}
+
+        try:
+            self.drive_service.files().delete(fileId=file_id).execute()
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Drive delete failed: {e}")
+            return {"error": str(e)}
+
+    def create_drive_folder(self, name: str, parent_id: str = None) -> Dict[str, Any]:
+        """Create a folder in Google Drive."""
+        if not self.drive_service:
+            return {"error": "Not authenticated"}
+
+        try:
+            file_metadata = {
+                'name': name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            if parent_id:
+                file_metadata['parents'] = [parent_id]
+            file = self.drive_service.files().create(
+                body=file_metadata,
+                fields='id, name, mimeType'
+            ).execute()
+            return file
+        except Exception as e:
+            logger.error(f"Drive folder creation failed: {e}")
             return {"error": str(e)}
 
     def logout(self):

@@ -9,6 +9,22 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
     <link href="/src/main.css" rel="stylesheet" />
+    <script>
+        // Apply system theme preference immediately to prevent flash
+        (function() {
+            try {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                const html = document.documentElement;
+                if (prefersDark) {
+                    html.classList.add('dark');
+                } else {
+                    html.classList.remove('dark');
+                }
+            } catch (e) {
+                console.error('Failed to apply theme:', e);
+            }
+        })();
+    </script>
 </head>
 
 <body>
