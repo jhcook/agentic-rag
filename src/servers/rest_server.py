@@ -160,6 +160,7 @@ class GroundedAnswerReq(BaseModel):
     """Request model for grounded answer generation."""
     question: str
     k: Optional[int] = 3
+    model: Optional[str] = None
 
 class RerankReq(BaseModel):
     """Request model for reranking passages."""
@@ -491,7 +492,13 @@ def api_grounded_answer(req: GroundedAnswerReq):
     """Return a grounded answer using vector search + synthesis."""
     logger.info("Grounded answer requested: %s", req.question)
     try:
-        answer = backend.grounded_answer(req.question, k=req.k or 3)
+        # Pass model if supported by backend
+        kwargs = {"k": req.k or 3}
+        if req.model and hasattr(backend, "grounded_answer_manual"):
+             # Only manual mode supports dynamic model switching for now
+             kwargs["model"] = req.model
+             
+        answer = backend.grounded_answer(req.question, **kwargs)
         return answer
     except Exception as exc:
         logger.error("grounded_answer failed: %s", exc)
@@ -603,6 +610,13 @@ def api_set_mode(req: ConfigModeReq):
         else:
             raise HTTPException(status_code=400, detail=f"Mode '{req.mode}' not available. Available: {backend.get_available_modes()}")
     raise HTTPException(status_code=501, detail="Backend does not support mode switching")
+
+@app.get(f"/{pth}/config/models")
+def api_list_models():
+    """List available models for the current backend."""
+    if hasattr(backend, "list_models"):
+        return {"models": backend.list_models()}
+    return {"models": []}
 
 @app.get(f"/{pth}/jobs", response_model=dict)
 def api_jobs():
@@ -841,12 +855,18 @@ class ChatMessage(BaseModel):
 
 class ChatReq(BaseModel):
     messages: List[ChatMessage]
+    model: Optional[str] = None
 
 @app.post(f"/{pth}/chat")
 def api_chat(req: ChatReq):
     """Conversational chat."""
     logger.info("Chat request received")
     if hasattr(backend, "chat"):
+        # Check if chat accepts model arg
+        import inspect
+        sig = inspect.signature(backend.chat)
+        if "model" in sig.parameters:
+            return backend.chat([m.model_dump() for m in req.messages], model=req.model)
         return backend.chat([m.model_dump() for m in req.messages])
     raise HTTPException(status_code=501, detail="Backend does not support chat")
 

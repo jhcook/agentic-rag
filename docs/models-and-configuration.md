@@ -258,9 +258,34 @@ For retrieval-augmented generation, low temperature (0.1) ensures responses stay
 - Confirm FAISS index exists and has vectors
 - Check debug logs for embedding failures
 
+## Google Backend Configuration
+
+The system supports a Google Drive-backed RAG implementation that bypasses the local vector store.
+
+### Configuration Variables
+
+- **`GOOGLE_GROUNDING_MODE`**: 
+  - `manual`: Uses Google Drive API to search files and Gemini to generate answers (Default).
+  - `vertex_ai_search`: Uses Vertex AI Agent Builder with a Data Store.
+
+- **`GOOGLE_MODEL_NAME`**:
+  - Specifies the Gemini model to use.
+  - Default: `models/gemini-2.0-flash` (Fast and cost-effective)
+  - Options: `models/gemini-1.5-pro`, `models/gemini-3.0-pro` (if available to your account)
+
+### Setup
+
+1. **Credentials**: Ensure you have `client_secrets.json` or valid Google Cloud credentials.
+2. **Dependencies**: Install `google-generativeai` and `google-api-python-client`.
+3. **Environment**: Set the variables in your `.env` file.
+
+```dotenv
+GOOGLE_GROUNDING_MODE=manual
+GOOGLE_MODEL_NAME=models/gemini-3.0-pro
+```
+
 ## Related Documentation
 
 - [README.md](../README.md) - Project overview and setup
 - [MCP Configuration](mcp/configuration.md) - MCP integration setup
-- [.env.example](../.env.example) - Complete environment variable reference</content>
-<parameter name="filePath">/Users/jcook/repo/agentic-rag/docs/models-and-configuration.md
+- [.env.example](../.env.example) - Complete environment variable reference

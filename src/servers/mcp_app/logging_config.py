@@ -5,6 +5,20 @@ import time
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
+class ShutdownFilter(logging.Filter):
+    """Filter out noisy shutdown errors."""
+    def filter(self, record):
+        # Filter out CancelledError which happens during graceful shutdown
+        if record.exc_info:
+            exc_type, _, _ = record.exc_info
+            if exc_type and "CancelledError" in exc_type.__name__:
+                return False
+        # Also filter out the generic message if it mentions CancelledError
+        if "CancelledError" in record.getMessage():
+            return False
+        return True
+
+
 def configure_logging():
     """Configure process and access loggers."""
     os.makedirs("log", exist_ok=True)
@@ -18,6 +32,13 @@ def configure_logging():
         ],
     )
     logger = logging.getLogger(__name__)
+
+    # Add shutdown filter to suppress CancelledError noise
+    shutdown_filter = ShutdownFilter()
+    logging.getLogger("uvicorn.error").addFilter(shutdown_filter)
+    logging.getLogger("uvicorn").addFilter(shutdown_filter)
+    # Also add to root logger just in case
+    logging.getLogger().addFilter(shutdown_filter)
 
     access_logger = logging.getLogger("mcp_access")
     access_logger.setLevel(logging.INFO)

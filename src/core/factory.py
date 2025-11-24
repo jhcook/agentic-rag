@@ -322,8 +322,15 @@ class HybridBackend:
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
         return self._backend.index_path(path, glob)
 
-    def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
-        return self._backend.grounded_answer(question, k)
+    def grounded_answer(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
+        if hasattr(self._backend, "grounded_answer"):
+             # Check if backend.grounded_answer accepts model
+            import inspect
+            sig = inspect.signature(self._backend.grounded_answer)
+            if "model" in sig.parameters:
+                return self._backend.grounded_answer(question, k, model=model)
+            return self._backend.grounded_answer(question, k)
+        return {"error": "Grounded answer not supported"}
 
     def load_store(self) -> bool:
         return self._backend.load_store()
@@ -355,8 +362,18 @@ class HybridBackend:
         stats["available_modes"] = self.get_available_modes()
         return stats
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def list_models(self) -> List[str]:
+        if hasattr(self._backend, "list_models"):
+            return self._backend.list_models()
+        return []
+
+    def chat(self, messages: List[Dict[str, str]], model: str = None) -> Dict[str, Any]:
         if hasattr(self._backend, "chat"):
+            # Check if backend.chat accepts model
+            import inspect
+            sig = inspect.signature(self._backend.chat)
+            if "model" in sig.parameters:
+                return self._backend.chat(messages, model=model)
             return self._backend.chat(messages)
         return {"error": "Chat not supported by current backend"}
 

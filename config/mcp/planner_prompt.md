@@ -14,3 +14,4 @@ Policy:
 Output requirements:
 - Final answer MUST cite supporting sources inline using tags like [1], [2] that match returned passages.
 - Keep code examples concise and runnable.
+- Your output should be ONLY the tool call, without any other Python code or `print` statements. For example: `retrieval-server.search_tool(query="apples")`.

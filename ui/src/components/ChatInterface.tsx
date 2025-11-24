@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, User, Bot, Download, Paperclip, X } from 'lucide-react'
+import { Send, User, Bot, Download, Paperclip, X, Trash } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { toast } from 'sonner'
 import { marked } from 'marked'
+import { ModelSelector } from '@/components/ModelSelector'
 
 export type Message = {
   role: 'user' | 'assistant'
@@ -32,11 +33,12 @@ function MarkdownRenderer({ content }: { content: string }) {
   return <div className="prose prose-sm dark:prose-invert max-w-none [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4 [&>a]:text-blue-500 [&>a]:underline" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
-export function ChatInterface({ config, messages, setMessages, selectedModel }: { config: any, messages: Message[], setMessages: React.Dispatch<React.SetStateAction<Message[]>>, selectedModel: string }) {
+export function ChatInterface({ config, messages, setMessages }: { config: any, messages: Message[], setMessages: React.Dispatch<React.SetStateAction<Message[]>> }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [attachments, setAttachments] = useState<{name: string, content: string}[]>([])
   const [sendHistory, setSendHistory] = useState(true)
+  const [selectedModel, setSelectedModel] = useState<string>("")
   const scrollRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -85,7 +87,7 @@ export function ChatInterface({ config, messages, setMessages, selectedModel }: 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // Conditionally send history
+
           messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
           model: selectedModel || undefined
         })
@@ -203,6 +205,15 @@ export function ChatInterface({ config, messages, setMessages, selectedModel }: 
 
   return (
     <div className="flex flex-col h-[600px] border rounded-lg bg-background">
+      <div className="flex items-center justify-between p-3 border-b bg-muted/30">
+        <div className="text-sm font-medium text-muted-foreground">Conversation</div>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={() => setMessages([])} title="Clear conversation">
+            <Trash className="h-4 w-4" />
+          </Button>
+          <ModelSelector config={config} onModelSelect={setSelectedModel} />
+        </div>
+      </div>
       <ScrollArea className="flex-1 p-4" ref={scrollRef} viewportRef={viewportRef}>
         <div className="space-y-4">
           {messages.length === 0 && (
@@ -293,7 +304,7 @@ export function ChatInterface({ config, messages, setMessages, selectedModel }: 
             <Send className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex items-center space-x-2 mt-2">
+        <div className="flex items-center space-x-2 mt-3">
           <Checkbox id="send-history" checked={sendHistory} onCheckedChange={(checked) => setSendHistory(Boolean(checked))} />
           <label
             htmlFor="send-history"

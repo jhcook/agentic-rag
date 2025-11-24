@@ -31,6 +31,12 @@ try:
 except ImportError:
     HAS_VERTEX_DEPS = False
 
+try:
+    import docx
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
 from src.core.interfaces import RAGBackend
 try:
     from src.core.google_auth import GoogleAuthManager
@@ -41,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleGeminiBackend:
     """
-    Implements RAGBackend using Google Gemini 1.5 Pro and Google Drive.
+    Implements RAGBackend using Google Gemini (default: 2.0 Flash) and Google Drive.
     
     Authentication:
     - Uses OAuth2 credentials via GoogleAuthManager.
@@ -69,6 +75,7 @@ class GoogleGeminiBackend:
         
         # Mode configuration
         self.mode = os.getenv("GOOGLE_GROUNDING_MODE", "manual") # manual | vertex_ai_search
+        self.model_name = os.getenv("GOOGLE_MODEL_NAME", "models/gemini-2.0-flash")
         
         # Initialize services to None to avoid AttributeError if auth fails
         self.drive_service = None
@@ -141,27 +148,73 @@ class GoogleGeminiBackend:
         else:
             logger.warning("Reload failed: No valid credentials found.")
 
-    def _construct_drive_query(self, query: str) -> str:
-        """Construct a Drive API query from a natural language string."""
-        # Basic keyword extraction to convert natural language to Drive query
-        # Remove common conversational filler
+    def _extract_keywords(self, query: str) -> List[str]:
+        """Extract meaningful keywords from a natural language query."""
         stop_words = {
             "search", "find", "show", "me", "files", "documents", "about", "that", "discuss", 
-            "are", "there", "any", "in", "my", "google", "drive", "the", "a", "an", "for", "of"
+            "are", "there", "any", "in", "my", "google", "drive", "the", "a", "an", "for", "of",
+            "you", "need", "to", "look", "through", "all", "and", "their", "content", "because",
+            "is", "it", "with", "on", "at", "by", "from", "up", "down", "over", "under", "again",
+            "please", "can", "could", "would", "should", "will", "do", "does", "did", "has", "have",
+            "file", "folder", "named", "called", "title", "text", "txt", "email", "emails", "message", "messages",
+            "attachment", "attachments", "with", "containing", "information", "info", "details", "regarding", "related",
+            "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+            "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+            "know", "had", "were", "was", "been", "being", "be", "am", "i", "we", "they", "he", "she", "it", 
+            "this", "that", "these", "those", "here", "there", "where", "when", "why", "how", "which", "who", "whom", "whose",
+            "as", "year", "ok", "great", "hello", "hi", "earlier", "later", "ago", "recent", "recently",
+            "forwarded", "fwd", "attached", "attachment",
+            "someone", "else", "sometime", "around", "female", "male", "person", "people", "no", "not", "yes", "yep", "nope",
+            "his", "her", "him", "hers", "their", "theirs", "my", "mine", "our", "ours"
         }
         
-        words = query.lower().replace("?", "").replace(".", "").split()
-        keywords = [w for w in words if w not in stop_words and len(w) > 2]
+        # Words to keep even if they are short
+        keep_words = {"dr", "mr", "ms", "ai", "id", "hr", "vp", "ceo", "cto", "cfo", "ct", "er", "pr", "md", "rn"}
+
+        # Clean punctuation but keep dots for filenames? No, dots attach to words.
+        # We should replace dots with spaces unless they look like a file extension or email.
+        # Simple approach: replace all non-alphanumeric characters (except maybe @) with spaces.
+        clean_query = query.lower()
+        for char in ".,?!-:;\"'()[]{}":
+            clean_query = clean_query.replace(char, " ")
+            
+        words = clean_query.split()
+        
+        # Handle negation: if "no" or "not" precedes a word, ignore it.
+        # We need to look at the original query structure roughly.
+        # Since we replaced punctuation with spaces, the order is preserved.
+        ignored_indices = set()
+        for i, w in enumerate(words):
+            if w in ["no", "not"] and i + 1 < len(words):
+                ignored_indices.add(i + 1)
+        
+        keywords = []
+        for i, w in enumerate(words):
+            if i in ignored_indices:
+                continue
+            if w not in stop_words and (len(w) > 2 or w in keep_words):
+                keywords.append(w)
+                
+        return keywords
+
+    def _construct_drive_query(self, query: str) -> str:
+        """Construct a Drive API query from a natural language string."""
+        keywords = self._extract_keywords(query)
         
         if not keywords:
-            # Fallback: if everything was filtered, use the original query if it's short, else just list recent
+            # Fallback: if everything was filtered, use the original query if it's short
+            words = query.lower().split()
             if len(words) < 3:
                 return f"fullText contains '{query}' and trashed = false"
             return "trashed = false"
 
-        # Construct query: fullText contains 'keyword'
-        # We use 'and' to be specific, or 'or' to be broad. Let's use 'and' for relevance.
-        clauses = [f"fullText contains '{k}'" for k in keywords]
+        # Construct query: (name contains 'k' or fullText contains 'k')
+        clauses = []
+        for k in keywords:
+            # Escape single quotes in keywords
+            k_safe = k.replace("'", "\\'")
+            clauses.append(f"(name contains '{k_safe}' or fullText contains '{k_safe}')")
+            
         return " and ".join(clauses) + " and trashed = false"
 
     def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
@@ -195,6 +248,81 @@ class GoogleGeminiBackend:
             logger.error(f"Drive search failed: {e}")
             return {"error": str(e)}
 
+    def _download_attachment(self, message_id: str, attachment_id: str) -> Optional[bytes]:
+        """Download an attachment from a Gmail message."""
+        try:
+            attachment = self.gmail_service.users().messages().attachments().get(
+                userId='me', messageId=message_id, id=attachment_id
+            ).execute()
+            data = base64.urlsafe_b64decode(attachment['data'])
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to download attachment {attachment_id}: {e}")
+            return None
+
+    def _generate_smart_query(self, user_query: str) -> Optional[str]:
+        """
+        Use Gemini to generate an optimized Gmail search query from natural language.
+        """
+        if not self.gen_service:
+            return None
+
+        import datetime
+        current_date = datetime.date.today().strftime("%Y-%m-%d")
+
+        try:
+            prompt = f"""
+            You are an expert at creating Google Gmail search queries.
+            Convert the following natural language request into a concise and effective Gmail search query.
+            
+            Context:
+            - Current Date: {current_date}
+            - "This year" means the current year in the date above.
+            
+            Rules:
+            1. Remove conversational filler (e.g., "as you know", "please find").
+            2. Use OR operators for likely synonyms (e.g., "physician" -> "(physician OR doctor OR dr)").
+            3. Use standard Gmail search operators (e.g., "has:attachment", "from:", "to:", "subject:", "after:", "before:").
+            4. Do NOT use invalid operators like "forwarded:". 
+            5. If the user says "forwarded", you MAY use "fwd" or "forwarded" as a keyword.
+            6. Do NOT use "filename:" unless the user explicitly says "filename is X". If they say "with a letter attached", just search for "has:attachment" and maybe the word "letter" as a loose term.
+            7. If the user mentions a date range (e.g. "June-August"), ALWAYS include the 'after:' and 'before:' operators.
+            8. CRITICAL: If the user says "letter from X attached" or "forwarded email from X", do NOT use "from:X" unless X is clearly the sender of the email. Instead, just use "X" as a keyword.
+            9. CRITICAL: If the user says "not X" or "no X is someone else", do NOT include X in the query.
+            10. Do NOT include descriptive terms like "female", "male", "person", "someone", "else" unless they are likely part of the email content.
+            11. If the user describes a person (e.g. "his PA", "the manager"), do NOT include the description as a keyword unless it's a proper noun.
+            12. If the user says "around [Month]", expand the date range to include the month before and after.
+            13. Output ONLY the raw query string, no markdown or explanations.
+            
+            Request: "{user_query}"
+            """
+            
+            body = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 100
+                }
+            }
+            
+            response = self.gen_service.models().generateContent(
+                model=self.model_name,
+                body=body
+            ).execute()
+            
+            candidates = response.get('candidates', [])
+            if candidates:
+                query = candidates[0]['content']['parts'][0]['text'].strip()
+                # Remove any markdown code blocks if the model adds them
+                query = query.replace("```", "").strip()
+                logger.info(f"Smart Query Generated: '{query}' (from '{user_query}')")
+                return query
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Smart query generation failed: {e}")
+            return None
+
     def search_gmail(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         """
         Search Gmail for emails matching the query.
@@ -202,15 +330,103 @@ class GoogleGeminiBackend:
         if not self.gmail_service:
             return {"error": "Not authenticated"}
 
-        logger.info(f"Searching Gmail for: {query}")
+        # Try to generate a smart query first
+        smart_query = self._generate_smart_query(query)
+        used_smart_query = False
+        
+        if smart_query:
+            gmail_query = smart_query
+            used_smart_query = True
+        else:
+            # Use keyword extraction for better recall
+            keywords = self._extract_keywords(query)
+            
+            # Check for attachment intent
+            # "attach" covers "attachment", "attached", "attaching"
+            has_attachment = "attach" in query.lower()
+            
+            if keywords:
+                # Join with spaces for implicit AND
+                gmail_query = " ".join(keywords)
+            else:
+                # Fallback to original if no keywords found
+                gmail_query = query
+                
+            if has_attachment:
+                gmail_query += " has:attachment"
+
+        logger.info(f"Searching Gmail for: {gmail_query} (Original: {query})")
         
         try:
             # Search messages
             results = self.gmail_service.users().messages().list(
-                userId='me', q=query, maxResults=top_k
+                userId='me', q=gmail_query, maxResults=top_k
             ).execute()
             
             messages = results.get('messages', [])
+            
+            # Fallback: If few results, try relaxing the query
+            if len(messages) < 3:
+                # If smart query failed, try basic keyword search
+                if used_smart_query:
+                    logger.info("Smart query returned few results. Falling back to keyword search.")
+                    keywords = self._extract_keywords(query)
+                    if keywords:
+                        relaxed_query = " ".join(keywords)
+                        
+                        # Preserve date filters from smart query if they exist
+                        if "after:" in smart_query:
+                            import re
+                            after_match = re.search(r'after:(\S+)', smart_query)
+                            if after_match:
+                                relaxed_query += f" after:{after_match.group(1)}"
+                        if "before:" in smart_query:
+                            import re
+                            before_match = re.search(r'before:(\S+)', smart_query)
+                            if before_match:
+                                relaxed_query += f" before:{before_match.group(1)}"
+
+                        if "attach" in query.lower():
+                            relaxed_query += " has:attachment"
+                        
+                        logger.info(f"Fallback query: {relaxed_query}")
+                        relaxed_results = self.gmail_service.users().messages().list(
+                            userId='me', q=relaxed_query, maxResults=top_k
+                        ).execute()
+                        
+                        new_messages = relaxed_results.get('messages', [])
+                        # Merge
+                        existing_ids = {m['id'] for m in messages}
+                        for m in new_messages:
+                            if m['id'] not in existing_ids:
+                                messages.append(m)
+                                existing_ids.add(m['id'])
+
+                # If still few results, try dropping keywords (Relaxation)
+                if len(messages) < 3:
+                    keywords = self._extract_keywords(query)
+                    if len(keywords) > 2:
+                        # Drop the last keyword
+                        relaxed_keywords = keywords[:-1]
+                        relaxed_query = " ".join(relaxed_keywords)
+                        if "attach" in query.lower():
+                            relaxed_query += " has:attachment"
+                        
+                        logger.info(f"Few results found. Trying relaxed query: {relaxed_query}")
+                        
+                        relaxed_results = self.gmail_service.users().messages().list(
+                            userId='me', q=relaxed_query, maxResults=top_k
+                        ).execute()
+                        
+                        new_messages = relaxed_results.get('messages', [])
+                        
+                        # Merge and deduplicate
+                        existing_ids = {m['id'] for m in messages}
+                        for m in new_messages:
+                            if m['id'] not in existing_ids:
+                                messages.append(m)
+                                existing_ids.add(m['id'])
+            
             email_data = []
             
             for msg in messages:
@@ -228,18 +444,37 @@ class GoogleGeminiBackend:
                     date = next((h['value'] for h in headers if h['name'].lower() == 'date'), 'Unknown')
                     snippet = full_msg.get('snippet', '')
                     
-                    # Extract body
-                    body = ""
+                    # Extract body and attachments
+                    body_text = ""
+                    attachments = []
+                    
+                    def walk_parts(parts):
+                        nonlocal body_text
+                        for part in parts:
+                            mime_type = part.get('mimeType')
+                            filename = part.get('filename')
+                            
+                            if part.get('parts'):
+                                walk_parts(part['parts'])
+                            
+                            # Extract text body
+                            if mime_type == 'text/plain' and 'body' in part and 'data' in part['body']:
+                                body_text += base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+                            
+                            # Extract attachments
+                            if filename and 'body' in part and 'attachmentId' in part['body']:
+                                attachments.append({
+                                    'id': part['body']['attachmentId'],
+                                    'filename': filename,
+                                    'mimeType': mime_type,
+                                    'size': int(part['body'].get('size', 0))
+                                })
+                    
                     if 'parts' in payload:
-                        for part in payload['parts']:
-                            if part['mimeType'] == 'text/plain':
-                                data = part['body'].get('data')
-                                if data:
-                                    body += base64.urlsafe_b64decode(data).decode('utf-8')
-                    elif 'body' in payload:
-                        data = payload['body'].get('data')
-                        if data:
-                            body = base64.urlsafe_b64decode(data).decode('utf-8')
+                        walk_parts(payload['parts'])
+                    elif 'body' in payload and 'data' in payload['body']:
+                         # Single part message
+                         body_text = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8')
                             
                     email_data.append({
                         "id": msg['id'],
@@ -247,7 +482,8 @@ class GoogleGeminiBackend:
                         "sender": sender,
                         "date": date,
                         "snippet": snippet,
-                        "body": body or snippet
+                        "body": body_text or snippet,
+                        "attachments": attachments
                     })
                     
                 except Exception as e:
@@ -265,7 +501,7 @@ class GoogleGeminiBackend:
             logger.error(f"Gmail search failed: {e}")
             return {"error": str(e)}
 
-    def grounded_answer(self, question: str, k: int = 5) -> Dict[str, Any]:
+    def grounded_answer(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate an answer using Gemini with content from Drive files.
         Dispatches to the configured mode (manual or vertex_ai_search).
@@ -274,7 +510,7 @@ class GoogleGeminiBackend:
             return self.grounded_answer_vertex(question)
             
         # Default: Manual Drive API + Gemini
-        return self.grounded_answer_manual(question, k)
+        return self.grounded_answer_manual(question, k, model=model)
 
     def grounded_answer_vertex(self, question: str) -> Dict[str, Any]:
         """
@@ -307,7 +543,7 @@ class GoogleGeminiBackend:
                 )
             )
             
-            model = GenerativeModel("gemini-2.0-flash")
+            model = GenerativeModel(self.model_name.replace("models/", ""))
             response = model.generate_content(
                 question,
                 tools=[vertex_tool]
@@ -337,75 +573,182 @@ class GoogleGeminiBackend:
             logger.error(f"Vertex AI generation failed: {e}")
             return {"error": str(e)}
 
-    def _fetch_context(self, query: str, k: int = 3) -> tuple[str, list[str], list[str]]:
-        """Helper to fetch and format context from Drive and Gmail."""
-        context_parts = []
+    def _fetch_context(self, query: str, k: int = 3) -> tuple[List[Dict[str, Any]], list[str], list[str]]:
+        """
+        Helper to fetch and format context from Drive and Gmail.
+        Returns:
+            - context_parts: List of Gemini API parts (text and inlineData)
+            - sources: List of source URIs
+            - errors: List of error messages
+        """
+        gemini_parts = []
         sources = []
         errors = []
         
+        query_lower = query.lower()
+        search_drive = True
+        search_gmail = True
+        
+        # Simple intent detection
+        if "drive" in query_lower and "gmail" not in query_lower and "email" not in query_lower:
+            search_gmail = False
+        elif ("gmail" in query_lower or "email" in query_lower) and "drive" not in query_lower:
+            search_drive = False
+        
         # 1. Find relevant files in Drive
-        drive_res = self.search(query, top_k=k)
-        if "error" in drive_res:
-            errors.append(f"Drive Error: {drive_res['error']}")
-        else:
-            files = drive_res.get("files", [])
-            logger.info(f"Drive search found {len(files)} files.")
-            for f in files:
-                try:
-                    file_id = f['id']
-                    mime = f['mimeType']
-                    name = f['name']
-                    content = ""
-                    
-                    # Try to extract content based on MIME type
-                    if "application/vnd.google-apps.document" in mime:
-                        content = self.drive_service.files().export(
-                            fileId=file_id, mimeType="text/plain"
-                        ).execute().decode('utf-8')
-                    elif "text/plain" in mime:
-                        content = self.drive_service.files().get_media(
-                            fileId=file_id
-                        ).execute().decode('utf-8')
-                    elif "application/pdf" in mime:
-                        # For now, just note it's a PDF. 
-                        # TODO: Add PDF text extraction (requires pypdf or similar)
-                        content = "[PDF File - Content extraction not yet implemented]"
-                    else:
-                        content = f"[File type {mime} - Content not extracted]"
-                    
-                    # Always add metadata, even if content is empty/missing
-                    context_parts.append(f"File: {name} (ID: {file_id}, Type: {mime})\nContent:\n{content}\n")
-                    sources.append(f"drive://{file_id}")
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to read file {f.get('name')}: {e}")
-                    # Still add the file existence to context
-                    context_parts.append(f"File: {f.get('name')} (ID: {f.get('id')})\n[Error reading content: {str(e)}]\n")
+        if search_drive:
+            drive_res = self.search(query, top_k=k)
+            if "error" in drive_res:
+                errors.append(f"Drive Error: {drive_res['error']}")
+            else:
+                files = drive_res.get("files", [])
+                logger.info(f"Drive search found {len(files)} files.")
+                for f in files:
+                    try:
+                        file_id = f['id']
+                        mime = f['mimeType']
+                        name = f['name']
+                        content = ""
+                        
+                        # Try to extract content based on MIME type
+                        if "application/vnd.google-apps.document" in mime:
+                            content = self.drive_service.files().export(
+                                fileId=file_id, mimeType="text/plain"
+                            ).execute().decode('utf-8')
+                            gemini_parts.append({"text": f"File: {name} (ID: {file_id}, Type: {mime})\nContent:\n{content}\n"})
+                        elif "text/plain" in mime:
+                            content = self.drive_service.files().get_media(
+                                fileId=file_id
+                            ).execute().decode('utf-8')
+                            gemini_parts.append({"text": f"File: {name} (ID: {file_id}, Type: {mime})\nContent:\n{content}\n"})
+                        elif "application/pdf" in mime:
+                            # Download PDF content for Gemini
+                            data = self.drive_service.files().get_media(fileId=file_id).execute()
+                            gemini_parts.append({"text": f"File: {name} (ID: {file_id}, Type: {mime})\n"})
+                            gemini_parts.append({
+                                "inlineData": {
+                                    "mimeType": "application/pdf",
+                                    "data": base64.b64encode(data).decode('utf-8')
+                                }
+                            })
+                            gemini_parts.append({"text": "\n"})
+                        else:
+                            content = f"[File type {mime} - Content not extracted]"
+                            gemini_parts.append({"text": f"File: {name} (ID: {file_id}, Type: {mime})\nContent:\n{content}\n"})
+                        
+                        sources.append(f"drive://{file_id}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to read file {f.get('name')}: {e}")
+                        gemini_parts.append({"text": f"File: {f.get('name')} (ID: {f.get('id')})\n[Error reading content: {str(e)}]\n"})
 
         # 2. Find relevant emails in Gmail
-        gmail_res = self.search_gmail(query, top_k=k)
-        if "error" in gmail_res:
-            errors.append(f"Gmail Error: {gmail_res['error']}")
-        else:
-            emails = gmail_res.get("emails", [])
-            logger.info(f"Gmail search found {len(emails)} emails.")
-            for e in emails:
-                context_parts.append(f"Email: {e['subject']} (from {e['sender']})\nDate: {e['date']}\nContent:\n{e['body']}\n")
-                sources.append(f"gmail://{e['id']}")
+        if search_gmail:
+            gmail_res = self.search_gmail(query, top_k=k)
+            if "error" in gmail_res:
+                errors.append(f"Gmail Error: {gmail_res['error']}")
+            else:
+                emails = gmail_res.get("emails", [])
+                logger.info(f"Gmail search found {len(emails)} emails.")
+                for e in emails:
+                    # Text Part
+                    text_content = f"Email: {e['subject']} (from {e['sender']})\nDate: {e['date']}\nContent:\n{e['body']}\n"
+                    
+                    # Handle Attachments
+                    attachments_text = ""
+                    attachment_parts = []
+                    
+                    if e.get('attachments'):
+                        attachments_text = "\nAttachments:\n"
+                        for att in e['attachments']:
+                            attachments_text += f"- {att['filename']} ({att['mimeType']})\n"
+                            
+                            # Check if supported type and reasonable size (< 10MB)
+                            if att['size'] < 10 * 1024 * 1024:
+                                # PDF and Images (Gemini Native)
+                                if att['mimeType'] in ['application/pdf'] or att['mimeType'].startswith('image/'):
+                                    data = self._download_attachment(e['id'], att['id'])
+                                    if data:
+                                        # Add as inlineData
+                                        attachment_parts.append({
+                                            "inlineData": {
+                                                "mimeType": att['mimeType'],
+                                                "data": base64.b64encode(data).decode('utf-8')
+                                            }
+                                        })
+                                # Text Files
+                                elif att['mimeType'] == 'text/plain':
+                                     data = self._download_attachment(e['id'], att['id'])
+                                     if data:
+                                         try:
+                                             text = data.decode('utf-8')
+                                             attachments_text += f"\n[Content of {att['filename']}]\n{text}\n"
+                                         except:
+                                             pass
+                                # Word Docs
+                                elif att['mimeType'] == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' and HAS_DOCX:
+                                     data = self._download_attachment(e['id'], att['id'])
+                                     if data:
+                                         try:
+                                             doc = docx.Document(io.BytesIO(data))
+                                             text = "\n".join([p.text for p in doc.paragraphs])
+                                             attachments_text += f"\n[Content of {att['filename']}]\n{text}\n"
+                                         except Exception as err:
+                                             logger.warning(f"Failed to parse docx {att['filename']}: {err}")
+                    
+                    gemini_parts.append({"text": text_content + attachments_text})
+                    gemini_parts.extend(attachment_parts)
+                    gemini_parts.append({"text": "\n---\n"})
+                    
+                    sources.append(f"gmail://{e['id']}")
             
-        full_context = "\n---\n".join(context_parts)
-        return full_context, sources, errors
+        return gemini_parts, sources, errors
 
-    def grounded_answer_manual(self, question: str, k: int = 5) -> Dict[str, Any]:
+    def list_models(self) -> List[str]:
+        """List available Gemini models."""
+        if not self.gen_service:
+            return []
+            
+        try:
+            models = self.gen_service.models().list().execute()
+            # Filter for generateContent support and gemini models
+            gemini_models = [
+                m['name'].replace('models/', '') 
+                for m in models.get('models', []) 
+                if 'generateContent' in m.get('supportedGenerationMethods', [])
+                and 'gemini' in m['name']
+            ]
+            
+            # Sort to put newer/pro models first
+            def sort_key(name):
+                score = 0
+                if '1.5' in name: score += 100
+                if 'pro' in name: score += 10
+                if 'flash' in name: score += 5
+                return score
+                
+            return sorted(gemini_models, key=sort_key, reverse=True)
+        except Exception as e:
+            logger.error(f"Failed to list models: {e}")
+            return []
+
+    def grounded_answer_manual(self, question: str, k: int = 5, model: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate an answer using Gemini 1.5 Pro with content from Drive files and Gmail (Manual Mode).
         """
         if not self.gen_service or not self.drive_service:
             return {"error": "Not authenticated"}
 
-        logger.info(f"Generating grounded answer with Gemini for: {question}")
+        target_model = f"models/{model}" if model else self.model_name
+        logger.info(f"Generating grounded answer with {target_model} for: {question}")
         
-        full_context, sources, errors = self._fetch_context(question, k=k)
+        context_parts, sources, errors = self._fetch_context(question, k=k)
+        
+        # Log the context for debugging hallucinations
+        if context_parts:
+            logger.info(f"Context retrieved for generation ({len(context_parts)} parts)")
+        else:
+            logger.info("No context retrieved for generation.")
         
         # Check for API enablement errors to report
         api_error_msg = ""
@@ -418,27 +761,26 @@ class GoogleGeminiBackend:
                 elif "drive" in url: api_name = "Google Drive API"
                 api_error_msg += f"\n\n⚠️ **Action Required**: The {api_name} is not enabled. [Click here to enable it]({url})."
 
-        if not full_context and not api_error_msg:
+        if not context_parts and not api_error_msg:
             return {"answer": "No relevant documents or emails found.", "sources": []}
         
-        if not full_context and api_error_msg:
+        if not context_parts and api_error_msg:
              return {"answer": f"I couldn't search your data because of a missing permission.{api_error_msg}", "sources": []}
 
         # 5. Call Gemini via REST API (v1beta)
-        prompt = f"""
+        system_instruction = """
         You are a helpful assistant with access to the user's Google Drive files and Gmail.
         Answer the following question based ONLY on the provided documents and emails.
-        
-        Context:
-        {full_context}
-        
-        Question: {question}
         """
+        
+        parts = [{"text": system_instruction + "\n\nContext:\n"}]
+        parts.extend(context_parts)
+        parts.append({"text": f"\nQuestion: {question}"})
         
         try:
             body = {
                 "contents": [{
-                    "parts": [{"text": prompt}]
+                    "parts": parts
                 }],
                 "generationConfig": {
                     "temperature": 0.7,
@@ -447,7 +789,7 @@ class GoogleGeminiBackend:
             }
             
             response = self.gen_service.models().generateContent(
-                model="models/gemini-2.0-flash",
+                model=target_model,
                 body=body
             ).execute()
             
@@ -468,30 +810,26 @@ class GoogleGeminiBackend:
             logger.error(f"Gemini generation failed: {e}")
             return {"error": str(e)}
 
-    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def chat(self, messages: List[Dict[str, str]], model: str = None) -> Dict[str, Any]:
         """
         Conversational chat with Gemini 1.5 Pro, with RAG context from Drive/Gmail.
         """
         if not self.gen_service:
             return {"error": "Not authenticated"}
 
-        logger.info("Chat request received")
+        target_model = f"models/{model}" if model else self.model_name
+        logger.info(f"Chat request received (model={target_model})")
         
         # 1. Get the latest user message to use as a search query
         last_user_msg = next((m for m in reversed(messages) if m["role"] == "user"), None)
         query = last_user_msg["content"] if last_user_msg else ""
         
-        context_str = ""
+        context_parts = []
         api_error_msg = ""
         
         if query:
-            # We use a smaller k for chat to avoid overwhelming context
-            full_context, _, errors = self._fetch_context(query, k=3)
-            
-            if full_context:
-                context_str = f"\n\nRelevant Context from Drive/Gmail:\n{full_context}"
-            else:
-                context_str = f"\n\n[System Note: A search of the user's Google Drive and Gmail for '{query}' returned no results.]"
+            # We use a larger k for chat since Gemini 1.5 has a large context window
+            context_parts, _, errors = self._fetch_context(query, k=10)
             
             for err in errors:
                 match = re.search(r'(https://console\.developers\.google\.com/apis/api/[^/]+/overview\?project=\d+)', err)
@@ -503,7 +841,7 @@ class GoogleGeminiBackend:
                     api_error_msg += f"\n\n⚠️ **Action Required**: The {api_name} is not enabled. [Click here to enable it]({url})."
 
         # If we have no context and a critical error, return early
-        if not context_str and api_error_msg:
+        if not context_parts and api_error_msg:
              return {
                  "role": "assistant",
                  "content": f"I couldn't search your data because of a missing permission.{api_error_msg}"
@@ -515,13 +853,20 @@ class GoogleGeminiBackend:
             if m["role"] == "assistant":
                 role = "model"
             
-            text = m["content"]
-            
             # Inject context into the LAST user message
-            if i == len(messages) - 1 and role == "user" and context_str:
-                text += context_str
+            parts = [{"text": m["content"]}]
+            
+            if i == len(messages) - 1 and role == "user":
+                if context_parts:
+                    new_parts = [{"text": "Relevant Context from Drive/Gmail:\n"}]
+                    new_parts.extend(context_parts)
+                    new_parts.append({"text": "\n\nUser Query: " + m["content"]})
+                    parts = new_parts
+                else:
+                    # Explicitly tell the model we found nothing
+                    parts = [{"text": f"System Note: The RAG system searched for '{query}' but found no relevant documents or emails.\n\nUser Query: {m['content']}"}]
                 
-            contents.append({"role": role, "parts": [{"text": text}]})
+            contents.append({"role": role, "parts": parts})
 
         try:
             body = {
@@ -536,7 +881,7 @@ class GoogleGeminiBackend:
             }
             
             response = self.gen_service.models().generateContent(
-                model="models/gemini-2.0-flash",
+                model=target_model,
                 body=body
             ).execute()
             
