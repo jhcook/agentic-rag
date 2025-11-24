@@ -29,8 +29,8 @@ class RAGBackend(Protocol):
         """Save the document store to disk."""
         ...
 
-    def list_documents(self) -> List[str]:
-        """List all indexed document URIs."""
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all indexed documents with metadata (uri, size, etc)."""
         ...
 
     def rebuild_index(self) -> None:

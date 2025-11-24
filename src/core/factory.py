@@ -101,11 +101,11 @@ class LocalBackend:
         local_core.save_store()
         return True
 
-    def list_documents(self) -> List[str]:
-        """List all document URIs."""
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all documents with metadata."""
         self._check_core()
         store = local_core.get_store()
-        return list(store.docs.keys())
+        return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
@@ -228,12 +228,13 @@ class RemoteBackend:
         """Save the document store."""
         return True
 
-    def list_documents(self) -> List[str]:
-        """List all document URIs."""
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all documents with metadata."""
         resp = requests.get(f"{self.base_url}/documents", timeout=self.timeout)
         resp.raise_for_status()
         data = resp.json()
-        return [doc["uri"] for doc in data.get("documents", [])]
+        # Map API response (size_bytes) to internal format (size)
+        return [{"uri": doc["uri"], "size": doc.get("size_bytes", 0)} for doc in data.get("documents", [])]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
@@ -419,8 +420,8 @@ class HybridBackend:
         """Save the document store."""
         return self._backend.save_store()
 
-    def list_documents(self) -> List[str]:
-        """List all document URIs."""
+    def list_documents(self) -> List[Dict[str, Any]]:
+        """List all documents with metadata."""
         return self._backend.list_documents()
 
     def rebuild_index(self) -> None:

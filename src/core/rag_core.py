@@ -125,7 +125,7 @@ def get_embedder() -> Optional[SentenceTransformer]:
     return _get_embedder(EMBED_MODEL_NAME, DEBUG_MODE, logger)
 
 
-def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, str]], int]:
+def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, int, int]], int]:
     """Get FAISS-related globals, initializing them lazily if needed."""
     embedder = get_embedder()
     embed_dim = 384
@@ -263,23 +263,34 @@ def save_store():
         raise
 
 
-def _chunk_text(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
-    """Chunk text into pieces of max_chars with overlap."""
-    out: List[str] = []
+def _chunk_text_with_offsets(text: str, max_chars: int = 800, overlap: int = 120) -> List[Tuple[str, int, int]]:
+    """Chunk text into pieces of max_chars with overlap, returning (text, start, end)."""
+    out: List[Tuple[str, int, int]] = []
     i = 0
     n = len(text)
     while i < n:
         j = min(n, i + max_chars)
-        out.append(text[i:j])
+        out.append((text[i:j], i, j))
         i += max_chars - overlap
         if i >= n:
             break
     return out
 
+def _chunk_text(text: str, max_chars: int = 800, overlap: int = 120) -> List[str]:
+    """Chunk text into pieces of max_chars with overlap."""
+    return [c[0] for c in _chunk_text_with_offsets(text, max_chars, overlap)]
+
+def _chunk_document_with_offsets(text: str, uri: str) -> Tuple[List[str], List[str], List[Tuple[int, int]]]:
+    """Chunk a single document and return chunks, uris, and offsets."""
+    chunks_with_offsets = _chunk_text_with_offsets(text)
+    chunks = [c[0] for c in chunks_with_offsets]
+    offsets = [(c[1], c[2]) for c in chunks_with_offsets]
+    return chunks, [uri] * len(chunks), offsets
+
 def _chunk_document(text: str, uri: str) -> Tuple[List[str], List[str]]:
     """Chunk a single document and return chunks with metadata."""
-    chunks = _chunk_text(text)
-    return chunks, [uri] * len(chunks)
+    chunks, uris, _ = _chunk_document_with_offsets(text, uri)
+    return chunks, uris
 
 
 def _should_skip_uri(uri: str) -> bool:
@@ -334,7 +345,7 @@ def _rebuild_faiss_index():
             if not text or not text.strip():
                 logger.warning("Document %s is empty, skipping", uri)
                 continue
-            chunks, metadata = _chunk_document(text, uri)
+            chunks, uris, offsets = _chunk_document_with_offsets(text, uri)
             logger.info("Created %d chunks from %s", len(chunks), uri)
 
             if not chunks:
@@ -344,7 +355,8 @@ def _rebuild_faiss_index():
             # Process chunks from this document in small batches
             for i in range(0, len(chunks), batch_size):
                 batch_chunks = chunks[i:i+batch_size]
-                batch_meta = metadata[i:i+batch_size]
+                batch_uris = uris[i:i+batch_size]
+                batch_offsets = offsets[i:i+batch_size]
 
                 if embedder is None:
                     logger.error("Embedder is None, cannot create embeddings")
@@ -370,13 +382,13 @@ def _rebuild_faiss_index():
                     index.add(embeddings_array)  # type: ignore
 
                     current_index = index.ntotal - len(batch_chunks)  # type: ignore
-                    for idx, (chunk_uri, chunk) in enumerate(zip(batch_meta, batch_chunks)):
-                        index_to_meta[current_index + idx] = (chunk_uri, chunk)
+                    for idx, (chunk_uri, (start, end)) in enumerate(zip(batch_uris, batch_offsets)):
+                        index_to_meta[current_index + idx] = (chunk_uri, start, end)
 
                 total_vectors += len(batch_chunks)
 
                 # Force garbage collection after each batch
-                del embeddings, embeddings_array, batch_chunks, batch_meta
+                del embeddings, embeddings_array, batch_chunks, batch_uris, batch_offsets
                 gc.collect()
 
         if index is not None:
@@ -424,6 +436,11 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
     """Upsert a single document into the store."""
     global _STORE
 
+    # Safety check for huge documents
+    if len(text) > 5_000_000:  # 5MB text limit
+        logger.warning(f"Document {uri} too large ({len(text)} chars), truncating.")
+        text = text[:5_000_000]
+
     if _should_skip_uri(uri):
         logger.warning("Skipping hidden/system file: %s", uri)
         return {"skipped": True, "reason": "hidden/system file", "uri": uri}
@@ -445,13 +462,16 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         return {"upserted": True, "existed": existed}
 
     base_index = index.ntotal if index is not None else 0  # type: ignore
-    chunks = list(_chunk_text(text))
+    chunks_with_offsets = _chunk_text_with_offsets(text)
+    chunks = [c[0] for c in chunks_with_offsets]
+    offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
     if embedder is not None and index is not None:
         # Process in batches to control memory
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i:i+batch_size]
+            batch_offsets = offsets[i:i+batch_size]
             embeddings = _encode_with_metrics(
                 embedder,
                 batch_chunks,
@@ -467,8 +487,8 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
             index.add(embeddings)
 
             # Update metadata for each chunk in batch
-            for j, chunk in enumerate(batch_chunks):
-                index_to_meta[base_index + i + j] = (uri, chunk)
+            for j, (start, end) in enumerate(batch_offsets):
+                index_to_meta[base_index + i + j] = (uri, start, end)
 
             # Explicit cleanup
             del embeddings, batch_chunks
@@ -528,12 +548,15 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
 
     if not DEBUG_MODE and embedder is not None and index is not None:
         base_index = index.ntotal  # type: ignore
-        chunks = list(_chunk_text(text))
+        chunks_with_offsets = _chunk_text_with_offsets(text)
+        chunks = [c[0] for c in chunks_with_offsets]
+        offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
         # Process in batches to control memory
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
             batch_chunks = chunks[i:i+batch_size]
+            batch_offsets = offsets[i:i+batch_size]
             embeddings = _encode_with_metrics(
                 embedder,
                 batch_chunks,
@@ -549,8 +572,8 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
             index.add(embeddings)
 
             # Update metadata for each chunk in batch
-            for j, chunk in enumerate(batch_chunks):
-                index_to_meta[base_index + i + j] = (str(file_path), chunk)
+            for j, (start, end) in enumerate(batch_offsets):
+                index_to_meta[base_index + i + j] = (str(file_path), start, end)
 
             # Explicit cleanup
             del embeddings, batch_chunks
@@ -561,12 +584,13 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
     return text
 
 
-def index_path(path: str, glob: str = "**/*.txt", progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+def index_path(path: str, glob: str = "**/*.txt", max_files: int = 1000, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
     """Index all text files in a given path matching the glob pattern.
     
     Args:
         path: Directory path to index
         glob: File pattern to match
+        max_files: Maximum number of files to index (safety limit)
         progress_callback: Optional callback(current, total) called during indexing
     """
     index, index_to_meta, _ = get_faiss_globals()
@@ -590,6 +614,11 @@ def index_path(path: str, glob: str = "**/*.txt", progress_callback: Optional[Ca
             "total_vectors": index.ntotal if index is not None else 0,  # type: ignore
             "error": message,
         }
+
+    # Enforce file limit
+    if len(files) > max_files:
+        logger.warning(f"Found {len(files)} files, truncating to {max_files} to prevent resource exhaustion.")
+        files = files[:max_files]
 
     total_files = len(files)
     texts = []
@@ -678,9 +707,15 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
     scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore
 
     hits = []
+    store = get_store()
     for score, idx in zip(scores[0], indices[0]):
         if idx in index_to_meta:
-            uri, text = index_to_meta[idx]
+            uri, start, end = index_to_meta[idx]
+            full_text = store.docs.get(uri, "")
+            if len(full_text) >= end:
+                text = full_text[start:end]
+            else:
+                text = full_text[start:] # Fallback
             hits.append({"score": float(score), "uri": uri, "text": text})
 
     return hits

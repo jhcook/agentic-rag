@@ -166,6 +166,18 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     logger.info("REST server startup complete (host=%s port=%s base=/api)", 
                 os.getenv("RAG_HOST", "127.0.0.1"), os.getenv("RAG_PORT", "8001"))
+    
+    # Start background store load to prevent first-query latency
+    def _warmup():
+        try:
+            logger.info("Starting background store warmup...")
+            backend.load_store()
+            logger.info("Background store warmup complete")
+        except Exception as e:
+            logger.error(f"Background warmup failed: {e}")
+
+    threading.Thread(target=_warmup, daemon=True).start()
+
     yield
     logger.info("REST server shutting down")
     try:
@@ -363,6 +375,7 @@ def _get_memory_limit_mb() -> int:
         return int(_get_system_memory_mb() * 0.75)
 
 REST_MAX_MEMORY_MB = _get_memory_limit_mb()
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit for upserts
 
 def _get_memory_usage_mb() -> float:
     """Return current process RSS in megabytes."""
@@ -459,8 +472,22 @@ def api_upsert(req: UpsertReq):
     try:
         if not req.text and not req.binary_base64:
             return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
+        
+        # Enforce size limits
+        payload_size = len(req.text) if req.text else 0
+        if req.binary_base64:
+            payload_size += len(req.binary_base64)
+            
+        if payload_size > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"Payload too large ({payload_size} bytes). Limit is {MAX_UPLOAD_SIZE_BYTES} bytes."
+            )
+
         # Proxy to MCP worker which creates jobs for progress tracking
         return _proxy_to_mcp("POST", "/rest/upsert_document", {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error upserting document {req.uri}: {e}")
         raise
@@ -623,12 +650,8 @@ def api_health():
 def api_documents():
     """List indexed document URIs and their approximate text size (bytes)."""
     try:
-        uris = backend.list_documents()
-        # RAGBackend.list_documents returns list[str], but DocumentsResp expects list[DocumentInfo]
-        # We need to fetch size info. LocalBackend.list_documents only returns keys.
-        # We might need to update list_documents to return more info or fetch it here.
-        # For now, return 0 size.
-        return {"documents": [{"uri": uri, "size_bytes": 0} for uri in uris]}
+        docs = backend.list_documents()
+        return {"documents": [{"uri": d["uri"], "size_bytes": d.get("size", 0)} for d in docs]}
     except HTTPException as exc:
         logger.error("documents list failed: %s", exc.detail)
         raise
@@ -760,7 +783,7 @@ def auth_login(request: Request):
         return response
     except Exception as e:
         logger.error(f"Error initiating auth: {e}")
-        # If client_secrets.json is missing, redirect to setup page
+        # If secrets/client_secrets.json is missing, redirect to setup page
         if "Client secrets file not found" in str(e) or "No such file" in str(e):
              return RedirectResponse(url=request.url_for('auth_setup'))
         raise HTTPException(status_code=500, detail=str(e))
@@ -821,7 +844,7 @@ def auth_setup(request: Request):
 
 @app.post(f"/{pth}/auth/setup")
 def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
-    """Save the provided credentials to client_secrets.json."""
+    """Save the provided credentials to secrets/client_secrets.json."""
     import json
     
     # Basic validation
@@ -844,7 +867,8 @@ def auth_setup_post(request: Request, client_id: str = Form(...), client_secret:
     }
     
     try:
-        with open("client_secrets.json", "w") as f:
+        os.makedirs("secrets", exist_ok=True)
+        with open("secrets/client_secrets.json", "w") as f:
             json.dump(secrets, f, indent=2)
             
         # Redirect back to login to start the flow

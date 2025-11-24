@@ -88,16 +88,28 @@ class GoogleGeminiBackend:
             return
 
         # Initialize Drive Service
-        self.drive_service = build('drive', 'v3', credentials=self.creds)
+        try:
+            self.drive_service = build('drive', 'v3', credentials=self.creds)
+        except Exception as e:
+            logger.warning(f"Failed to initialize Drive service (offline?): {e}")
+            self.drive_service = None
         
         # Initialize Gmail Service
-        self.gmail_service = build('gmail', 'v1', credentials=self.creds)
+        try:
+            self.gmail_service = build('gmail', 'v1', credentials=self.creds)
+        except Exception as e:
+            logger.warning(f"Failed to initialize Gmail service (offline?): {e}")
+            self.gmail_service = None
 
         # Initialize Gemini (Generative Language API)
         # Note: google-generativeai SDK primarily uses API keys. 
         # For OAuth, we use the lower-level googleapiclient or configure genai if supported.
         # Here we use googleapiclient for the model to ensure OAuth compliance.
-        self.gen_service = build('generativelanguage', 'v1beta', credentials=self.creds, static_discovery=False)
+        try:
+            self.gen_service = build('generativelanguage', 'v1beta', credentials=self.creds, static_discovery=False)
+        except Exception as e:
+            logger.warning(f"Failed to initialize Gemini service (offline?): {e}")
+            self.gen_service = None
         
         # Initialize Vertex AI if configured
         if self.mode == "vertex_ai_search":
@@ -1027,7 +1039,7 @@ class GoogleGeminiBackend:
     def save_store(self) -> bool:
         return True
 
-    def list_documents(self) -> List[str]:
+    def list_documents(self) -> List[Dict[str, Any]]:
         # Would list files in the specific Drive folder
         return []
 
@@ -1049,8 +1061,13 @@ class GoogleGeminiBackend:
         return {"status": "ok"}
 
     def get_stats(self) -> Dict[str, Any]:
+        status = "ok"
+        if not self.gen_service or not self.drive_service:
+            status = "warning"
+
         return {
-            "status": "ok",
+            "status": status,
             "backend": "google-gemini",
-            "model": "gemini-1.5-pro"
+            "model": "gemini-1.5-pro",
+            "offline_mode": status == "warning"
         }

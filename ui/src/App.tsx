@@ -73,7 +73,7 @@ type IndexJob = {
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
-  const [systemStatus, setSystemStatus] = useState<'running' | 'stopped' | 'error'>('stopped')
+  const [systemStatus, setSystemStatus] = useState<'running' | 'stopped' | 'error' | 'warning'>('stopped')
   const [backendDocs, setBackendDocs] = useState<number | null>(null)
   const [backendSize, setBackendSize] = useState<number | null>(null)
   const [backendDocumentList, setBackendDocumentList] = useState<IndexedItem[]>([])
@@ -789,7 +789,11 @@ function App() {
         if (typeof data?.total_size_bytes === 'number') {
           setBackendSize(data.total_size_bytes)
         }
-        setSystemStatus('running')
+        if (data?.status === 'warning') {
+          setSystemStatus('warning')
+        } else {
+          setSystemStatus('running')
+        }
       } catch (error) {
         // Only mark error if not manually stopped
         setBackendDocs(null)
@@ -885,11 +889,12 @@ function App() {
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">System:</span>
                 <Badge 
-                  variant={systemStatus === 'running' ? 'default' : systemStatus === 'error' ? 'destructive' : 'secondary'}
-                  className="gap-1"
+                  variant={systemStatus === 'running' ? 'default' : systemStatus === 'error' ? 'destructive' : systemStatus === 'warning' ? 'secondary' : 'secondary'}
+                  className={`gap-1 ${systemStatus === 'warning' ? 'bg-yellow-500/15 text-yellow-600 hover:bg-yellow-500/25 border-yellow-500/50' : ''}`}
                 >
                   {systemStatus === 'running' && <CheckCircle className="h-3 w-3" />}
                   {systemStatus === 'error' && <WarningCircle className="h-3 w-3" />}
+                  {systemStatus === 'warning' && <WarningCircle className="h-3 w-3" />}
                   {systemStatus === 'stopped' && <Pause className="h-3 w-3" />}
                   {systemStatus.charAt(0).toUpperCase() + systemStatus.slice(1)}
                 </Badge>

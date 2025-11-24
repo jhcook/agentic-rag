@@ -33,8 +33,8 @@ class GoogleAuthManager:
     """Manages Google OAuth2 authentication flow."""
 
     def __init__(self,
-                 secrets_path: str = "client_secrets.json",
-                 token_path: str = "token.json"):
+                 secrets_path: str = "secrets/client_secrets.json",
+                 token_path: str = "secrets/token.json"):
         """Initialize the authentication manager."""
         self.secrets_path = secrets_path
         self.token_path = token_path
