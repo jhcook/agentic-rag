@@ -222,6 +222,10 @@ export function ChatInterface({
     URL.revokeObjectURL(url)
   }
 
+  const deleteMessage = (index: number) => {
+    setMessages(prev => prev.filter((_, i) => i !== index))
+  }
+
   return (
     <div className="flex flex-col h-[600px] border rounded-lg bg-background">
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
@@ -258,20 +262,32 @@ export function ChatInterface({
             </div>
           )}
           {messages.map((m, i) => (
-            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
               {m.role === 'assistant' && (
                 <Avatar className="h-8 w-8">
                   <AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback>
                 </Avatar>
               )}
+              
+              {m.role === 'user' && (
+                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => deleteMessage(i)} title="Delete message">
+                        <Trash className="h-3 w-3" />
+                    </Button>
+                 </div>
+              )}
+
               <div className={`max-w-[80%] rounded-lg p-3 ${
                 m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
               }`}>
                 <MarkdownRenderer content={m.displayContent || m.content} />
                 {m.role === 'assistant' && (
-                  <div className="mt-2 flex justify-end">
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(m.content)}>
+                  <div className="mt-2 flex justify-end gap-1">
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(m.content)} title="Download response">
                       <Download className="h-3 w-3" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 hover:text-destructive" onClick={() => deleteMessage(i)} title="Delete message">
+                      <Trash className="h-3 w-3" />
                     </Button>
                   </div>
                 )}

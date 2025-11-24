@@ -190,47 +190,46 @@ function App() {
 
   // Update active conversation when messages change
   useEffect(() => {
-    if (chatMessages.length > 0) {
-      if (activeConversationId) {
-        // Update existing conversation
-        setConversations(prev => {
-          const existing = prev.find(c => c.id === activeConversationId)
-          if (existing) {
-            return prev.map(conv => {
-              if (conv.id === activeConversationId) {
-                return {
-                  ...conv,
-                  messages: chatMessages,
-                  updatedAt: Date.now()
-                }
+    if (activeConversationId) {
+      // Update existing conversation
+      setConversations(prev => {
+        const existing = prev.find(c => c.id === activeConversationId)
+        if (existing) {
+          return prev.map(conv => {
+            if (conv.id === activeConversationId) {
+              return {
+                ...conv,
+                messages: chatMessages,
+                updatedAt: Date.now()
               }
-              return conv
-            })
-          } else {
-            // Create new conversation with existing ID
-            const newConv: Conversation = {
-              id: activeConversationId,
-              title: 'New Conversation',
-              messages: chatMessages,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
             }
-            return [newConv, ...prev]
+            return conv
+          })
+        } else if (chatMessages.length > 0) {
+          // Create new conversation with existing ID if it doesn't exist but we have messages
+          const newConv: Conversation = {
+            id: activeConversationId,
+            title: 'New Conversation',
+            messages: chatMessages,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
           }
-        })
-      } else {
-        // No active conversation but messages exist - create one
-        const newId = crypto.randomUUID()
-        const newConv: Conversation = {
-          id: newId,
-          title: 'New Conversation',
-          messages: chatMessages,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
+          return [newConv, ...prev]
         }
-        setConversations(prev => [newConv, ...prev])
-        setActiveConversationId(newId)
+        return prev
+      })
+    } else if (chatMessages.length > 0) {
+      // No active conversation but messages exist - create one
+      const newId = crypto.randomUUID()
+      const newConv: Conversation = {
+        id: newId,
+        title: 'New Conversation',
+        messages: chatMessages,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
       }
+      setConversations(prev => [newConv, ...prev])
+      setActiveConversationId(newId)
     }
   }, [chatMessages, activeConversationId])
 
