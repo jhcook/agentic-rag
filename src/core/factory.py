@@ -2,7 +2,9 @@
 import logging
 import os
 import pathlib
-from typing import Dict, Any, Optional, List
+import inspect
+import json
+from typing import Dict, Any, List
 
 import psutil
 import requests
@@ -10,10 +12,10 @@ import requests
 from src.core.interfaces import RAGBackend
 
 # Initialize optional modules to None
-local_core = None
-_extract_text_from_file = None
+local_core = None  # pylint: disable=invalid-name
+_extract_text_from_file = None  # pylint: disable=invalid-name
 DB_PATH = None
-GoogleGeminiBackend = None
+GoogleGeminiBackend = None  # pylint: disable=invalid-name
 
 # Import local implementation
 try:
@@ -79,7 +81,7 @@ class LocalBackend:
                     local_core.upsert_document(str(file_path), content)
                     indexed += 1
                     indexed_uris.append(str(file_path))
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to index %s: %s", file_path, exc)
 
         return {"indexed": indexed, "uris": indexed_uris}
@@ -158,10 +160,10 @@ class LocalBackend:
         index, _, _ = local_core.get_faiss_globals()
         docs = len(getattr(store, "docs", {}))
         vectors = index.ntotal if index is not None else 0
-        
+
         # Calculate total size of indexed text
         total_size_bytes = sum(len(text.encode('utf-8')) for text in store.docs.values())
-        
+
         # Get store file size
         store_file_bytes = 0
         if local_core.DB_PATH and os.path.exists(local_core.DB_PATH):
@@ -249,11 +251,11 @@ class RemoteBackend:
         resp.raise_for_status()
         data = resp.json()
         # Map API response (size_bytes) to internal format (size)
-        return [{"uri": doc["uri"], "size": doc.get("size_bytes", 0)} for doc in data.get("documents", [])]
+        return [{"uri": doc["uri"], "size": doc.get("size_bytes", 0)}
+                for doc in data.get("documents", [])]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
-        pass
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages by relevance."""
@@ -309,7 +311,7 @@ class RemoteBackend:
         resp.raise_for_status()
         return resp.json()
 
-class HybridBackend:
+class HybridBackend:  # pylint: disable=too-many-public-methods
     """
     A backend that wraps multiple implementations and allows switching between them.
     """
@@ -324,7 +326,7 @@ class HybridBackend:
             try:
                 self.backends["local"] = LocalBackend()
                 logger.info("HybridBackend: LocalBackend initialized")
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.error("HybridBackend: Failed to init LocalBackend: %s", exc)
 
         # Initialize Google
@@ -332,7 +334,7 @@ class HybridBackend:
             try:
                 self.backends["google"] = GoogleGeminiBackend()
                 logger.info("HybridBackend: GoogleGeminiBackend initialized")
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.error(
                     "HybridBackend: Failed to init GoogleGeminiBackend: %s", exc)
 
@@ -421,17 +423,16 @@ class HybridBackend:
         if hasattr(self._backend, "grounded_answer"):
             # Check if backend.grounded_answer accepts kwargs or specific args
             # For now, we assume updated backends accept kwargs or we inspect
-            import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.grounded_answer)
-            
+
             # If backend accepts kwargs, pass everything
             if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                 return self._backend.grounded_answer(question, k, **kwargs)
-                
+
             # Otherwise, filter kwargs to what is accepted
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
             return self._backend.grounded_answer(question, k, **filtered_kwargs)
-            
+
         return {"error": "Grounded answer not supported"}
 
     def load_store(self) -> bool:
@@ -479,21 +480,19 @@ class HybridBackend:
         if hasattr(self._backend, "list_models"):
             return self._backend.list_models()
         return []
-
     def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Chat with the backend."""
         if hasattr(self._backend, "chat"):
-            import inspect  # pylint: disable=import-outside-toplevel
             sig = inspect.signature(self._backend.chat)
-            
+
             # If backend accepts kwargs, pass everything
             if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                 return self._backend.chat(messages, **kwargs)
-                
+
             # Otherwise, filter kwargs to what is accepted
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
             return self._backend.chat(messages, **filtered_kwargs)
-            
+
         return {"error": "Chat not supported by current backend"}
 
     def list_drive_files(self, folder_id: str = None) -> List[Dict[str, Any]]:
@@ -506,7 +505,6 @@ class HybridBackend:
                     mime_type: str, folder_id: str = None) -> Dict[str, Any]:
         """Upload a file."""
         if hasattr(self._backend, "upload_file"):
-            import inspect
             sig = inspect.signature(self._backend.upload_file)
             if "folder_id" in sig.parameters:
                 return self._backend.upload_file(name, content, mime_type, folder_id)
@@ -535,19 +533,19 @@ def get_rag_backend() -> RAGBackend:
     """Factory to get the configured backend."""
     # Check environment variable first
     mode = os.getenv("RAG_MODE", "").lower()
-
     # If not set in env, check settings.json
     if not mode:
         try:
-            config_path = pathlib.Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+            config_path = (pathlib.Path(__file__).resolve().parent.parent.parent /
+                           "config" / "settings.json")
             if config_path.exists():
-                import json
-                with open(config_path, "r") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                     mode = config.get("ragMode", "").lower()
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to read settings.json: %s", exc)
 
+    # Default to local if still not set
     # Default to local if still not set
     if not mode:
         mode = "local"

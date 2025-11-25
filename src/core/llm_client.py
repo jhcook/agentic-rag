@@ -4,10 +4,11 @@ LLM Client module with concurrency control and error handling.
 import os
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional, Union
-import time
+import threading
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
+from ollama import AsyncClient  # type: ignore
 
 # Load .env early
 load_dotenv()
@@ -29,8 +30,6 @@ except ImportError:
     Timeout = Exception
     OllamaError = Exception
 
-from ollama import AsyncClient  # type: ignore
-
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
@@ -40,8 +39,6 @@ ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "300"))
 LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "1"))
-
-import threading
 
 # Global semaphore for concurrency control
 _LLM_SEMAPHORE = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
@@ -79,7 +76,7 @@ async def safe_completion(
 
     # Handle model override
     model = kwargs.pop("model", LLM_MODEL_NAME)
-    
+
     # Handle other overrides or defaults
     api_base = kwargs.pop("api_base", OLLAMA_API_BASE)
     temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
@@ -90,7 +87,7 @@ async def safe_completion(
         try:
             # Run blocking completion in a thread to avoid blocking the event loop
             loop = asyncio.get_running_loop()
-            
+
             def _call():
                 return completion(
                     model=model,
@@ -101,13 +98,13 @@ async def safe_completion(
                     stream=stream,
                     **kwargs
                 )
-            
+
             return await loop.run_in_executor(None, _call)
 
         except (ValueError, OllamaError, APIConnectionError, Timeout) as exc:
             logger.error("LLM Completion Error: %s", exc)
             raise
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Unexpected error in LLM completion: %s", exc)
             raise
 
@@ -123,14 +120,14 @@ async def safe_chat(
     """
     async with _LLM_SEMAPHORE:
         client = AsyncClient(host=OLLAMA_API_BASE)
-        
+
         if messages is None:
             if query is None:
                 raise ValueError("Either 'messages' or 'query' must be provided")
             messages = [{"content": str(text), "role": "user"} for text in query]
-            
+
         target_model = model or ASYNC_LLM_MODEL_NAME
-        
+
         try:
             resp = await client.chat(
                 model=target_model,
@@ -138,7 +135,7 @@ async def safe_chat(
                 **kwargs
             )
             return resp
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Async LLM Chat Error: %s", exc)
             raise
 
@@ -157,10 +154,10 @@ def sync_completion(
     if system_prompt:
         if not (messages and messages[0].get("role") == "system"):
             messages = [{"role": "system", "content": system_prompt}] + messages
-    
+
     # Handle model override
     model = kwargs.pop("model", LLM_MODEL_NAME)
-    
+
     # Handle other overrides or defaults
     api_base = kwargs.pop("api_base", OLLAMA_API_BASE)
     temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
@@ -182,6 +179,6 @@ def sync_completion(
         except (ValueError, OllamaError, APIConnectionError, Timeout) as exc:
             logger.error("LLM Completion Error: %s", exc)
             raise
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Unexpected error in LLM completion: %s", exc)
             raise

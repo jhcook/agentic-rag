@@ -11,10 +11,9 @@ import hashlib
 import time
 import asyncio
 import gc
-import zipfile
-import io
 
-from typing import List, Dict, Any, Optional, Tuple, Union, Callable
+from typing import List, Dict, Any, Optional, Tuple, Callable
+from dataclasses import dataclass, field
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
@@ -28,36 +27,18 @@ from src.core.faiss_index import (
     get_rebuild_lock,
 )
 from src.core.extractors import _extract_text_from_file
-from src.core.extractors import _extract_text_from_file
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
 
 # Optional dependencies
 try:
-    import requests
-except ImportError:
-    requests = None
-
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-
-try:
-    from docx import Document
-except ImportError:
-    Document = None
-
-try:
     from tqdm import tqdm
 except ImportError:
-    tqdm = lambda x, **kwargs: x  # type: ignore
-
-try:
-    from bs4 import BeautifulSoup
-except ImportError:
-    BeautifulSoup = None
+    def _tqdm_dummy(iterable=None, **_kwargs):  # type: ignore
+        """Dummy tqdm for when tqdm is not installed."""
+        return iterable
+    tqdm = _tqdm_dummy
 
 try:
     from litellm import completion  # type: ignore
@@ -70,7 +51,7 @@ except ImportError:
 
 # Enable debug logging if available
 try:
-    import litellm  # type: ignore
+    import litellm  # pylint: disable=unused-import
     os.environ['LITELLM_LOG'] = 'DEBUG'
 except (ImportError, AttributeError):
     pass
@@ -91,12 +72,15 @@ if not logging.getLogger().handlers:
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
-EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "sentence-transformers/paraphrase-MiniLM-L3-v2")
+EMBED_MODEL_NAME = os.getenv(
+    "EMBED_MODEL_NAME",
+    "sentence-transformers/paraphrase-MiniLM-L3-v2"
+)
 DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
 OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))  # Low temperature for consistent, grounded responses
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))
@@ -104,11 +88,21 @@ SEARCH_MAX_CONTEXT_CHARS = int(os.getenv("SEARCH_MAX_CONTEXT_CHARS", "8000"))
 EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
 
 # Lazy-initialized global state
-_STORE: Optional['Store'] = None
+_STORE: Optional['Store'] = None  # pylint: disable=invalid-name
 
 # Embedding metrics (shared by servers)
-EMBEDDING_REQUESTS = Counter("embedding_requests_total", "Embedding encode invocations.", ["stage"]) if Counter else None
-EMBEDDING_ERRORS = Counter("embedding_errors_total", "Embedding encode failures.", ["stage"]) if Counter else None
+EMBEDDING_REQUESTS = Counter(
+    "embedding_requests_total",
+    "Embedding encode invocations.",
+    ["stage"]
+) if Counter else None
+
+EMBEDDING_ERRORS = Counter(
+    "embedding_errors_total",
+    "Embedding encode failures.",
+    ["stage"]
+) if Counter else None
+
 EMBEDDING_DURATION = Histogram(
     "embedding_duration_seconds",
     "Time spent in embedding encode calls.",
@@ -132,12 +126,13 @@ def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, int, int]], int]:
     if embedder is not None and not DEBUG_MODE:
         try:
             embed_dim = embedder.get_sentence_embedding_dimension()
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             embed_dim = 384
     if EMBED_DIM_OVERRIDE:
         if embedder is not None and not DEBUG_MODE and embed_dim != EMBED_DIM_OVERRIDE:
             logger.warning(
-                "EMBED_DIM_OVERRIDE=%s does not match embedder dimension %s; using embedder dimension",
+                "EMBED_DIM_OVERRIDE=%s does not match embedder dimension %s; "
+                "using embedder dimension",
                 EMBED_DIM_OVERRIDE,
                 embed_dim,
             )
@@ -145,8 +140,6 @@ def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, int, int]], int]:
             embed_dim = EMBED_DIM_OVERRIDE
     return _get_faiss_globals(embed_dim, DEBUG_MODE, logger)
 
-
-from dataclasses import dataclass, field
 
 # -------- In-memory store --------
 @dataclass
@@ -156,10 +149,12 @@ class Store:
     last_loaded: float = 0.0
 
     def add(self, uri: str, text: str) -> None:
+        """Add a document to the store."""
         self.docs[uri] = text
 
 
-def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any, stage: str, **kwargs):
+def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any,
+                         stage: str, **kwargs):
     """Wrap embedder.encode to record metrics when available."""
     if embedder is None:  # Defensive: should already be handled by callers
         raise RuntimeError("Embedding model is not initialized.")
@@ -171,7 +166,8 @@ def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any, s
     try:
         result = embedder.encode(inputs, **kwargs)
         if EMBEDDING_DURATION:
-            EMBEDDING_DURATION.labels(stage=stage).observe(time.perf_counter() - start)
+            EMBEDDING_DURATION.labels(stage=stage).observe(
+                time.perf_counter() - start)
         return result
     except Exception:
         if EMBEDDING_ERRORS:
@@ -180,7 +176,7 @@ def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any, s
 
 
 def _ensure_store_synced():
-    """Ensure the store is synchronized with disk if modified externally."""
+    """Check and reload store if modified on disk."""
     if not os.path.exists(DB_PATH):
         return
 
@@ -198,7 +194,7 @@ def _ensure_store_synced():
 
 def get_store() -> Store:
     """Return the global Store instance, creating it if necessary."""
-    global _STORE
+    global _STORE  # pylint: disable=global-statement
     if _STORE is None:
         _STORE = Store()
         try:
@@ -238,7 +234,7 @@ def resolve_input_path(path: str) -> pathlib.Path:
             return candidate
 
     attempted = ", ".join(str(c) for c in candidates)
-    raise FileNotFoundError("Path '%s' not found (tried: %s)" % (path, attempted))
+    raise FileNotFoundError(f"Path '{path}' not found (tried: {attempted})")
 
 
 def save_store():
@@ -263,7 +259,9 @@ def save_store():
         raise
 
 
-def _chunk_text_with_offsets(text: str, max_chars: int = 800, overlap: int = 120) -> List[Tuple[str, int, int]]:
+def _chunk_text_with_offsets(
+    text: str, max_chars: int = 800, overlap: int = 120
+) -> List[Tuple[str, int, int]]:
     """Chunk text into pieces of max_chars with overlap, returning (text, start, end)."""
     out: List[Tuple[str, int, int]] = []
     i = 0
@@ -280,7 +278,9 @@ def _chunk_text(text: str, max_chars: int = 800, overlap: int = 120) -> List[str
     """Chunk text into pieces of max_chars with overlap."""
     return [c[0] for c in _chunk_text_with_offsets(text, max_chars, overlap)]
 
-def _chunk_document_with_offsets(text: str, uri: str) -> Tuple[List[str], List[str], List[Tuple[int, int]]]:
+def _chunk_document_with_offsets(
+    text: str, uri: str
+) -> Tuple[List[str], List[str], List[Tuple[int, int]]]:
     """Chunk a single document and return chunks, uris, and offsets."""
     chunks_with_offsets = _chunk_text_with_offsets(text)
     chunks = [c[0] for c in chunks_with_offsets]
@@ -305,7 +305,7 @@ def _should_skip_uri(uri: str) -> bool:
     return False
 
 
-def _rebuild_faiss_index():
+def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
     """Rebuild the FAISS index from store documents."""
     with get_rebuild_lock():
         logger.info("Beginning FAISS rebuild")
@@ -316,7 +316,7 @@ def _rebuild_faiss_index():
         # Ensure store is loaded before rebuilding
         try:
             load_store()
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to load store before rebuild: %s", exc)
 
         index, index_to_meta, _ = get_faiss_globals()
@@ -340,7 +340,7 @@ def _rebuild_faiss_index():
 
         # Process each document separately to avoid accumulating all chunks in memory
         doc_items = list(_STORE.docs.items())
-        for uri, text in tqdm(doc_items, desc="Rebuilding FAISS index", unit="doc"):
+        for uri, text in tqdm(iterable=doc_items, desc="Rebuilding FAISS index", unit="doc"):  # pylint: disable=no-value-for-parameter
             logger.info("Document %s: %d chars", uri, len(text))
             if not text or not text.strip():
                 logger.warning("Document %s is empty, skipping", uri)
@@ -349,7 +349,8 @@ def _rebuild_faiss_index():
             logger.info("Created %d chunks from %s", len(chunks), uri)
 
             if not chunks:
-                logger.warning("No chunks created from document %s (text length: %d)", uri, len(text))
+                logger.warning(
+                    "No chunks created from document %s (text length: %d)", uri, len(text))
                 continue
 
             # Process chunks from this document in small batches
@@ -358,37 +359,14 @@ def _rebuild_faiss_index():
                 batch_uris = uris[i:i+batch_size]
                 batch_offsets = offsets[i:i+batch_size]
 
-                if embedder is None:
-                    logger.error("Embedder is None, cannot create embeddings")
-                    continue
-
-                embeddings = _encode_with_metrics(
-                    embedder,
-                    batch_chunks,
-                    "rebuild_index",
-                    normalize_embeddings=True,
-                    convert_to_numpy=True,
-                    show_progress_bar=False,
+                added = _process_batch_for_index(
+                    embedder, index, index_to_meta,
+                    batch_chunks, batch_uris, batch_offsets, uri
                 )
-
-                if embeddings is None or len(embeddings) == 0:
-                    logger.warning("No embeddings generated for batch from %s", uri)
-                    continue
-
-                if index is not None:
-                    embeddings_array = np.array(embeddings, dtype=np.float32)
-                    if len(embeddings_array.shape) == 1:
-                        embeddings_array = embeddings_array.reshape(1, -1)
-                    index.add(embeddings_array)  # type: ignore
-
-                    current_index = index.ntotal - len(batch_chunks)  # type: ignore
-                    for idx, (chunk_uri, (start, end)) in enumerate(zip(batch_uris, batch_offsets)):
-                        index_to_meta[current_index + idx] = (chunk_uri, start, end)
-
-                total_vectors += len(batch_chunks)
+                total_vectors += added
 
                 # Force garbage collection after each batch
-                del embeddings, embeddings_array, batch_chunks, batch_uris, batch_offsets
+                del batch_chunks, batch_uris, batch_offsets
                 gc.collect()
 
         if index is not None:
@@ -397,10 +375,49 @@ def _rebuild_faiss_index():
             logger.warning("No FAISS index available")
 
 
+def _process_batch_for_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    embedder: Optional[SentenceTransformer],
+    index: Any,
+    index_to_meta: Dict,
+    batch_chunks: List[str],
+    batch_uris: List[str],
+    batch_offsets: List[Tuple[int, int]],
+    uri: str
+) -> int:
+    """Process a batch of chunks for indexing."""
+    if embedder is None:
+        logger.error("Embedder is None, cannot create embeddings")
+        return 0
+
+    embeddings = _encode_with_metrics(
+        embedder,
+        batch_chunks,
+        "rebuild_index",
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        show_progress_bar=False,
+    )
+
+    if embeddings is None or len(embeddings) == 0:
+        logger.warning("No embeddings generated for batch from %s", uri)
+        return 0
+
+    if index is not None:
+        embeddings_array = np.array(embeddings, dtype=np.float32)
+        if len(embeddings_array.shape) == 1:
+            embeddings_array = embeddings_array.reshape(1, -1)
+        index.add(embeddings_array)  # type: ignore
+
+        current_index = index.ntotal - len(batch_chunks)  # type: ignore
+        for idx, (chunk_uri, (start, end)) in enumerate(zip(batch_uris, batch_offsets)):
+            index_to_meta[current_index + idx] = (chunk_uri, start, end)
+
+    return len(batch_chunks)
+
 
 def load_store():
     """Load the store from disk and rebuild FAISS index."""
-    global _STORE
+    global _STORE  # pylint: disable=global-statement
 
     if not os.path.exists(DB_PATH):
         logger.warning("Store file not found at %s", DB_PATH)
@@ -432,13 +449,13 @@ def load_store():
         raise
 
 
-def upsert_document(uri: str, text: str) -> Dict[str, Any]:
+def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=too-many-locals
     """Upsert a single document into the store."""
-    global _STORE
+    global _STORE  # pylint: disable=global-statement
 
     # Safety check for huge documents
-    if len(text) > 5_000_000:  # 5MB text limit
-        logger.warning(f"Document {uri} too large ({len(text)} chars), truncating.")
+    if len(text) > 5_000_000:  # 5MB text limi
+        logger.warning("Document %s too large (%d chars), truncating.", uri, len(text))
         text = text[:5_000_000]
 
     if _should_skip_uri(uri):
@@ -462,7 +479,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:
         return {"upserted": True, "existed": existed}
 
     base_index = index.ntotal if index is not None else 0  # type: ignore
-    chunks_with_offsets = _chunk_text_with_offsets(text)
+    chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
     chunks = [c[0] for c in chunks_with_offsets]
     offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
@@ -516,8 +533,10 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
 # Removed duplicate implementation (209 lines) - use extractors._extract_text_from_file instead
 
 
-def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
-                  embedder: Optional[SentenceTransformer]) -> str:
+def _process_file(  # pylint: disable=too-many-locals
+    file_path: pathlib.Path, index: Any, index_to_meta: Dict,
+    embedder: Optional[SentenceTransformer]
+) -> str:
     """Process a single file and add to index."""
     def _is_meaningful_text(text: str) -> bool:
         """Heuristic filter to skip binary/empty payloads regardless of extension."""
@@ -526,7 +545,7 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
         if not text:
             return False
         stripped = text.strip()
-        if len(stripped) < 40:  # too short
+        if len(stripped) < 40:  # too shor
             return False
         printable = sum(ch.isprintable() for ch in stripped)
         density = printable / max(1, len(stripped))
@@ -548,7 +567,7 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
 
     if not DEBUG_MODE and embedder is not None and index is not None:
         base_index = index.ntotal  # type: ignore
-        chunks_with_offsets = _chunk_text_with_offsets(text)
+        chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
         chunks = [c[0] for c in chunks_with_offsets]
         offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
@@ -584,9 +603,12 @@ def _process_file(file_path: pathlib.Path, index: Any, index_to_meta: Dict,
     return text
 
 
-def index_path(path: str, glob: str = "**/*.txt", max_files: int = 1000, progress_callback: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
+def index_path(  # pylint: disable=too-many-locals
+    path: str, glob: str = "**/*.txt", max_files: int = 1000,
+    progress_callback: Optional[Callable[[int, int], None]] = None
+) -> Dict[str, Any]:
     """Index all text files in a given path matching the glob pattern.
-    
+
     Args:
         path: Directory path to index
         glob: File pattern to match
@@ -607,7 +629,7 @@ def index_path(path: str, glob: str = "**/*.txt", max_files: int = 1000, progres
         }
 
     if not files:
-        message = "No files matching '%s' were found under '%s'" % (glob, resolved)
+        message = f"No files matching '{glob}' were found under '{resolved}'"
         logger.info(message)
         return {
             "indexed": 0,
@@ -615,9 +637,11 @@ def index_path(path: str, glob: str = "**/*.txt", max_files: int = 1000, progres
             "error": message,
         }
 
-    # Enforce file limit
+    # Enforce file limi
     if len(files) > max_files:
-        logger.warning(f"Found {len(files)} files, truncating to {max_files} to prevent resource exhaustion.")
+        logger.warning(
+            "Found %d files, truncating to %d to prevent resource exhaustion.",
+            len(files), max_files)
         files = files[:max_files]
 
     total_files = len(files)
@@ -651,12 +675,12 @@ async def send_to_llm(query: List[str]) -> Any:
     except (ValueError, APIConnectionError) as exc:  # type: ignore
         logger.error("LLM error: %s", exc)
         raise
-    except Exception as exc:  # Catch RemoteProtocolError and other network errors
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("send_to_llm: %s", exc)
         raise
 
 
-def send_store_to_llm() -> str:
+def send_store_to_llm() -> str:  # pylint: disable=too-many-locals
     """Send the entire store as context to the LLM for processing."""
     _ensure_store_synced()
     texts = list(get_store().docs.values())
@@ -678,7 +702,7 @@ def send_store_to_llm() -> str:
         except (OSError, ValueError) as exc:
             logger.error("send_store_to_llm failed: %s", exc)
             raise
-        except APIConnectionError:
+        except APIConnectionError:  # pylint: disable=broad-exception-caught
             time.sleep(1)
             continue
         break
@@ -686,7 +710,7 @@ def send_store_to_llm() -> str:
     return resp
 
 
-def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
+def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  # pylint: disable=too-many-locals
     """Perform vector similarity search using FAISS."""
     index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
@@ -704,7 +728,7 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
     )  # type: ignore
     query_array = np.array(query_emb, dtype=np.float32).reshape(1, -1)
 
-    scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore
+    scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore  # pylint: disable=no-value-for-parameter
 
     hits = []
     store = get_store()
@@ -724,17 +748,17 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
 def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Normalize LLM response (ModelResponse or dict) to a consistent dict format.
-    
+
     Args:
         resp: Response from LiteLLM (can be ModelResponse object or dict)
         sources: Optional list of source URIs to include
-        
+
     Returns:
         Dict with 'answer' or 'content' key and optional 'sources'
     """
     if resp is None:
         return {"error": "No response from LLM"}
-    
+
     # Handle ModelResponse objects from LiteLLM
     if hasattr(resp, 'choices') and resp.choices:
         # Extract content from ModelResponse
@@ -749,13 +773,13 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
         if sources:
             result["sources"] = sources
         return result
-    
+
     # Handle dict responses
     if isinstance(resp, dict):
         # Ensure sources are included
         if sources and "sources" not in resp:
             resp["sources"] = sources
-        # Extract content if it's in choices format
+        # Extract content if it's in choices forma
         if "choices" in resp and isinstance(resp["choices"], list) and len(resp["choices"]) > 0:
             choice = resp["choices"][0]
             if isinstance(choice, dict) and "message" in choice:
@@ -763,7 +787,7 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
                 if isinstance(message, dict) and "content" in message:
                     resp["answer"] = message["content"]
         return resp
-    
+
     # Fallback: convert to string
     return {"answer": str(resp), "sources": sources or []}
 
@@ -775,19 +799,19 @@ def _build_rag_context(
 ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
     """
     Build RAG context from indexed documents for a query.
-    
+
     Args:
         query: Search query
         top_k: Number of candidates to retrieve
         max_context_chars: Maximum characters of context to include
-        
+
     Returns:
         Tuple of (context_string, sources_list, candidates_list)
         Returns empty context if no documents found
     """
     logger.info("Building RAG context for query: %s", query)
     candidates = _vector_search(query, k=top_k)
-    
+
     if not candidates:
         # If we have docs but no vectors, force a rebuild once
         store = get_store()
@@ -797,8 +821,6 @@ def _build_rag_context(
             candidates = _vector_search(query, k=top_k)
         if not candidates:
             logger.info("No vector hits; refusing to answer from outside sources.")
-            return ("", [], [])
-    
     # Re-rank to prioritize query overlap
     candidates = rerank(query, candidates)[:top_k]
     sources = [c.get("uri", "") for c in candidates if c.get("uri")]
@@ -813,27 +835,31 @@ def _build_rag_context(
             break
         context_parts.append(text_content)
         total_chars += len(text_content)
-    
+
     context = "\n\n---\n\n".join(context_parts) if context_parts else ""
     return (context, sources, candidates)
 
 
-def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
+def search(query: str, top_k: int = SEARCH_TOP_K,
+           max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
     """Search the indexed documents and ask the LLM using only those documents as context."""
     context, sources, candidates = _build_rag_context(query, top_k, max_context_chars)
-    
+
     if not context:
         return {"error": "No relevant documents found in the indexed corpus.", "sources": []}
 
     system_msg = (
-        "You are a helpful assistant. Answer the user's question using ONLY the document content provided below. "
-        "You must base your answer strictly on the content in the documents. "
-        "Do NOT use any external knowledge, general knowledge, or make assumptions beyond what is explicitly stated in the documents. "
-        "If the answer is not contained in the provided documents, reply exactly: \"I don't know.\" "
-        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used. "
+        "You are a helpful assistant. Answer the user's question using ONLY the document "
+        "content provided below. You must base your answer strictly on the content in the "
+        "documents. Do NOT use any external knowledge, general knowledge, or make assumptions "
+        "beyond what is explicitly stated in the documents. "
+        "If the answer is not contained in the provided documents, reply exactly: "
+        "\"I don't know.\" "
+        "At the end of your response, include a 'Sources:' section listing the source URIs for "
+        "the information you used. "
         "The source URIs will be provided separately for citation purposes."
     )
-    user_msg = "Document Content:\n%s\n\nQuestion: %s" % (context, query)
+    user_msg = f"Document Content:\n{context}\n\nQuestion: {query}"
 
     try:
         if completion is None:
@@ -856,14 +882,19 @@ def search(query: str, top_k: int = SEARCH_TOP_K, max_context_chars: int = SEARC
 
     # Graceful fallback: synthesize answer from retrieved passages
     fallback = synthesize_answer(query, candidates)
-    fallback["warning"] = "LLM unavailable; reply synthesized from retrieved passages."
+    fallback["warning"] = (
+        "LLM unavailable; "
+        "reply synthesized from retrieved passages."
+    )
     fallback["sources"] = sources
     return fallback
 
 
 # --- Lightweight rerank/ground/verify utilities used by MCP tools ---
 
-def rerank(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def rerank(
+    query: str, passages: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """
     Simple reranker that boosts passages containing the query terms. This is a
     lightweight heuristic so we avoid an additional model dependency.
@@ -906,7 +937,7 @@ def rerank(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return ranked
 
 
-def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
+def synthesize_answer(_question: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Produce a grounded answer by concatenating the top passage texts. This keeps
     outputs deterministic when no LLM is available.
@@ -921,7 +952,9 @@ def synthesize_answer(question: str, passages: List[Dict[str, Any]]) -> Dict[str
     return {"answer": answer or "I don't know.", "citations": citations}
 
 
-def grounded_answer(question: str, k: int = SEARCH_TOP_K, **kwargs: Any) -> Dict[str, Any]:
+def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
+    question: str, k: int = SEARCH_TOP_K, **kwargs: Any
+) -> Dict[str, Any]:
     """
     Grounded career-centric answer: retrieve, rerank, filter signatures/boilerplate,
     and synthesize with citations; falls back gracefully when no signal.
@@ -1000,13 +1033,16 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K, **kwargs: Any) -> Dict
         return synthesized
 
     system_msg = (
-        "You are a careful assistant. Write a concise professional summary using ONLY the document content provided below. "
+        "You are a careful assistant. Write a concise professional summary using ONLY the "
+        "document content provided below. "
         "You must base your answer strictly on the content in the documents. "
         "Capture roles, companies, key achievements, and timelines when present. "
         "Strictly exclude greetings, sign-offs, and speculative content. "
-        "Do NOT use any external knowledge or make assumptions beyond what is explicitly stated in the documents. "
+        "Do NOT use any external knowledge or make assumptions beyond what is explicitly "
+        "stated in the documents. "
         "If the documents do not clearly support the answer, reply exactly: \"I don't know.\" "
-        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used. "
+        "At the end of your response, include a 'Sources:' section listing the source URIs for "
+        "the information you used. "
         "The source URIs will be provided separately for citation purposes."
     )
     user_msg = f"Document Content:\n{context}\n\nQuestion: {question}"
@@ -1031,7 +1067,7 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K, **kwargs: Any) -> Dict
             timeout=90,
         )
         return _normalize_llm_response(resp, sources)
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer completion failed: %s", exc)
         synthesized = synthesize_answer(question, filtered)
         synthesized["warning"] = "LLM unavailable; reply synthesized from retrieved passages."
@@ -1039,7 +1075,8 @@ def grounded_answer(question: str, k: int = SEARCH_TOP_K, **kwargs: Any) -> Dict
         return synthesized
 
 
-def verify_grounding_simple(question: str, draft_answer: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
+def verify_grounding_simple(_question: str, draft_answer: str,
+                            passages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Minimal grounding check: ensures at least one citation-like string maps to a
     provided passage and computes coverage heuristically.
@@ -1057,7 +1094,7 @@ def verify_grounding_simple(question: str, draft_answer: str, passages: List[Dic
     }
 
 
-def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> Dict[str, Any]:
+def verify_grounding(_question: str, draft_answer: str, citations: List[str]) -> Dict[str, Any]:
     """
     Verify grounding given a list of citation URIs by pulling text from the store.
     """
@@ -1066,10 +1103,10 @@ def verify_grounding(question: str, draft_answer: str, citations: List[str]) -> 
     for uri in citations:
         if uri in store.docs:
             passages.append({"uri": uri, "text": store.docs[uri], "score": 1.0})
-    return verify_grounding_simple(question, draft_answer, passages)
+    return verify_grounding_simple(_question, draft_answer, passages)
 
 
-def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
+def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # pylint: disable=too-many-locals
     """
     Conversational chat using Ollama with RAG context from indexed documents.
     Only uses indexed document content - no external knowledge.
@@ -1090,35 +1127,48 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         return {"error": "Empty query"}
 
     # Search for relevant documents using RAG
-    context, sources, candidates = _build_rag_context(query, SEARCH_TOP_K, SEARCH_MAX_CONTEXT_CHARS)
-    
+    context, sources, _ = _build_rag_context(query, SEARCH_TOP_K, SEARCH_MAX_CONTEXT_CHARS)
+
     if not context:
         return {
             "role": "assistant",
-            "content": "I don't know. No relevant documents were found in the indexed corpus to answer your question."
+            "content": (
+                "I don't know. No relevant documents were found in the indexed corpus "
+                "to answer your question."
+            )
         }
 
     # Build system message that restricts to only indexed documents
     system_msg = (
-        "You are a helpful assistant. Answer the user's question using ONLY the document content provided below. "
+        "You are a helpful assistant. Answer the user's question using ONLY the document "
+        "content provided below. "
         "You must base your answer strictly on the content in the documents. "
-        "Do NOT use any external knowledge, general knowledge, training data, or make assumptions beyond what is explicitly stated in the documents. "
-        "If the answer is not contained in the provided documents, reply exactly: \"I don't know.\" "
-        "At the end of your response, include a 'Sources:' section listing the source URIs for the information you used."
+        "Do NOT use any external knowledge, general knowledge, training data, or make "
+        "assumptions beyond what is explicitly stated in the documents. "
+        "If the answer is not contained in the provided documents, reply exactly: "
+        "\"I don't know.\" "
+        "At the end of your response, include a 'Sources:' section listing the source URIs "
+        "for the information you used."
     )
 
-    # Build messages with context: keep conversation history but add document context to the last user message
+    # Build messages with context: keep conversation history but add document context
+    # to the last user message
     enhanced_messages = []
     for i, msg in enumerate(messages):
         if i == len(messages) - 1 and msg.get("role") == "user":
             # Add document context to the last user message
-            enhanced_content = f"Document Content:\n{context}\n\nQuestion: {msg.get('content', '')}"
+            enhanced_content = (
+                f"Document Content:\n{context}\n\n"
+                f"Question: {msg.get('content', '')}"
+            )
             enhanced_messages.append({"role": "user", "content": enhanced_content})
         else:
             enhanced_messages.append(msg)
 
     # Add system message at the beginning
-    final_messages = [{"role": "system", "content": system_msg}] + enhanced_messages
+    final_messages = (
+        [{"role": "system", "content": system_msg}] + enhanced_messages
+    )
 
     # Extract num_ctx if provided
     num_ctx = kwargs.get("num_ctx")
@@ -1139,11 +1189,11 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
             timeout=300,
         )
 
-        # Normalize response to extract content
+        # Normalize response to extract conten
         normalized = _normalize_llm_response(resp, sources)
         content = normalized.get("answer") or normalized.get("content") or str(resp)
         return {"role": "assistant", "content": content, "sources": sources}
 
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Chat completion failed: %s", exc)
         return {"error": str(exc)}

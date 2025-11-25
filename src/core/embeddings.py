@@ -5,7 +5,7 @@ Embedding utilities and device-safe loader.
 from __future__ import annotations
 import logging
 import os
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Any
 from pathlib import Path
 import shutil
 
@@ -45,14 +45,20 @@ def _clear_sentence_transformer_cache(model_name: str, logger: logging.Logger) -
         if root_env:
             root = Path(root_env).expanduser()
         else:
-            torch_home = Path(os.getenv("TORCH_HOME") or Path.home() / ".cache" / "torch").expanduser()
+            torch_home = Path(
+                os.getenv("TORCH_HOME") or Path.home() / ".cache" / "torch"
+            ).expanduser()
             root = torch_home / "sentence_transformers"
         if root.exists():
             yield root / sanitized
             yield from root.glob(f"*{sanitized}*")
 
     def _hf_cache_paths() -> Iterable[Path]:
-        hf_root = Path(os.getenv("HF_HOME") or os.getenv("HUGGINGFACE_HUB_CACHE") or Path.home() / ".cache" / "huggingface" / "hub").expanduser()
+        hf_root = Path(
+            os.getenv("HF_HOME") or
+            os.getenv("HUGGINGFACE_HUB_CACHE") or
+            Path.home() / ".cache" / "huggingface" / "hub"
+        ).expanduser()
         if hf_root.exists():
             yield hf_root / f"models--{hf_sanitized}"
             yield from hf_root.glob(f"models--*{hf_sanitized}*")
@@ -68,7 +74,7 @@ def _clear_sentence_transformer_cache(model_name: str, logger: logging.Logger) -
             shutil.rmtree(path)
             logger.info("Cleared cached model files at %s", path)
             cleared = True
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to clear cached model files at %s: %s", path, exc)
     return cleared
 
@@ -84,6 +90,7 @@ class LiteLLMEmbedder:
         self._dim = OPENAI_EMBED_DIMS.get(model_name, 1536)
 
     def encode(self, inputs, **_: Any):
+        """Encode inputs using LiteLLM."""
         if litellm_embedding is None:
             raise ImportError("litellm is required for OpenAI embedding models")
         if isinstance(inputs, str):
@@ -92,17 +99,20 @@ class LiteLLMEmbedder:
             payload = list(inputs)
         resp = litellm_embedding(model=self.model_name, input=payload, api_base=self.api_base)
         # litellm returns {"data": [{"embedding": ..., "index": 0}, ...]}
-        return [item["embedding"] for item in getattr(resp, "data", resp.get("data", []))]  # type: ignore[union-attr]
+        # pylint: disable=no-member
+        return [item["embedding"] for item in getattr(resp, "data", resp.get("data", []))]
 
     def get_sentence_embedding_dimension(self) -> int:
+        """Get the embedding dimension."""
         return self._dim
 
 
-def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> Optional[object]:
+def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> Optional[object]:  # pylint: disable=too-many-statements
     """
     Lazily load and cache the embedding model with CPU-first defaults.
     Respects debug_mode by skipping model loading.
     """
+    # pylint: disable=global-statement
     global _EMBEDDER, _EMBEDDER_NAME
 
     if debug_mode:
@@ -122,11 +132,12 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
             return _EMBEDDER
 
         try:
+            # pylint: disable=import-outside-toplevel
             import torch  # Local import so unit tests can swap it out
             torch.set_num_threads(1)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
-        
+
         # Try loading with default settings first
         try:
             _EMBEDDER = SentenceTransformer(
@@ -136,8 +147,11 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
                 model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
             )
             _EMBEDDER_NAME = model_name
-        except Exception as exc:
-            logger.warning("Initial load of '%s' failed: %s. Retrying with cache clear and CPU force.", model_name, exc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "Initial load of '%s' failed: %s. Retrying with cache clear and CPU force.",
+                model_name, exc
+            )
             _clear_sentence_transformer_cache(model_name, logger)
             _EMBEDDER = SentenceTransformer(
                 model_name,
@@ -148,11 +162,12 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
             _EMBEDDER_NAME = model_name
 
         try:
+            # pylint: disable=import-outside-toplevel
             import torch
             torch.set_num_threads(1)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         # Catch ALL errors during load (NotImplementedError, OSError, etc)
         logger.warning("Retrying embedder load on CPU due to error: %s", exc)
         try:
@@ -164,8 +179,11 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
                 model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
             )
             _EMBEDDER_NAME = model_name
-        except Exception as inner_exc:
-            logger.warning("User embedding model '%s' failed after CPU retry: %s; falling back", model_name, inner_exc)
+        except Exception as inner_exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "User embedding model '%s' failed after CPU retry: %s; falling back",
+                model_name, inner_exc
+            )
             fallback = "all-MiniLM-L6-v2"
             _clear_sentence_transformer_cache(fallback, logger)
             _EMBEDDER = SentenceTransformer(
@@ -175,12 +193,14 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
             )
             _EMBEDDER_NAME = fallback
         try:
+            # pylint: disable=import-outside-toplevel
             import torch
             torch.set_num_threads(1)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
-    except Exception as exc:
-        # Prefer to keep running with a smaller, local model rather than crash on meta-tensor/device errors
+    except Exception as exc:  # pylint: disable=broad-exception-caught,duplicate-except
+        # Prefer to keep running with a smaller, local model rather than crash
+        # on meta-tensor/device errors
         fallback = "all-MiniLM-L6-v2"
         logger.warning(
             "Embedding model '%s' failed to load (%s). Falling back to '%s'.",
@@ -188,12 +208,18 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
         )
         try:
             _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(fallback, device='cpu', backend='torch', model_kwargs={"low_cpu_mem_usage": False})
+            _EMBEDDER = SentenceTransformer(
+                fallback,
+                device='cpu',
+                backend='torch',
+                model_kwargs={"low_cpu_mem_usage": False}
+            )
             _EMBEDDER_NAME = fallback
+            # pylint: disable=import-outside-toplevel
             import torch
             torch.set_num_threads(1)
             logger.info("Fallback embedding model '%s' loaded successfully", fallback)
-        except Exception as inner_exc:
+        except Exception as inner_exc:  # pylint: disable=broad-exception-caught
             logger.critical(
                 "Fallback embedding model '%s' also failed to load: %s", fallback, inner_exc
             )

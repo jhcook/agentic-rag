@@ -2,6 +2,7 @@
 import io
 import logging
 import pathlib
+from typing import Union
 
 try:
     from pypdf import PdfReader  # type: ignore
@@ -42,7 +43,7 @@ def _download_from_url(url: str) -> bytes:
     except requests.exceptions.ConnectionError as conn_exc:
         logger.error("Connection error downloading %s: %s", url, conn_exc)
         return b"[CONNECTION ERROR: Could not connect to %s]" % url.encode()
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to download %s: %s", url, exc)
         return b"[ERROR: Could not download %s: %s]" % (url.encode(), str(exc).encode())
 
@@ -67,19 +68,20 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
                 logger.warning("No text extracted from PDF %s", filename)
                 return ""
             return joined
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to read PDF %s: %s", filename, exc)
             return ""
 
     elif suffix in ['.docx', '.doc']:
         if Document is None:
-            logger.warning("DOCX support not available. Install python-docx: pip install python-docx")
+            logger.warning(
+                "DOCX support not available. Install python-docx: pip install python-docx")
             return ""
         try:
             doc = Document(io.BytesIO(content))
             text_parts = [paragraph.text for paragraph in doc.paragraphs]
             return "\n".join(text_parts)
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to read DOCX %s: %s", filename, exc)
             return ""
 
@@ -96,11 +98,10 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
                 script.decompose()
             text = soup.get_text(separator='\n')
             lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines
-                      for phrase in line.split("  "))
+            chunks = (line.strip() for line in lines)
             text = '\n'.join(chunk for chunk in chunks if chunk)
             return text
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to read HTML %s: %s", filename, exc)
             return ""
 
@@ -111,18 +112,16 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
             if lower_text.startswith("%PDF-") or lower_text.startswith("PK"):
                 return ""
             return text
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to read file %s: %s", filename, exc)
             return ""
 
-
-from typing import Union
 
 def _extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
-    
+
     if file_str.startswith(('http://', 'https://')):
         content = _download_from_url(file_str)
         if not content:
@@ -141,6 +140,6 @@ def _extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
         with open(file_path, "rb") as f:
             content = f.read()
         return extract_text_from_bytes(content, file_path.name)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to read file %s: %s", file_path, exc)
         return ""

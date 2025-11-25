@@ -34,6 +34,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+# pylint: disable=wrong-import-position
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import Response
 from dotenv import load_dotenv
@@ -75,11 +76,12 @@ load_dotenv()
 CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
 
 def load_app_config():
+    """Load configuration from settings.json."""
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            
+
             # Update environment variables for MCP
             if "mcpHost" in config:
                 os.environ["MCP_HOST"] = config["mcpHost"]
@@ -87,30 +89,31 @@ def load_app_config():
                 os.environ["MCP_PORT"] = str(config["mcpPort"])
             if "mcpPath" in config:
                 os.environ["MCP_PATH"] = config["mcpPath"]
-                
+
             # Update RAG Core configuration
+            # pylint: disable=import-outside-toplevel,consider-using-from-import
             import src.core.rag_core as rag_core
-            
+
             # Map settings.json keys to rag_core variables
             if "apiEndpoint" in config:
                 rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
             elif "ollamaApiUrl" in config:  # Legacy fallback
                 rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
-                
+
             if "model" in config:
                 rag_core.LLM_MODEL_NAME = config["model"]
                 rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
             elif "ollamaModel" in config:  # Legacy fallback
                 rag_core.LLM_MODEL_NAME = config["ollamaModel"]
                 rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
-                
+
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
-            
-            logger.info(f"Loaded configuration from {CONFIG_FILE}")
+
+            logger.info("Loaded configuration from %s", CONFIG_FILE)
             return config
-        except Exception as e:
-            logger.error(f"Failed to load configuration: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to load configuration: %s", e)
     return {}
 
 app_config = load_app_config()
@@ -122,10 +125,10 @@ backend: RAGBackend = get_rag_backend()
 mcp = FastMCP("retrieval-server")
 
 # Track if we're already shutting down to prevent duplicate saves
-SHUTTING_DOWN = False
-STORE_LOADING = False
-STORE_LOADED = False
-STORE_LOAD_THREAD: Optional[threading.Thread] = None
+shutting_down = False
+store_loading = False
+store_loaded = False
+store_load_thread: Optional[threading.Thread] = None
 
 # Memory management settings
 MEMORY_CHECK_INTERVAL = 30  # seconds
@@ -135,30 +138,32 @@ rest_api.add_middleware(AccessLogMiddleware, access_logger=access_logger)
 
 
 def _background_load_store():
-    global STORE_LOADING, STORE_LOADED
-    if STORE_LOADING or STORE_LOADED:
+    # pylint: disable=global-statement
+    global store_loading, store_loaded
+    if store_loading or store_loaded:
         return
-    STORE_LOADING = True
+    store_loading = True
     try:
         # Load store and rebuild index in background
         backend.load_store()
         backend.rebuild_index()
         refresh_prometheus_metrics(OLLAMA_API_BASE)
-        STORE_LOADED = True
+        store_loaded = True
         logger.info("Background store load and index rebuild complete")
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Background store load failed: %s", exc, exc_info=True)
     finally:
-        STORE_LOADING = False
+        store_loading = False
 
 
 def start_background_store_load():
     """Kick off store load/rebuild in a background thread so startup is fast."""
-    global STORE_LOAD_THREAD
-    if STORE_LOAD_THREAD and STORE_LOAD_THREAD.is_alive():
+    # pylint: disable=global-statement
+    global store_load_thread
+    if store_load_thread and store_load_thread.is_alive():
         return
-    STORE_LOAD_THREAD = threading.Thread(target=_background_load_store, daemon=True)
-    STORE_LOAD_THREAD.start()
+    store_load_thread = threading.Thread(target=_background_load_store, daemon=True)
+    store_load_thread.start()
 
 def _safe_int(value: Any) -> Optional[int]:
     """Convert a value to int when possible, otherwise None."""
@@ -172,21 +177,22 @@ def _normalize_ollama_base() -> str:
     base = os.getenv("OLLAMA_API_BASE", OLLAMA_API_BASE)
     return base.rstrip("/")
 
-from src.servers.mcp_app.metrics import refresh_prometheus_metrics  # re-exported for convenience
 
 def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     """Handle shutdown gracefully with proper cleanup."""
+    # pylint: disable=import-outside-toplevel
     import logging
     # Suppress logging errors (like 'I/O operation on closed file') during shutdown
     logging.raiseExceptions = False
-    
-    global SHUTTING_DOWN
 
-    if SHUTTING_DOWN:
+    # pylint: disable=global-statement
+    global shutting_down
+
+    if shutting_down:
         logger.debug("Shutdown already in progress, skipping duplicate")
         return
 
-    SHUTTING_DOWN = True
+    shutting_down = True
 
     if signum:
         logger.info("Received signal %d. Initiating graceful shutdown...", signum)
@@ -196,7 +202,7 @@ def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     try:
         backend.save_store()
         logger.info("Store saved successfully")
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error saving store during shutdown: %s", e, exc_info=True)
     finally:
         logger.info("Shutdown complete")
@@ -242,22 +248,36 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
             file_path = Path(uri)
             if file_path.exists():
                 if file_path.is_dir():
-                    return {"error": f"Cannot upsert directory. Use index_documents_tool for directories: {normalized_uri}", "upserted": False}
+                    return {
+                        "error": (f"Cannot upsert directory. Use index_documents_tool "
+                                  f"for directories: {normalized_uri}"),
+                        "upserted": False
+                    }
                 try:
                     content = _extract_text_from_file(file_path)
                     if not content:
-                        return {"error": f"No text extracted from {normalized_uri}", "upserted": False}
-                    logger.debug("Read %d characters from %s for upsert", len(content), normalized_uri)
-                except Exception as file_err:
+                        return {
+                            "error": f"No text extracted from {normalized_uri}",
+                            "upserted": False
+                        }
+                    logger.debug(
+                        "Read %d characters from %s for upsert",
+                        len(content),
+                        normalized_uri
+                    )
+                except Exception as file_err:  # pylint: disable=broad-exception-caught
                     logger.error("Failed to read %s: %s", normalized_uri, file_err)
                     return {"error": f"Could not read file: {file_err}", "upserted": False}
             else:
-                return {"error": f"Text missing and file not found: {normalized_uri}", "upserted": False}
+                return {
+                    "error": f"Text missing and file not found: {normalized_uri}",
+                    "upserted": False
+                }
 
-        result: Dict[str, Any] = backend.upsert_document(normalized_uri, content)
+        upsert_result: Dict[str, Any] = backend.upsert_document(normalized_uri, content)
         logger.info("Successfully upserted document: %s", uri)
-        return result
-    except Exception as e:
+        return upsert_result
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error upserting document %s: %s", uri, e)
         return {"error": str(e), "upserted": False}
 
@@ -269,7 +289,11 @@ def _normalize_glob(glob: Optional[str]) -> str:
     cleaned = glob.strip()
     # Some clients mistakenly send regex '**/.*' meaning 'anything'
     if cleaned in {"**/.*", "./**/.*"}:
-        logger.warning("Received regex-style glob '%s'; falling back to '%s'", cleaned, default_glob)
+        logger.warning(
+            "Received regex-style glob '%s'; falling back to '%s'",
+            cleaned,
+            default_glob
+        )
         return default_glob
     return cleaned
 
@@ -352,7 +376,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
                 if not content:
                     logger.warning("No text extracted from %s, skipping", file_path)
                     continue
-            except Exception as read_err:
+            except Exception as read_err:  # pylint: disable=broad-exception-caught
                 logger.warning("Skipping %s: %s", file_path, read_err)
                 continue
 
@@ -362,7 +386,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
 
         logger.info("Indexed %d documents from %s", indexed, base)
         return {"indexed": indexed, "uris": indexed_uris}
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error indexing path %s: %s", path, e)
         return {"error": str(e), "indexed": 0, "uris": []}
 
@@ -371,7 +395,6 @@ def index_url_tool(
     url: Optional[str] = None,
     doc_id: Optional[str] = None,
     query: Optional[str] = None,
-    top_k: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     INDEX a document from a URL into the searchable store.
@@ -426,9 +449,8 @@ def index_url_tool(
         if not url:
             return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
 
-        import pathlib
         # Treat URL as a pathlib.Path for _extract_text_from_file
-        url_path = pathlib.Path(url)
+        url_path = Path(url)
         content = _extract_text_from_file(url_path)
 
         if not content:
@@ -441,7 +463,7 @@ def index_url_tool(
 
         logger.info("Indexed document from URL: %s", url)
         return {"indexed": 1, "uri": url, "doc_id": doc_id}
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error indexing URL %s: %s", url, e)
         return {"error": str(e), "indexed": 0, "uri": url}
 
@@ -473,33 +495,33 @@ def search_tool(query: str, top_k: int = 5) -> Dict[str, Any]:
     """
     try:
         logger.info("Searching for: %s", query)
-        result = backend.search(query, top_k=top_k)
+        search_result = backend.search(query, top_k=top_k)
         logger.info("Search completed for: %s", query)
 
         # Force garbage collection after search to manage memory
         gc.collect()
 
         # Handle different return types from search function
-        if hasattr(result, 'choices') and getattr(result, 'choices', None):
+        if hasattr(search_result, 'choices') and getattr(search_result, 'choices', None):
             # LiteLLM response object
-            choices = getattr(result, 'choices', [])
+            choices = getattr(search_result, 'choices', [])
             if choices:
                 message = getattr(choices[0], 'message', None)
                 content = getattr(message, 'content', None) if message else None
                 return {
-                    "answer": content or str(result),
-                    "model": getattr(result, 'model', 'unknown'),
-                    "usage": getattr(result, 'usage', {})
+                    "answer": content or str(search_result),
+                    "model": getattr(search_result, 'model', 'unknown'),
+                    "usage": getattr(search_result, 'usage', {})
                 }
 
-        if isinstance(result, dict):
+        if isinstance(search_result, dict):
             # Already a dict
-            return result
-        else:
-            # Convert other types to string
-            return {"answer": str(result)}
+            return search_result
 
-    except Exception as e:
+        # Convert other types to string
+        return {"answer": str(search_result)}
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error searching for '%s': %s", query, e)
         return {"error": str(e)}
 
@@ -545,7 +567,7 @@ def list_indexed_documents_tool() -> Dict[str, Any]:
         uris = backend.list_documents()
         logger.info("Found %d indexed documents.", len(uris))
         return {"uris": uris}
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error listing indexed documents: %s", e, exc_info=True)
         return {"error": str(e), "uris": []}
 
@@ -558,12 +580,13 @@ def rerank_tool(query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, An
     """
     try:
         return backend.rerank(query, passages)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error reranking passages: %s", e, exc_info=True)
         return []
 
 @mcp.tool()
-def grounded_answer_tool(question: str, k: int = 5, model: Optional[str] = None, temperature: Optional[float] = None) -> Dict[str, Any]:
+def grounded_answer_tool(question: str, k: int = 5, model: Optional[str] = None,
+                         temperature: Optional[float] = None) -> Dict[str, Any]:
     """
     Generate a grounded answer from the indexed corpus.
 
@@ -575,9 +598,9 @@ def grounded_answer_tool(question: str, k: int = 5, model: Optional[str] = None,
             kwargs["model"] = model
         if temperature is not None:
             kwargs["temperature"] = temperature
-            
+
         return backend.grounded_answer(question, k=k, **kwargs)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error generating grounded answer: %s", e, exc_info=True)
         return {"error": str(e)}
 
@@ -588,7 +611,7 @@ def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> D
     """
     try:
         return backend.verify_grounding(question, answer, citations)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error verifying grounding: %s", e, exc_info=True)
         return {"error": str(e)}
 
@@ -598,7 +621,7 @@ async def metrics_endpoint(_request) -> Response:
     refresh_error = None
     try:
         await anyio.to_thread.run_sync(refresh_prometheus_metrics, OLLAMA_API_BASE)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         refresh_error = exc
         logger.error("Metrics refresh failed (serving last known values): %s", exc, exc_info=True)
 
@@ -616,14 +639,17 @@ if __name__ == "__main__":
         sock.settimeout(1)
         in_use = False
         try:
-            result = sock.connect_ex((mcp.settings.host if hasattr(mcp, "settings") else os.getenv("MCP_HOST", "127.0.0.1"),
-                                      int(os.getenv("MCP_PORT", "8000"))))
+            host = (mcp.settings.host if hasattr(mcp, "settings") else
+                    os.getenv("MCP_HOST", "127.0.0.1"))
+            port = int(os.getenv("MCP_PORT", "8000"))
+            result = sock.connect_ex((host, port))
             if result == 0:
                 in_use = True
         finally:
             sock.close()
         if in_use:
-            logger.error("Port %s already in use. Refusing to start MCP.", os.getenv("MCP_PORT", "8000"))
+            logger.error("Port %s already in use. Refusing to start MCP.",
+                         os.getenv("MCP_PORT", "8000"))
             sys.exit(1)
 
         # Set memory limits before doing anything else
@@ -661,8 +687,7 @@ if __name__ == "__main__":
         logger.error("Out of memory! Consider increasing MAX_MEMORY_MB or reducing document size")
         graceful_shutdown()
         sys.exit(1)
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Fatal server error: %s", e, exc_info=True)
         graceful_shutdown()
         sys.exit(1)
-

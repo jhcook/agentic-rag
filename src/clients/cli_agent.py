@@ -64,7 +64,7 @@ def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
         except ReadTimeoutError:
             # treat poll timeout as a heartbeat and continue
             status = None
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             return {"error": f"failed to poll search job: {exc}"}
 
         if status:
@@ -74,8 +74,8 @@ def search(query: str, async_mode: bool = False, timeout_seconds: int = 300):
                 last_message = status_msg
 
             if status.get("status") in {"completed", "timeout", "failed"}:
-                search_result = status.get("result") or status
-                return search_result
+                job_result = status.get("result") or status
+                return job_result
 
         time.sleep(poll_interval)
         elapsed += poll_interval

@@ -13,7 +13,7 @@ def test_nonexistent_file_extraction():
 def test_bad_url_extraction(monkeypatch):
     def dummy_get(url, timeout=30):
         raise Exception("Connection error")
-    import src.core.rag_core as rag_core
-    monkeypatch.setattr("src.core.rag_core.requests.get", dummy_get)
+    import src.core.extractors as extractors
+    monkeypatch.setattr(extractors.requests, "get", dummy_get)
     text = _extract_text_from_file("http://badurl.test")
     assert "CONNECTION ERROR" in text or "ERROR" in text

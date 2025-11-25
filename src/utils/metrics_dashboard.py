@@ -110,9 +110,9 @@ def build_bar(value: float, limit: float, width: int = BAR_WIDTH) -> str:
 
     val = max(value, 0)
     filled = int(min(width, (val / limit) * width))
-    bar = "#" * filled + "-" * (width - filled)
+    bar_str = "#" * filled + "-" * (width - filled)
     pct = (val / limit) * 100
-    return f"[{bar}] {val:.1f} / {limit:.1f} MB ({pct:.1f}%)"
+    return f"[{bar_str}] {val:.1f} / {limit:.1f} MB ({pct:.1f}%)"
 
 
 def human_bytes(num: float) -> Tuple[float, str]:
@@ -152,7 +152,7 @@ def wrap_log_lines(lines: List[str], width: int) -> List[str]:
     return wrapped
 
 
-def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
+def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:  # pylint: disable=too-many-locals
     """Turn metrics into display lines with optional color pair ids."""
     lines: List[Tuple[str, int, str]] = []
     gauges = metrics.get("gauges", {})
@@ -161,7 +161,10 @@ def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
     mem_used = gauges.get("mcp_memory_usage_megabytes", 0) or 0
 
     if "mcp_memory_usage_megabytes" in gauges:
-        bar_text = build_bar(mem_used, mem_limit, width=MEMORY_BAR_WIDTH) if mem_limit else f"{mem_used:.1f} MB"
+        if mem_limit:
+            bar_text = build_bar(mem_used, mem_limit, width=MEMORY_BAR_WIDTH)
+        else:
+            bar_text = f"{mem_used:.1f} MB"
         ratio = threshold_ratio(mem_used, mem_limit) if mem_limit else 0
         color = 0
         if mem_limit:
@@ -268,7 +271,7 @@ def fetch_rest_metrics(url: str) -> Dict[str, Any]:
     return data
 
 
-def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
+def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     """Format REST metrics for display."""
     lines: List[Tuple[str, int, str]] = []
     gauges = metrics.get("gauges", {})
@@ -277,7 +280,10 @@ def build_rest_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]:
     mem_used = gauges.get("rest_memory_usage_megabytes")
     mem_limit = gauges.get("rest_memory_limit_megabytes") or 0
     if mem_used is not None:
-        bar_text = build_bar(mem_used, mem_limit or 0, width=MEMORY_BAR_WIDTH) if mem_limit else f"{mem_used:.1f} MB"
+        if mem_limit:
+            bar_text = build_bar(mem_used, mem_limit, width=MEMORY_BAR_WIDTH)
+        else:
+            bar_text = f"{mem_used:.1f} MB"
         color = 0
         if mem_limit:
             ratio = threshold_ratio(mem_used, mem_limit)
@@ -346,7 +352,9 @@ def pad_lines(lines: List[Tuple[str, int, str]], target: int) -> List[Tuple[str,
     return lines + [("", 0, "left")] * (target - len(lines))
 
 
-def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_path: Path, refresh: int) -> None:
+def render_dashboard(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-statements
+    stdscr, url: str, rest_url: str, log_path: Path, rest_log_path: Path, refresh: int
+) -> None:
     """Main curses loop."""
     curses.curs_set(0)
     curses.start_color()
@@ -359,7 +367,7 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
         try:
             metrics = fetch_metrics(url)
             rest_metrics = fetch_rest_metrics(rest_url)
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             metrics_lines = [(f"Failed to fetch metrics from {url}: {exc}", 3, "left")]
             rest_lines = [(f"Failed to fetch REST metrics from {rest_url}: {exc}", 3, "left")]
         else:
@@ -391,8 +399,14 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
                 break
             l_text, l_color, l_align = left_lines[idx]
             r_text, r_color, r_align = right_lines[idx]
-            l_render = l_text.center(mid - 1) if l_align == "center" else l_text.ljust(mid - 1)
-            r_render = r_text.center(width - mid - 2) if r_align == "center" else r_text.ljust(width - mid - 2)
+            if l_align == "center":
+                l_render = l_text.center(mid - 1)
+            else:
+                l_render = l_text.ljust(mid - 1)
+            if r_align == "center":
+                r_render = r_text.center(width - mid - 2)
+            else:
+                r_render = r_text.ljust(width - mid - 2)
             stdscr.addnstr(row, 0, l_render, mid - 1, curses.color_pair(l_color))
             stdscr.addnstr(row, mid + 1, r_render, width - mid - 2, curses.color_pair(r_color))
 
@@ -408,7 +422,12 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
             left = log_lines_left[idx] if idx < len(log_lines_left) else ""
             right = log_lines_right[idx] if idx < len(log_lines_right) else ""
             stdscr.addnstr(divider_row + 1 + idx, 0, left.ljust(mid - 1), mid - 1)
-            stdscr.addnstr(divider_row + 1 + idx, mid + 1, right.ljust(width - mid - 2), width - mid - 2)
+            stdscr.addnstr(
+                divider_row + 1 + idx,
+                mid + 1,
+                right.ljust(width - mid - 2),
+                width - mid - 2
+            )
 
         stdscr.refresh()
 
@@ -419,16 +438,43 @@ def render_dashboard(stdscr, url: str, rest_url: str, log_path: Path, rest_log_p
 
 
 def main() -> None:
+    """Parse arguments and run the dashboard."""
     parser = argparse.ArgumentParser(description="Terminal dashboard for MCP Prometheus metrics.")
-    parser.add_argument("--url", default=DEFAULT_URL, help="MCP metrics endpoint (default: %(default)s)")
-    parser.add_argument("--rest-url", default=DEFAULT_REST_URL, help="REST metrics endpoint (default: %(default)s)")
-    parser.add_argument("--refresh", type=int, default=REFRESH_SECONDS, help="Refresh interval seconds (default: %(default)s)")
-    parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG_PATH, help="MCP log file to tail (default: %(default)s)")
-    parser.add_argument("--rest-log-file", type=Path, default=DEFAULT_REST_LOG_PATH, help="REST log file to tail (default: %(default)s)")
+    parser.add_argument(
+        "--url", default=DEFAULT_URL, help="MCP metrics endpoint (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--rest-url", default=DEFAULT_REST_URL, help="REST metrics endpoint (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--refresh",
+        type=int,
+        default=REFRESH_SECONDS,
+        help="Refresh interval seconds (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=DEFAULT_LOG_PATH,
+        help="MCP log file to tail (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--rest-log-file",
+        type=Path,
+        default=DEFAULT_REST_LOG_PATH,
+        help="REST log file to tail (default: %(default)s)"
+    )
     args = parser.parse_args()
 
     try:
-        curses.wrapper(render_dashboard, args.url, args.rest_url, args.log_file, args.rest_log_file, args.refresh)
+        curses.wrapper(
+            render_dashboard,
+            args.url,
+            args.rest_url,
+            args.log_file,
+            args.rest_log_file,
+            args.refresh
+        )
     except KeyboardInterrupt:
         sys.exit(0)
 

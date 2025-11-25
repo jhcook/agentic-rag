@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=too-many-lines
 """
 Provide a REST API for the retrieval server using FastAPI.
 Run with:
@@ -13,9 +14,12 @@ import time
 import threading
 import queue
 import asyncio
+import uuid
+import inspect
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable
+from contextlib import asynccontextmanager
 
 import psutil
 import requests
@@ -35,6 +39,8 @@ from src.core.factory import get_rag_backend
 from src.core.interfaces import RAGBackend
 from src.core.google_auth import GoogleAuthManager
 from src.core.extractors import extract_text_from_bytes
+from src.core import rag_core
+from src.core.rag_core import verify_grounding_simple
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -91,11 +97,12 @@ sys.stderr.flush()
 CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
 
 def load_app_config():
+    """Load application configuration from settings.json."""
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            
+
             # Update environment variables for MCP
             if "mcpHost" in config:
                 os.environ["MCP_HOST"] = config["mcpHost"]
@@ -103,38 +110,34 @@ def load_app_config():
                 os.environ["MCP_PORT"] = str(config["mcpPort"])
             if "mcpPath" in config:
                 os.environ["MCP_PATH"] = config["mcpPath"]
-                
+
             # Update RAG Core configuration
-            import src.core.rag_core as rag_core
-            
             # Map settings.json keys to rag_core variables
             if "apiEndpoint" in config:
                 rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
             elif "ollamaApiUrl" in config:  # Legacy fallback
                 rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
-                
+
             if "model" in config:
                 rag_core.LLM_MODEL_NAME = config["model"]
                 rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
             elif "ollamaModel" in config:  # Legacy fallback
                 rag_core.LLM_MODEL_NAME = config["ollamaModel"]
                 rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
-                
+
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
-            
-            logger.info(f"Loaded configuration from {CONFIG_FILE}")
+
+            logger.info("Loaded configuration from %s", CONFIG_FILE)
             return config
-        except Exception as e:
-            logger.error(f"Failed to load configuration: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to load configuration: %s", e)
     return {}
 
 app_config = load_app_config()
 
 # Get base path
 pth = os.getenv("RAG_PATH", "api")
-
-from contextlib import asynccontextmanager
 
 # Initialize Backend
 backend: RAGBackend = get_rag_backend()
@@ -165,7 +168,8 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     else:
         urls.append(f"{prefix_base}/{path}")
     # Fallback to host root if prefix path not found
-    urls.append(f"http://{MCP_HOST}:{MCP_PORT}{path if path.startswith('/') else '/' + path}")
+    path_suffix = path if path.startswith('/') else '/' + path
+    urls.append(f"http://{MCP_HOST}:{MCP_PORT}{path_suffix}")
 
     last_exc = None
     # Allow long-running searches: bump timeout for /search
@@ -184,7 +188,7 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
         except requests.exceptions.RequestException as exc:
             last_exc = exc
             continue
-    
+
     # If all URLs failed, raise HTTPException
     error_msg = f"MCP proxy failed: {last_exc}" if last_exc else "MCP proxy failed: no response"
     logger.error(error_msg)
@@ -192,11 +196,12 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
 
 # Mutable server state
 class ServerState:
+    """Mutable server state."""
     search_worker_started: bool = False
     search_jobs: Dict[str, Dict[str, Any]] = {}
     search_jobs_lock: threading.Lock = threading.Lock()
     search_job_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-    
+
     # Quality metrics
     total_searches: int = 0
     failed_searches: int = 0
@@ -207,19 +212,22 @@ class ServerState:
 state = ServerState()
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_fastapi_app: FastAPI):
     """Manage application lifecycle."""
-    logger.info("REST server startup complete (host=%s port=%s base=/api)", 
-                os.getenv("RAG_HOST", "127.0.0.1"), os.getenv("RAG_PORT", "8001"))
-    
+    logger.info(
+        "REST server startup complete (host=%s port=%s base=/api)",
+        os.getenv("RAG_HOST", "127.0.0.1"),
+        os.getenv("RAG_PORT", "8001")
+    )
+
     # Start background store load to prevent first-query latency
     def _warmup():
         try:
             logger.info("Starting background store warmup...")
             backend.load_store()
             logger.info("Background store warmup complete")
-        except Exception as e:
-            logger.error(f"Background warmup failed: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Background warmup failed: %s", e)
 
     threading.Thread(target=_warmup, daemon=True).start()
 
@@ -227,8 +235,8 @@ async def lifespan(app: FastAPI):
     logger.info("REST server shutting down")
     try:
         backend.save_store()
-    except Exception as e:
-        logger.error(f"Error saving store on shutdown: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error saving store on shutdown: %s", e)
 
 app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
 
@@ -309,6 +317,7 @@ class DocumentInfo(BaseModel):
     size_bytes: int
 
 class DocumentsResp(BaseModel):
+    """Response model for document listing."""
     documents: list[DocumentInfo]
 
 class DeleteDocsReq(BaseModel):
@@ -330,6 +339,7 @@ class QualityMetricsResp(BaseModel):
     avg_sources: float
 
 class Job(BaseModel):
+    """Async job model."""
     id: str
     type: str
     status: str
@@ -379,6 +389,7 @@ REST_EMBEDDING_DIM = Gauge(
 )
 
 def _start_search_worker():
+    """Start the background search worker thread if not already started."""
     if state.search_worker_started:
         return
 
@@ -392,12 +403,16 @@ def _start_search_worker():
                 result = backend.search(job["query"])
                 status = "completed"
                 error = None
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 result = None
                 status = "failed"
                 error = str(exc)
             with state.search_jobs_lock:
-                state.search_jobs[job_id].update({"status": status, "result": result, "error": error})
+                state.search_jobs[job_id].update({
+                    "status": status,
+                    "result": result,
+                    "error": error
+                })
             state.search_job_queue.task_done()
 
     worker_thread = threading.Thread(target=_worker, daemon=True)
@@ -428,8 +443,10 @@ MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit for upserts
 def _get_memory_usage_mb() -> float:
     """Return current process RSS in megabytes."""
     return psutil.Process().memory_info().rss / 1024 / 1024
-
-def _record_quality_metrics(result: Optional[Dict[str, Any]], error: Optional[Exception] = None) -> None:
+def _record_quality_metrics(
+    result: Optional[Dict[str, Any]],
+    error: Optional[Exception] = None
+) -> None:
     """Update quality counters based on a search result or error."""
     state.total_searches += 1
 
@@ -460,7 +477,7 @@ def refresh_prometheus_metrics():
     try:
         REST_MEMORY_USAGE_MB.set(_get_memory_usage_mb())
         REST_MEMORY_LIMIT_MB.set(REST_MAX_MEMORY_MB)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("refresh metrics: memory gauge failed: %s", exc)
 
 @app.middleware("http")
@@ -491,11 +508,10 @@ async def add_prometheus_metrics(request: Request, call_next: Callable):
             f'"{method} {full_path} HTTP/{request.scope.get("http_version", "1.1")}" '
             f'{status_code} {content_length} "-" "{user_agent}" {duration:.4f}s\n'
         )
-
         _append_access_log(log_entry)
 
         return response
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         status_code = "500"
         raise
     finally:
@@ -508,7 +524,7 @@ ACCESS_LOG_PATH = LOG_DIR / "rest_server_access.log"
 
 def _append_access_log(log_entry: str) -> None:
     """Write and flush an access log line for reliable tail/follow."""
-    with open(ACCESS_LOG_PATH, "a", buffering=1) as f:
+    with open(ACCESS_LOG_PATH, "a", buffering=1, encoding="utf-8") as f:
         f.write(log_entry)
         f.flush()
         os.fsync(f.fileno())
@@ -516,47 +532,56 @@ def _append_access_log(log_entry: str) -> None:
 @app.post(f"/{pth}/upsert_document")
 def api_upsert(req: UpsertReq):
     """Upsert a document into the store."""
-    logger.info(f"Upserting document: uri={req.uri}")
+    logger.info("Upserting document: uri=%s", req.uri)
     try:
         if not req.text and not req.binary_base64:
-            return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
-        
+            return JSONResponse(
+                {"error": "either text or binary_base64 is required"},
+                status_code=422
+            )
+
         # Enforce size limits
         payload_size = len(req.text) if req.text else 0
         if req.binary_base64:
             payload_size += len(req.binary_base64)
-            
+
         if payload_size > MAX_UPLOAD_SIZE_BYTES:
             raise HTTPException(
-                status_code=413, 
-                detail=f"Payload too large ({payload_size} bytes). Limit is {MAX_UPLOAD_SIZE_BYTES} bytes."
+                status_code=413,
+                detail=(
+                    f"Payload too large ({payload_size} bytes). "
+                    f"Limit is {MAX_UPLOAD_SIZE_BYTES} bytes."
+                )
             )
 
         # Proxy to MCP worker which creates jobs for progress tracking
-        return _proxy_to_mcp("POST", "/rest/upsert_document", {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64})
+        return _proxy_to_mcp(
+            "POST",
+            "/rest/upsert_document",
+            {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64}
+        )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error upserting document {req.uri}: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error upserting document %s: %s", req.uri, e)
         raise
 
 @app.post(f"/{pth}/index_path")
 def api_index_path(req: IndexPathReq):
     """Index a filesystem path into the retrieval store."""
-    logger.info(f"Indexing path: path={req.path}, glob={req.glob}")
+    logger.info("Indexing path: path=%s, glob=%s", req.path, req.glob)
     try:
         return backend.index_path(req.path, req.glob or "**/*")
-    except Exception as e:
-        logger.error(f"Error indexing path {req.path}: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error indexing path %s: %s", req.path, e)
         raise
 
 @app.post(f"/{pth}/search")
 def api_search(req: SearchReq):
     """Search the retrieval store."""
-    logger.info(f"Processing search query: {req.query}")
+    logger.info("Processing search query: %s", req.query)
     # Async mode: queue job and return immediately
     if getattr(req, "async_mode", False):
-        import uuid
         _start_search_worker()
         job_id = str(uuid.uuid4())
         job = {
@@ -581,20 +606,23 @@ def api_search(req: SearchReq):
     except HTTPException as e:
         _record_quality_metrics(None, error=e)
         raise
-    except Exception as e:
-        logger.error(f"Error processing search query '{req.query}': {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error processing search query '%s': %s", req.query, e)
         _record_quality_metrics(None, error=e)
-        raise HTTPException(status_code=502, detail={"error": "search failed", "detail": str(e)})
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "search failed", "detail": str(e)}
+        ) from e
 
 @app.post(f"/{pth}/load_store")
-def api_load(req: LoadStoreReq):
+def api_load(_req: LoadStoreReq):
     """Send the current store to the LLM."""
     logger.info("Loading store to LLM")
     try:
         backend.load_store()
         return {"status": "loaded"}
-    except Exception as e:
-        logger.error(f"Error loading store to LLM: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error loading store to LLM: %s", e)
         raise
 
 @app.get("/metrics")
@@ -603,7 +631,7 @@ def metrics_endpoint():
     refresh_error = None
     try:
         refresh_prometheus_metrics()
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         refresh_error = exc
         logger.error("Metrics refresh failed (serving last known values): %s", exc, exc_info=True)
     try:
@@ -611,7 +639,7 @@ def metrics_endpoint():
         if refresh_error:
             payload += f"# metrics refresh error: {refresh_error}\n".encode()
         return Response(payload, media_type=CONTENT_TYPE_LATEST)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to render metrics: %s", exc, exc_info=True)
         return Response(
             f"# metrics unavailable: {exc}\n", status_code=200, media_type="text/plain"
@@ -625,17 +653,17 @@ def api_grounded_answer(req: GroundedAnswerReq):
         # Pass model if supported by backend
         kwargs = {"k": req.k or 3}
         if req.model:
-             kwargs["model"] = req.model
+            kwargs["model"] = req.model
         if req.temperature is not None:
             kwargs["temperature"] = req.temperature
         if req.max_tokens is not None:
             kwargs["max_tokens"] = req.max_tokens
         if req.config:
             kwargs.update(req.config)
-             
+
         answer = backend.grounded_answer(req.question, **kwargs)
         return answer
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer failed: %s", exc)
         raise
 
@@ -648,7 +676,7 @@ def api_rerank(req: RerankReq):
         if req.top_k:
             ranked = ranked[: req.top_k]
         return {"results": ranked}
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("rerank failed: %s", exc)
         raise
 
@@ -658,7 +686,7 @@ def api_verify(req: VerifyReq):
     logger.info("Verify grounding requested")
     try:
         return backend.verify_grounding(req.question, req.draft_answer, req.citations)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("verify_grounding failed: %s", exc)
         raise
 
@@ -671,9 +699,8 @@ def api_verify_simple(req: VerifySimpleReq):
         # It doesn't need the store, just the passages.
         # We can import it directly or add it to backend.
         # For now, let's import it directly as it's stateless.
-        from src.core.rag_core import verify_grounding_simple
         return verify_grounding_simple(req.question, req.draft_answer, req.passages)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("verify_grounding_simple failed: %s", exc)
         raise
 
@@ -695,29 +722,39 @@ def api_health():
     except HTTPException as exc:
         logger.error("Health check failed: %s", exc.detail)
         raise
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Health check failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "Backend unreachable", "detail": str(exc)})
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "Backend unreachable", "detail": str(exc)}
+        ) from exc
 
 @app.get(f"/{pth}/documents", response_model=DocumentsResp)
 def api_documents():
-    """List indexed document URIs and their approximate text size (bytes)."""
+    """List all documents in the store."""
     try:
         docs = backend.list_documents()
-        return {"documents": [{"uri": d["uri"], "size_bytes": d.get("size", 0)} for d in docs]}
+        return {
+            "documents": [
+                {"uri": d["uri"], "size_bytes": d.get("size", 0)} for d in docs
+            ]
+        }
     except HTTPException as exc:
         logger.error("documents list failed: %s", exc.detail)
         raise
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("documents list failed: %s", exc)
-        raise HTTPException(status_code=502, detail={"error": "Backend unreachable", "detail": str(exc)})
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "Backend unreachable", "detail": str(exc)}
+        ) from exc
 
 @app.post(f"/{pth}/documents/delete")
 def api_documents_delete(req: DeleteDocsReq):
     """Delete documents by URI from the store and rebuild index."""
     try:
         return backend.delete_documents(req.uris)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("documents delete failed: %s", exc)
         return {"deleted": 0, "error": str(exc)}
 
@@ -738,8 +775,10 @@ def api_set_mode(req: ConfigModeReq):
         success = backend.set_mode(req.mode)
         if success:
             return {"status": "ok", "mode": req.mode}
-        else:
-            raise HTTPException(status_code=400, detail=f"Mode '{req.mode}' not available. Available: {backend.get_available_modes()}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Mode '{req.mode}' not available. Available: {backend.get_available_modes()}"
+        )
     raise HTTPException(status_code=501, detail="Backend does not support mode switching")
 
 @app.get(f"/{pth}/config/models")
@@ -759,9 +798,8 @@ def api_jobs():
         # If MCP is not available, return local search jobs as fallback
         jobs = list(state.search_jobs.values())
         return {"jobs": jobs}
-
 @app.get(f"/{pth}/jobs/{{job_id}}", response_model=dict)
-def api_job(job_id: str):
+def api_job(_job_id: str):
     """Get a single async indexing job (pass-through to MCP)."""
     # See api_jobs comment.
     return {"error": "Not implemented for generic jobs, use /search/jobs/{job_id}"}
@@ -772,7 +810,10 @@ def api_search_job(job_id: str):
     with state.search_jobs_lock:
         job = state.search_jobs.get(job_id)
     if not job:
-        raise HTTPException(status_code=44, detail={"error": "not found", "id": job_id})
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not found", "id": job_id}
+        )
     return job
 
 @app.post(f"/{pth}/flush_cache")
@@ -780,7 +821,7 @@ def api_flush_cache():
     """Flush the document store and delete the backing DB file."""
     try:
         return backend.flush_cache()
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("flush_cache failed: %s", exc)
         return Response(status_code=500, content=f"flush failed: {exc}")
 
@@ -807,42 +848,42 @@ def api_quality_metrics():
 @app.get(f"/{pth}/auth/login")
 def auth_login(request: Request):
     """Initiate Google OAuth2 flow."""
-    # Construct callback URL based on the request's host
+    # Construct callback URL based on the request's hos
     # This requires the Google Cloud Console to have this exact URI whitelisted
     redirect_uri = str(request.url_for('auth_callback'))
-    
+
     # Force localhost if 127.0.0.1 is used, as Google often requires localhost
     if "127.0.0.1" in redirect_uri:
         redirect_uri = redirect_uri.replace("127.0.0.1", "localhost")
-    
-    # If running behind a proxy (like ngrok or in some container setups), 
+
+    # If running behind a proxy (like ngrok or in some container setups),
     # you might need to force https or a specific host.
     # For now, we trust the request headers.
-    
-    logger.info(f"Initiating auth flow with redirect_uri: {redirect_uri}")
-    
+
+    logger.info("Initiating auth flow with redirect_uri: %s", redirect_uri)
+
     try:
         flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
-        authorization_url, state = flow.authorization_url(
+        authorization_url, _oauth_state = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
             prompt='consent'
         )
-        logger.info(f"Generated auth URL: {authorization_url}")
+        logger.info("Generated auth URL: %s", authorization_url)
         response = RedirectResponse(authorization_url)
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
-    except Exception as e:
-        logger.error(f"Error initiating auth: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error initiating auth: %s", e)
         # If secrets/client_secrets.json is missing, redirect to setup page
         if "Client secrets file not found" in str(e) or "No such file" in str(e):
-             return RedirectResponse(url=request.url_for('auth_setup'))
-        raise HTTPException(status_code=500, detail=str(e))
+            return RedirectResponse(url=request.url_for('auth_setup'))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/auth/setup", name="auth_setup")
-def auth_setup(request: Request):
+def auth_setup(_request: Request):
     """Show the setup page for Google Auth."""
     return HTMLResponse(content="""
         <html>
@@ -865,17 +906,17 @@ def auth_setup(request: Request):
                 <div class="card">
                     <h1>Connect Google Drive</h1>
                     <p>To enable "Premium" features like Drive search and Gemini integration, we need to connect to your Google Cloud project.</p>
-                    
+
                     <form action="./setup" method="post">
                         <label for="client_id">Client ID</label>
                         <input type="text" id="client_id" name="client_id" placeholder="e.g., 12345...apps.googleusercontent.com" required>
-                        
+
                         <label for="client_secret">Client Secret</label>
                         <input type="text" id="client_secret" name="client_secret" placeholder="e.g., GOCSPX-..." required>
-                        
+
                         <button type="submit">Save & Connect</button>
                     </form>
-                    
+
                     <div class="details">
                         <details>
                             <summary>How do I get these?</summary>
@@ -898,11 +939,11 @@ def auth_setup(request: Request):
 @app.post(f"/{pth}/auth/setup")
 def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
     """Save the provided credentials to secrets/client_secrets.json."""
-    
+
     # Basic validation
     if not client_id or not client_secret:
         return HTMLResponse("Missing fields", status_code=400)
-        
+
     # Construct the JSON structure expected by google-auth-oauthlib
     secrets = {
         "web": {
@@ -917,34 +958,34 @@ def auth_setup_post(request: Request, client_id: str = Form(...), client_secret:
             ]
         }
     }
-    
+
     try:
         os.makedirs("secrets", exist_ok=True)
-        with open("secrets/client_secrets.json", "w") as f:
+        with open("secrets/client_secrets.json", "w", encoding="utf-8") as f:
             json.dump(secrets, f, indent=2)
-            
+
         # Redirect back to login to start the flow
         return RedirectResponse(url=request.url_for('auth_login'), status_code=303)
-    except Exception as e:
-        logger.error(f"Failed to save secrets: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to save secrets: %s", e)
         return HTMLResponse(f"Failed to save configuration: {e}", status_code=500)
 
 @app.get(f"/{pth}/auth/callback", name="auth_callback")
-def auth_callback(request: Request, code: str, state: Optional[str] = None):
+def auth_callback(request: Request, code: str, _oauth_state: Optional[str] = None):
     """Handle Google OAuth2 callback."""
     redirect_uri = str(request.url_for('auth_callback'))
-    logger.info(f"Handling auth callback with redirect_uri: {redirect_uri}")
-    
+    logger.info("Handling auth callback with redirect_uri: %s", redirect_uri)
+
     try:
         flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
         flow.fetch_token(code=code)
         creds = flow.credentials
         auth_manager.save_credentials(creds)
-        
+
         # Reload the backend's auth if necessary
         if hasattr(backend, 'reload_auth'):
             backend.reload_auth()
-        
+
         return HTMLResponse(content="""
             <html>
                 <head><title>Auth Success</title
@@ -954,8 +995,8 @@ def auth_callback(request: Request, code: str, state: Optional[str] = None):
                 </body>
             </html>
         """)
-    except Exception as e:
-        logger.error(f"Error in auth callback: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error in auth callback: %s", e)
         return HTMLResponse(content=f"""
             <html>
                 <head><title>Auth Failed</title></head>
@@ -967,24 +1008,26 @@ def auth_callback(request: Request, code: str, state: Optional[str] = None):
         """, status_code=500)
 
 @app.get(f"/{pth}/auth/logout")
-def auth_logout(request: Request):
+def auth_logout(_request: Request):
     """Log out by deleting the stored token."""
     try:
-        logger.info(f"Logout requested. Checking for token file...")
+        logger.info("Logout requested. Checking for token file...")
         auth_manager.logout()
         if hasattr(backend, 'logout'):
             backend.logout()
         logger.info("Logout successful")
         return JSONResponse({"status": "logged_out"})
-    except Exception as e:
-        logger.error(f"Error logging out: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Error logging out: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 class ChatMessage(BaseModel):
+    """Model for a chat message."""
     role: str
     content: str
 
 class ChatReq(BaseModel):
+    """Request model for chat completion."""
     messages: List[ChatMessage]
     model: Optional[str] = None
     temperature: Optional[float] = None
@@ -1006,7 +1049,7 @@ def api_chat(req: ChatReq):
             kwargs["max_tokens"] = req.max_tokens
         if req.config:
             kwargs.update(req.config)
-            
+
         return backend.chat([m.model_dump() for m in req.messages], **kwargs)
     raise HTTPException(status_code=501, detail="Backend does not support chat")
 
@@ -1025,7 +1068,6 @@ async def api_drive_upload(file: UploadFile = File(...), folder_id: Optional[str
     if hasattr(backend, "upload_file"):
         content = await file.read()
         # Check if upload_file accepts folder_id parameter
-        import inspect
         sig = inspect.signature(backend.upload_file)
         if "folder_id" in sig.parameters:
             result = backend.upload_file(file.filename, content, file.content_type, folder_id)
@@ -1063,16 +1105,18 @@ async def api_extract(file: UploadFile = File(...)):
         content = await file.read()
         text = extract_text_from_bytes(content, file.filename)
         return {"text": text, "filename": file.filename}
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Extraction failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 class VertexConfigReq(BaseModel):
+    """Request model for Vertex AI configuration."""
     project_id: str
     location: str
     data_store_id: str
 
 class AppConfigReq(BaseModel):
+    """Request model for application configuration."""
     api_endpoint: str = Field(alias="apiEndpoint")
     model: str
     embedding_model: str = Field(alias="embeddingModel")
@@ -1097,18 +1141,17 @@ def api_save_app_config(req: AppConfigReq):
     config_dir = Path("config")
     config_dir.mkdir(exist_ok=True)
     config_path = config_dir / "settings.json"
-    
+
     try:
-        with open(config_path, "w") as f:
-            import json
-            # Dump using aliases to match frontend expectation when reading back, 
-            # or dump by name and let frontend handle it? 
+        with open(config_path, "w", encoding="utf-8") as f:
+            # Dump using aliases to match frontend expectation when reading back,
+            # or dump by name and let frontend handle it?
             # Frontend expects camelCase. Pydantic .model_dump(by_alias=True) does this.
             json.dump(req.model_dump(by_alias=True), f, indent=2)
         return {"status": "saved"}
-    except Exception as e:
-        logger.error(f"Failed to save app config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to save app config: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/config/app")
 def api_get_app_config():
@@ -1116,13 +1159,12 @@ def api_get_app_config():
     config_path = Path("config") / "settings.json"
     try:
         if config_path.exists():
-            with open(config_path, "r") as f:
-                import json
+            with open(config_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         # Return empty or defaults if not found
         return {}
-    except Exception as e:
-        logger.error(f"Failed to read app config: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to read app config: %s", e)
         return {}
 
 @app.post(f"/{pth}/config/vertex")
@@ -1135,44 +1177,42 @@ def api_save_vertex_config(req: VertexConfigReq):
     }
     # Save to file
     try:
-        with open("vertex_config.json", "w") as f:
-            import json
+        with open("vertex_config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
-        
+
         # Update current process env vars so it works immediately
         os.environ.update(config)
-        
+
         return {"status": "saved"}
-    except Exception as e:
-        logger.error(f"Failed to save vertex config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to save vertex config: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/config/vertex")
 def api_get_vertex_config():
     """Get Vertex AI configuration."""
     try:
         if os.path.exists("vertex_config.json"):
-            with open("vertex_config.json", "r") as f:
-                import json
+            with open("vertex_config.json", "r", encoding="utf-8") as f:
                 return json.load(f)
         return {
             "VERTEX_PROJECT_ID": os.getenv("VERTEX_PROJECT_ID", ""),
             "VERTEX_LOCATION": os.getenv("VERTEX_LOCATION", "us-central1"),
             "VERTEX_DATA_STORE_ID": os.getenv("VERTEX_DATA_STORE_ID", "")
         }
-    except Exception as e:
-        logger.error(f"Failed to read vertex config: {e}")
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to read vertex config: %s", e)
         return {}
 
 @app.get(f"/{pth}/logs/{{log_type}}")
 def api_get_logs(log_type: str, lines: int = 500):
     """
     Get log file contents.
-    
+
     Args:
         log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
         lines: Number of lines to return from the end of the file (default: 500)
-    
+
     Returns:
         JSON with log lines, total count, and file path
     """
@@ -1183,27 +1223,27 @@ def api_get_logs(log_type: str, lines: int = 500):
         'mcp_access': LOG_DIR / 'mcp_server_access.log',
         'ollama': LOG_DIR / 'ollama_server.log',
     }
-    
+
     if log_type not in log_files:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
-    
+
     log_path = log_files[log_type]
     if not log_path.exists():
         return {"lines": [], "total": 0, "file": str(log_path)}
-    
+
     try:
         # Read file efficiently, getting last N lines
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             # Read all lines for small files, or use efficient tail for large files
             all_lines = f.readlines()
-        
+
         total = len(all_lines)
         # Get last N lines
         start_idx = max(0, total - lines)
         selected_lines = all_lines[start_idx:] if total > 0 else []
-        
+
         return {
             "lines": [line.rstrip('\n\r') for line in selected_lines],
             "total": total,
@@ -1211,20 +1251,20 @@ def api_get_logs(log_type: str, lines: int = 500):
             "start": start_idx,
             "end": total
         }
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to read log file %s: %s", log_type, e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get(f"/{pth}/logs/{{log_type}}/stream")
 async def api_stream_logs(log_type: str, request: Request):
     """
     Stream log file contents using Server-Sent Events (SSE).
-    
+
     Args:
         log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
         request: FastAPI request object for client disconnect detection
-    
+
     Returns:
         StreamingResponse with SSE format
     """
@@ -1235,14 +1275,14 @@ async def api_stream_logs(log_type: str, request: Request):
         'mcp_access': LOG_DIR / 'mcp_server_access.log',
         'ollama': LOG_DIR / 'ollama_server.log',
     }
-    
+
     if log_type not in log_files:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
-    
+
     log_path = log_files[log_type]
-    
+
     async def generate_log_stream():
         """Generate SSE stream of log lines."""
         last_position = 0
@@ -1251,7 +1291,7 @@ async def api_stream_logs(log_type: str, request: Request):
             with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 f.seek(0, 2)  # Seek to end
                 last_position = f.tell()
-        
+
         # Send initial data
         if log_path.exists():
             try:
@@ -1262,17 +1302,17 @@ async def api_stream_logs(log_type: str, request: Request):
                         if await request.is_disconnected():
                             break
                         yield f"data: {line.rstrip()}\n\n"
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error("Error reading initial log lines: %s", e)
                 yield f"data: [ERROR] Failed to read log file: {e}\n\n"
-        
+
         # Stream new lines
         while not await request.is_disconnected():
             try:
                 if log_path.exists():
                     with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                         current_size = f.seek(0, 2)  # Get file size
-                        
+
                         if current_size > last_position:
                             # New content available
                             f.seek(last_position)
@@ -1292,14 +1332,14 @@ async def api_stream_logs(log_type: str, request: Request):
                                     break
                                 yield f"data: {line.rstrip()}\n\n"
                             last_position = f.tell()
-                
+
                 # Wait before checking again
                 await asyncio.sleep(1)
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error("Error streaming logs: %s", e)
                 yield f"data: [ERROR] {e}\n\n"
                 await asyncio.sleep(2)
-    
+
     return StreamingResponse(
         generate_log_stream(),
         media_type="text/event-stream",
@@ -1315,10 +1355,10 @@ if __name__ == "__main__":
         # Configure app settings
         app.host = os.getenv("RAG_HOST", "127.0.0.1")
         app.port = int(os.getenv("RAG_PORT", "8001"))
-        
-        logger.info(f"Starting REST server on {app.host}:{app.port}")
-        logger.info(f"API base path: /{pth}")
 
-    except Exception as e:
-        logger.error(f"Server startup error: {e}")
+        logger.info("Starting REST server on %s:%s", app.host, app.port)
+        logger.info("API base path: /%s", pth)
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Server startup error: %s", e)
         sys.exit(1)
