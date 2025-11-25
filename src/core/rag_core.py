@@ -313,12 +313,6 @@ def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
             logger.debug("Debug mode: skipping FAISS index rebuild")
             return
 
-        # Ensure store is loaded before rebuilding
-        try:
-            load_store()
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning("Failed to load store before rebuild: %s", exc)
-
         index, index_to_meta, _ = get_faiss_globals()
         logger.info("FAISS globals ready (index=%s)", "present" if index is not None else "none")
         embedder = get_embedder()
