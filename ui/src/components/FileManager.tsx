@@ -39,6 +39,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [sortBy, setSortBy] = useState<SortOption>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [deleteConfirm, setDeleteConfirm] = useState<{id: string, name: string, type: 'file' | 'folder'} | null>(null)
+  const [purgeConfirm, setPurgeConfirm] = useState(false)
   const [createFolderDialog, setCreateFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -259,6 +260,28 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     }
   }
 
+  const handlePurgeIndex = async () => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const toastId = toast.loading('Purging index...')
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/flush_cache`, {
+        method: 'POST'
+      })
+      
+      if (!res.ok) throw new Error('Purge failed')
+      
+      toast.success('Index purged successfully', { id: toastId })
+      fetchLocalFiles()
+      setPurgeConfirm(false)
+    } catch (e) {
+      toast.error('Failed to purge index', { id: toastId })
+    }
+  }
+
   const handleDropToDrive = (e: React.DragEvent) => {
     e.preventDefault()
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
@@ -446,6 +469,14 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                     >
                       <Folder className="h-4 w-4 mr-2" />
                       Add Directory
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setPurgeConfirm(true)}
+                    >
+                      <Trash className="h-4 w-4 mr-2" />
+                      Purge Index
                     </Button>
                   </>
                 ) : (
@@ -735,6 +766,26 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={purgeConfirm} onOpenChange={setPurgeConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Purge Entire Index?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete ALL indexed documents? This action cannot be undone and will remove all data from the vector store.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handlePurgeIndex}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Purge All
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

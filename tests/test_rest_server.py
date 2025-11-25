@@ -135,3 +135,12 @@ def test_grounded_answer_endpoint(mock_backend):
     assert response.status_code == 200
     assert response.json()["answer"] == "grounded"
     mock_backend.grounded_answer.assert_called()
+
+def test_flush_cache(mock_backend):
+    mock_backend.flush_cache.return_value = {"status": "flushed", "db_removed": True, "documents": 0}
+    response = client.post("/api/flush_cache")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "flushed"
+    assert data["db_removed"] is True
+    mock_backend.flush_cache.assert_called_once()
