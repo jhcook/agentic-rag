@@ -107,9 +107,51 @@ class LiteLLMEmbedder:
         return self._dim
 
 
+def _is_meta_tensor_error(exc: Exception) -> bool:
+    """Check if exception is related to meta tensor device issues."""
+    error_msg = str(exc).lower()
+    return any(keyword in error_msg for keyword in [
+        "meta tensor",
+        "cannot copy out of meta",
+        "to_empty()",
+        "meta device",
+        "no data",
+    ])
+
+
+def _is_device_error(exc: Exception) -> bool:
+    """Check if exception is related to device placement issues."""
+    error_msg = str(exc).lower()
+    return any(keyword in error_msg for keyword in [
+        "device",
+        "cuda",
+        "mps",
+        "cpu",
+        "expected all tensors",
+    ])
+
+
+def _load_with_strategy(model_name: str, strategy: dict, logger: logging.Logger) -> SentenceTransformer:
+    """Load model with specific strategy parameters."""
+    logger.info("Attempting load with strategy: %s", strategy.get("name", "unknown"))
+    return SentenceTransformer(
+        model_name,
+        device=strategy.get("device", "cpu"),
+        backend=strategy.get("backend", "torch"),
+        model_kwargs=strategy.get("model_kwargs", {})
+    )
+
+
 def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> Optional[object]:  # pylint: disable=too-many-statements
     """
-    Lazily load and cache the embedding model with CPU-first defaults.
+    Lazily load and cache the embedding model with automatic mitigation strategies.
+    
+    Implements progressive fallback strategies to handle:
+    - Meta tensor device errors
+    - CUDA/MPS device issues  
+    - Cache corruption
+    - Model incompatibilities
+    
     Respects debug_mode by skipping model loading.
     """
     # pylint: disable=global-statement
@@ -123,106 +165,106 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
     if not reload_needed:
         return _EMBEDDER
 
+    # Handle OpenAI/API-based models
+    if model_name in OPENAI_EMBED_DIMS:
+        logger.info("Loading API-based embedding model: %s", model_name)
+        api_base = os.getenv("OPENAI_API_BASE")
+        _EMBEDDER = LiteLLMEmbedder(model_name, api_base=api_base)
+        _EMBEDDER_NAME = model_name
+        return _EMBEDDER
+
+    # Configure torch before loading
     try:
-        logger.info("Loading embedding model: %s", model_name)
-        if model_name in OPENAI_EMBED_DIMS:
-            api_base = os.getenv("OPENAI_API_BASE")
-            _EMBEDDER = LiteLLMEmbedder(model_name, api_base=api_base)
+        # pylint: disable=import-outside-toplevel
+        import torch
+        torch.set_num_threads(1)
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+
+    # Progressive loading strategies - try each until one succeeds
+    strategies = [
+        {
+            "name": "default",
+            "device": "cpu",
+            "backend": "torch",
+            "model_kwargs": {"trust_remote_code": True, "low_cpu_mem_usage": False}
+        },
+        {
+            "name": "low_memory",
+            "device": "cpu",
+            "backend": "torch",
+            "model_kwargs": {"trust_remote_code": True, "low_cpu_mem_usage": True}
+        },
+        {
+            "name": "minimal",
+            "device": "cpu",
+            "backend": "torch",
+            "model_kwargs": {"trust_remote_code": True}
+        },
+        {
+            "name": "basic",
+            "device": "cpu",
+            "backend": "torch",
+            "model_kwargs": {}
+        }
+    ]
+
+    last_error = None
+    
+    for strategy in strategies:
+        try:
+            logger.info("Loading embedding model '%s' with strategy: %s", model_name, strategy["name"])
+            _EMBEDDER = _load_with_strategy(model_name, strategy, logger)
             _EMBEDDER_NAME = model_name
+            logger.info("Successfully loaded '%s' with strategy: %s", model_name, strategy["name"])
             return _EMBEDDER
-
-        try:
-            # pylint: disable=import-outside-toplevel
-            import torch  # Local import so unit tests can swap it out
-            torch.set_num_threads(1)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-
-        # Try loading with default settings first
-        try:
-            _EMBEDDER = SentenceTransformer(
-                model_name,
-                device='cpu',
-                backend='torch',
-                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
-            )
-            _EMBEDDER_NAME = model_name
+            
         except Exception as exc:  # pylint: disable=broad-exception-caught
+            last_error = exc
+            error_type = "meta_tensor" if _is_meta_tensor_error(exc) else \
+                        "device" if _is_device_error(exc) else "general"
+            
             logger.warning(
-                "Initial load of '%s' failed: %s. Retrying with cache clear and CPU force.",
-                model_name, exc
+                "Strategy '%s' failed for '%s' (%s error): %s",
+                strategy["name"], model_name, error_type, exc
             )
-            _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(
-                model_name,
-                device='cpu',
-                backend='torch',
-                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
-            )
-            _EMBEDDER_NAME = model_name
+            
+            # For meta tensor or device errors, clear cache and retry once
+            if _is_meta_tensor_error(exc) or _is_device_error(exc):
+                logger.info("Detected %s error - clearing cache and retrying", error_type)
+                if _clear_sentence_transformer_cache(model_name, logger):
+                    try:
+                        _EMBEDDER = _load_with_strategy(model_name, strategy, logger)
+                        _EMBEDDER_NAME = model_name
+                        logger.info("Successfully loaded '%s' after cache clear", model_name)
+                        return _EMBEDDER
+                    except Exception as retry_exc:  # pylint: disable=broad-exception-caught
+                        logger.warning("Cache clear retry failed: %s", retry_exc)
+                        last_error = retry_exc
 
-        try:
-            # pylint: disable=import-outside-toplevel
-            import torch
-            torch.set_num_threads(1)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        # Catch ALL errors during load (NotImplementedError, OSError, etc)
-        logger.warning("Retrying embedder load on CPU due to error: %s", exc)
-        try:
-            _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(
-                model_name,
-                device='cpu',
-                backend='torch',
-                model_kwargs={"trust_remote_code": True, "low_cpu_mem_usage": False}
-            )
-            _EMBEDDER_NAME = model_name
-        except Exception as inner_exc:  # pylint: disable=broad-exception-caught
-            logger.warning(
-                "User embedding model '%s' failed after CPU retry: %s; falling back",
-                model_name, inner_exc
-            )
-            fallback = "all-MiniLM-L6-v2"
-            _clear_sentence_transformer_cache(fallback, logger)
-            _EMBEDDER = SentenceTransformer(
-                fallback,
-                device='cpu',
-                backend='torch'
-            )
-            _EMBEDDER_NAME = fallback
-        try:
-            # pylint: disable=import-outside-toplevel
-            import torch
-            torch.set_num_threads(1)
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-    except Exception as exc:  # pylint: disable=broad-exception-caught,duplicate-except
-        # Prefer to keep running with a smaller, local model rather than crash
-        # on meta-tensor/device errors
-        fallback = "all-MiniLM-L6-v2"
-        logger.warning(
-            "Embedding model '%s' failed to load (%s). Falling back to '%s'.",
-            model_name, exc, fallback
+    # All strategies failed - fall back to reliable model
+    fallback = "all-MiniLM-L6-v2"
+    logger.warning(
+        "All loading strategies failed for '%s' (last error: %s). Falling back to '%s'",
+        model_name, last_error, fallback
+    )
+    
+    try:
+        _clear_sentence_transformer_cache(fallback, logger)
+        _EMBEDDER = SentenceTransformer(
+            fallback,
+            device='cpu',
+            backend='torch'
         )
-        try:
-            _clear_sentence_transformer_cache(model_name, logger)
-            _EMBEDDER = SentenceTransformer(
-                fallback,
-                device='cpu',
-                backend='torch',
-                model_kwargs={"low_cpu_mem_usage": False}
-            )
-            _EMBEDDER_NAME = fallback
-            # pylint: disable=import-outside-toplevel
-            import torch
-            torch.set_num_threads(1)
-            logger.info("Fallback embedding model '%s' loaded successfully", fallback)
-        except Exception as inner_exc:  # pylint: disable=broad-exception-caught
-            logger.critical(
-                "Fallback embedding model '%s' also failed to load: %s", fallback, inner_exc
-            )
-            raise
-
-    return _EMBEDDER
+        _EMBEDDER_NAME = fallback
+        logger.info("Fallback embedding model '%s' loaded successfully", fallback)
+        return _EMBEDDER
+        
+    except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
+        logger.critical(
+            "Fallback embedding model '%s' also failed to load: %s", 
+            fallback, fallback_exc
+        )
+        raise RuntimeError(
+            f"Failed to load both requested model '{model_name}' and fallback '{fallback}'"
+        ) from fallback_exc

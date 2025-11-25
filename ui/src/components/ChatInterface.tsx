@@ -12,25 +12,41 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   displayContent?: string
+  sources?: string[]
   timestamp: number
 }
 
-function MarkdownRenderer({ content }: { content: string }) {
+function MarkdownRenderer({ content, sources }: { content: string, sources?: string[] }) {
   const [html, setHtml] = useState('')
   
   useEffect(() => {
     const parse = async () => {
        try {
-         const result = await marked.parse(content)
+         let processedContent = content
+         
+         // If sources exist, annotate inline citations in the text
+         // Look for patterns like [1], [2], etc. and make them superscript links
+         if (sources && sources.length > 0) {
+           // Replace [N] patterns with superscript citations
+           processedContent = processedContent.replace(/\[(\d+)\]/g, (match, num) => {
+             const idx = parseInt(num) - 1
+             if (idx >= 0 && idx < sources.length) {
+               return `<sup class="citation" data-source-idx="${idx}">[${num}]</sup>`
+             }
+             return match
+           })
+         }
+         
+         const result = await marked.parse(processedContent)
          setHtml(result)
        } catch (e) {
          setHtml(content)
        }
     }
     parse()
-  }, [content])
+  }, [content, sources])
   
-  return <div className="prose prose-sm dark:prose-invert max-w-none [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4 [&>a]:text-blue-500 [&>a]:underline" dangerouslySetInnerHTML={{ __html: html }} />
+  return <div className="prose prose-sm dark:prose-invert max-w-none [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4 [&>a]:text-blue-500 [&>a]:underline [&_.citation]:text-blue-600 [&_.citation]:cursor-pointer [&_.citation]:font-semibold [&_.citation]:hover:text-blue-800" dangerouslySetInnerHTML={{ __html: html }} />
 }
 
 export function ChatInterface({ 
@@ -141,6 +157,7 @@ export function ChatInterface({
       }
 
       let responseContent = data.content || data.answer || "No response";
+      const sources = data.sources || [];
 
       // Defensive parsing to handle raw ModelResponse object string
       if (typeof responseContent === 'string' && responseContent.startsWith('ModelResponse(')) {
@@ -153,7 +170,8 @@ export function ChatInterface({
 
       const botMsg: Message = { 
         role: 'assistant', 
-        content: responseContent, 
+        content: responseContent,
+        sources: sources.length > 0 ? sources : undefined,
         timestamp: Date.now() 
       }
       setMessages(prev => [...prev, botMsg])
@@ -287,7 +305,20 @@ export function ChatInterface({
               <div className={`max-w-[80%] rounded-lg p-3 ${
                 m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
               }`}>
-                <MarkdownRenderer content={m.displayContent || m.content} />
+                <MarkdownRenderer content={m.displayContent || m.content} sources={m.sources} />
+                {m.role === 'assistant' && m.sources && m.sources.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-border">
+                    <div className="text-xs font-semibold text-muted-foreground mb-1">Sources:</div>
+                    <div className="space-y-1">
+                      {m.sources.map((source, idx) => (
+                        <div key={idx} className="text-xs text-muted-foreground">
+                          <span className="font-mono">[{idx + 1}]</span>{' '}
+                          <span className="hover:text-foreground transition-colors">{source}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {m.role === 'assistant' && (
                   <div className="mt-2 flex justify-end gap-1">
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(m.content)} title="Download response">

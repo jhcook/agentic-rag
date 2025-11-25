@@ -36,6 +36,7 @@ import { FileManager } from '@/components/FileManager'
 import { ChatInterface, Message } from '@/components/ChatInterface'
 import { ConversationSidebar, Conversation } from '@/components/ConversationSidebar'
 import { SettingsDashboard } from '@/components/SettingsDashboard'
+import { DeletionStatusBar } from '@/components/DeletionStatusBar'
 
 type IndexedItem = {
   id: string
@@ -472,7 +473,8 @@ function App() {
           for (const file of visibleFiles) {
             try {
               const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
-              let payload: Record<string, unknown> = { uri: file.webkitRelativePath || file.name }
+              // Always use just the filename, not the full path with directories
+              let payload: Record<string, unknown> = { uri: file.name }
               if (isBinary) {
                 payload.binary_base64 = await fileToBase64(file)
               } else {
@@ -1212,6 +1214,7 @@ function App() {
           </div>
         </div>
       )}
+      <DeletionStatusBar config={ollamaConfig} />
     </div>
     </TooltipProvider>
   )

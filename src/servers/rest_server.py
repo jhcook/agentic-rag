@@ -758,6 +758,23 @@ def api_documents_delete(req: DeleteDocsReq):
         logger.error("documents delete failed: %s", exc)
         return {"deleted": 0, "error": str(exc)}
 
+@app.get(f"/{pth}/documents/delete/status")
+def api_deletion_status():
+    """Get deletion queue status."""
+    try:
+        if hasattr(backend, "get_deletion_status"):
+            return backend.get_deletion_status()
+        # For backends without queue support (like Google), return empty status
+        return {
+            "queue_size": 0,
+            "processing": False,
+            "last_completed": None,
+            "total_processed": 0
+        }
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("deletion status failed: %s", exc)
+        return {"error": str(exc)}
+
 @app.get(f"/{pth}/config/mode")
 def api_get_mode():
     """Get the current backend mode."""

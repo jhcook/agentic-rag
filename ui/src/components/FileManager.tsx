@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server } from 'lucide-react'
+import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server, CheckSquare, Square } from 'lucide-react'
 import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +32,7 @@ type LocalFile = {
 export function FileManager({ config, activeMode }: { config: any, activeMode?: string }) {
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([])
   const [localFiles, setLocalFiles] = useState<LocalFile[]>([])
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
@@ -42,6 +43,8 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [purgeConfirm, setPurgeConfirm] = useState(false)
   const [createFolderDialog, setCreateFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [searchText, setSearchText] = useState('')
+  const [useRegex, setUseRegex] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const directoryInputRef = useRef<HTMLInputElement>(null)
 
@@ -144,15 +147,31 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     return sortDirection === 'asc' ? comparison : -comparison
   })
 
-  const sortedLocalFiles = [...localFiles].sort((a, b) => {
-    let comparison = 0
-    if (sortBy === 'name') {
-      comparison = a.uri.localeCompare(b.uri)
-    } else if (sortBy === 'size') {
-      comparison = a.size_bytes - b.size_bytes
-    }
-    return sortDirection === 'asc' ? comparison : -comparison
-  })
+  const sortedLocalFiles = [...localFiles]
+    .filter(file => {
+      if (!searchText) return true
+      
+      if (useRegex) {
+        try {
+          const regex = new RegExp(searchText, 'i')
+          return regex.test(file.uri)
+        } catch (e) {
+          // Invalid regex - fall back to plain text search
+          return file.uri.toLowerCase().includes(searchText.toLowerCase())
+        }
+      }
+      
+      return file.uri.toLowerCase().includes(searchText.toLowerCase())
+    })
+    .sort((a, b) => {
+      let comparison = 0
+      if (sortBy === 'name') {
+        comparison = a.uri.localeCompare(b.uri)
+      } else if (sortBy === 'size') {
+        comparison = a.size_bytes - b.size_bytes
+      }
+      return sortDirection === 'asc' ? comparison : -comparison
+    })
 
   const handleUploadToDrive = async (file: File) => {
     const host = config?.ragHost || '127.0.0.1'
@@ -209,7 +228,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
     
-    const toastId = toast.loading('Deleting...')
+    const toastId = toast.loading('Queueing deletion...')
     
     try {
       const res = await fetch(`http://${host}:${port}/${base}/documents/delete`, {
@@ -220,11 +239,68 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       
       if (!res.ok) throw new Error('Delete failed')
       
-      toast.success('Deleted successfully', { id: toastId })
+      const data = await res.json()
+      if (data.status === 'queued') {
+        toast.success(`Queued for deletion (${data.queue_size} in queue)`, { id: toastId })
+      } else {
+        toast.success('Deleted successfully', { id: toastId })
+      }
       fetchLocalFiles()
       setDeleteConfirm(null)
     } catch (e) {
       toast.error('Failed to delete', { id: toastId })
+    }
+  }
+
+  const handleDeleteSelectedFiles = async () => {
+    if (selectedFiles.size === 0) return
+    
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const uris = Array.from(selectedFiles)
+    const toastId = toast.loading(`Queueing ${uris.length} file(s) for deletion...`)
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/documents/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uris })
+      })
+      
+      if (!res.ok) throw new Error('Delete failed')
+      
+      const data = await res.json()
+      if (data.status === 'queued') {
+        toast.success(`Queued ${uris.length} file(s) for deletion (${data.queue_size} in queue)`, { id: toastId })
+      } else {
+        toast.success('Deleted successfully', { id: toastId })
+      }
+      setSelectedFiles(new Set())
+      fetchLocalFiles()
+    } catch (e) {
+      toast.error('Failed to delete', { id: toastId })
+    }
+  }
+
+  const toggleFileSelection = (uri: string) => {
+    setSelectedFiles(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(uri)) {
+        newSet.delete(uri)
+      } else {
+        newSet.add(uri)
+      }
+      return newSet
+    })
+  }
+
+  const selectAllFiles = () => {
+    if (selectedFiles.size === sortedLocalFiles.length) {
+      setSelectedFiles(new Set())
+    } else {
+      setSelectedFiles(new Set(sortedLocalFiles.map(f => f.uri)))
     }
   }
 
@@ -367,7 +443,8 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     for (const file of visibleFiles) {
       try {
         const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
-        let payload: Record<string, unknown> = { uri: file.webkitRelativePath || file.name }
+        // Always use just the filename, not the full path with directories
+        let payload: Record<string, unknown> = { uri: file.name }
         if (isBinary) {
           payload.binary_base64 = await fileToBase64(file)
         } else {
@@ -454,6 +531,16 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                       multiple
                       onChange={handleAddDirectory}
                     />
+                    {selectedFiles.size > 0 && (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={handleDeleteSelectedFiles}
+                      >
+                        <Trash className="h-4 w-4 mr-2" />
+                        Delete {selectedFiles.size} Selected
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"
@@ -533,11 +620,48 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                   variant="ghost" 
                   onClick={() => isLocalMode ? fetchLocalFiles() : fetchDriveFiles(currentFolderId)} 
                   disabled={loading}
+                  className="h-8 w-8 p-0"
+                  title="Refresh file list"
+                  aria-label="Refresh file list"
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
               </div>
             </div>
+            
+            {isLocalMode && (
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <Input
+                    type="text"
+                    placeholder={useRegex ? "Search with regex (e.g., \\.pdf$)" : "Search files..."}
+                    value={searchText}
+                    onChange={(e) => setSearchText(e.target.value)}
+                    className="h-8 pr-20"
+                  />
+                  {searchText && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSearchText('')}
+                      className="absolute right-12 top-1/2 -translate-y-1/2 h-6 w-6 p-0"
+                      title="Clear search"
+                    >
+                      ×
+                    </Button>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant={useRegex ? "default" : "outline"}
+                  onClick={() => setUseRegex(!useRegex)}
+                  className="h-8 px-3 whitespace-nowrap"
+                  title={useRegex ? "Using regex mode" : "Using plain text search"}
+                >
+                  .*
+                </Button>
+              </div>
+            )}
             
             {!isLocalMode && (
               <div className="flex items-center gap-2 text-sm bg-muted/30 p-2 rounded-md">
@@ -573,18 +697,58 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
               {sortedLocalFiles.length === 0 && !loading ? (
                 <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
                   <HardDrive className="h-10 w-10 mb-2 opacity-50" />
-                  <p>No indexed files</p>
-                  <p className="text-xs mt-1">Files will appear here after indexing</p>
+                  {searchText ? (
+                    <>
+                      <p>No files match your search</p>
+                      <p className="text-xs mt-1">Try a different search term or pattern</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>No indexed files</p>
+                      <p className="text-xs mt-1">Files will appear here after indexing</p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <ScrollArea className="h-full">
                   <div className="space-y-2 p-1">
+                    {localFiles.length > 0 && (
+                      <div className="flex items-center gap-2 p-2 border-b">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={selectAllFiles}
+                          className="h-8"
+                        >
+                          {selectedFiles.size === localFiles.length ? (
+                            <CheckSquare className="h-4 w-4" />
+                          ) : (
+                            <Square className="h-4 w-4" />
+                          )}
+                        </Button>
+                        <span className="text-xs text-muted-foreground">
+                          {selectedFiles.size > 0 ? `${selectedFiles.size} selected` : 'Select all'}
+                        </span>
+                      </div>
+                    )}
                     {sortedLocalFiles.map((f) => (
                       <div 
                         key={f.uri} 
                         className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
                       >
                         <div className="flex items-center gap-3 overflow-hidden flex-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => toggleFileSelection(f.uri)}
+                            className="h-8 w-8 p-0 shrink-0"
+                          >
+                            {selectedFiles.has(f.uri) ? (
+                              <CheckSquare className="h-4 w-4 text-primary" />
+                            ) : (
+                              <Square className="h-4 w-4" />
+                            )}
+                          </Button>
                           <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
                           <div className="truncate flex-1 min-w-0">
                             <p className="text-sm font-medium truncate">{getFileName(f.uri)}</p>

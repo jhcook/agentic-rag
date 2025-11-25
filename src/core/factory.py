@@ -4,6 +4,9 @@ import os
 import pathlib
 import inspect
 import json
+import threading
+import queue
+import time
 from typing import Dict, Any, List
 
 import psutil
@@ -37,6 +40,18 @@ logger = logging.getLogger(__name__)
 
 class LocalBackend:
     """Direct calls to rag_core functions."""
+
+    def __init__(self):
+        """Initialize backend with deletion queue."""
+        self._deletion_queue: queue.Queue = queue.Queue()
+        self._deletion_worker_started = False
+        self._deletion_lock = threading.Lock()
+        self._deletion_status: Dict[str, Any] = {
+            "queue_size": 0,
+            "processing": False,
+            "last_completed": None,
+            "total_processed": 0
+        }
 
     def _check_core(self):
         """Check if local core is available."""
@@ -106,6 +121,8 @@ class LocalBackend:
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents with metadata."""
         self._check_core()
+        # Ensure store is synced with disk before listing
+        local_core._ensure_store_synced()  # pylint: disable=protected-access
         store = local_core.get_store()
         return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
 
@@ -124,18 +141,74 @@ class LocalBackend:
         self._check_core()
         return local_core.verify_grounding(question, answer, citations)
 
+    def _start_deletion_worker(self):
+        """Start the background deletion worker thread."""
+        if self._deletion_worker_started:
+            return
+
+        def _worker():
+            while True:
+                try:
+                    uris = self._deletion_queue.get(timeout=1)
+                    if not uris:
+                        continue
+                    
+                    with self._deletion_lock:
+                        self._deletion_status["processing"] = True
+                    
+                    # Perform deletion
+                    store = local_core.get_store()
+                    deleted = 0
+                    for uri in uris:
+                        if uri in store.docs:
+                            del store.docs[uri]
+                            deleted += 1
+                    
+                    local_core.save_store()
+                    local_core._rebuild_faiss_index()  # pylint: disable=protected-access
+                    
+                    with self._deletion_lock:
+                        self._deletion_status["processing"] = False
+                        self._deletion_status["queue_size"] = self._deletion_queue.qsize()
+                        self._deletion_status["last_completed"] = time.time()
+                        self._deletion_status["total_processed"] += deleted
+                    
+                    self._deletion_queue.task_done()
+                    
+                except queue.Empty:
+                    continue
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Deletion worker error: %s", exc)
+                    with self._deletion_lock:
+                        self._deletion_status["processing"] = False
+                        self._deletion_status["queue_size"] = self._deletion_queue.qsize()
+
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        worker_thread.start()
+        self._deletion_worker_started = True
+        logger.info("Deletion worker thread started")
+
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
-        """Delete documents by URI."""
+        """Delete documents by URI (queued)."""
         self._check_core()
-        store = local_core.get_store()
-        deleted = 0
-        for uri in uris:
-            if uri in store.docs:
-                del store.docs[uri]
-                deleted += 1
-        local_core.save_store()
-        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
-        return {"deleted": deleted}
+        self._start_deletion_worker()
+        
+        # Add to queue
+        self._deletion_queue.put(uris)
+        
+        with self._deletion_lock:
+            self._deletion_status["queue_size"] = self._deletion_queue.qsize()
+        
+        return {
+            "status": "queued",
+            "uris": uris,
+            "queue_size": self._deletion_status["queue_size"]
+        }
+
+    def get_deletion_status(self) -> Dict[str, Any]:
+        """Get current deletion queue status."""
+        with self._deletion_lock:
+            return self._deletion_status.copy()
 
     def flush_cache(self) -> Dict[str, Any]:
         """Clear the document cache."""
@@ -463,6 +536,18 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
         """Delete documents by URI."""
         return self._backend.delete_documents(uris)
+
+    def get_deletion_status(self) -> Dict[str, Any]:
+        """Get deletion queue status."""
+        if hasattr(self._backend, "get_deletion_status"):
+            return self._backend.get_deletion_status()
+        # For backends without queue support, return empty status
+        return {
+            "queue_size": 0,
+            "processing": False,
+            "last_completed": None,
+            "total_processed": 0
+        }
 
     def flush_cache(self) -> Dict[str, Any]:
         """Clear the document cache."""

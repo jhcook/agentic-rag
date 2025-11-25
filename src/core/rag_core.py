@@ -1100,6 +1100,118 @@ def verify_grounding(_question: str, draft_answer: str, citations: List[str]) ->
     return verify_grounding_simple(_question, draft_answer, passages)
 
 
+def _extract_cited_sources(content: str, all_sources: List[str]) -> List[str]:
+    """
+    Extract unique sources from LLM response in order of citation.
+    Parses the 'Sources:' section to get the ordered, deduplicated list.
+    Falls back to all_sources if parsing fails.
+    
+    Args:
+        content: The LLM response text
+        all_sources: All sources retrieved from RAG
+        
+    Returns:
+        Ordered list of unique source URIs cited in the response
+    """
+    import re
+    
+    # Try to find the Sources: section
+    sources_match = re.search(r'Sources?:\s*\n((?:\[\d+\][^\n]+\n?)+)', content, re.IGNORECASE | re.MULTILINE)
+    
+    if sources_match:
+        sources_section = sources_match.group(1)
+        # Extract source names from lines like "[1] filename.pdf"
+        cited_sources = []
+        seen = set()
+        
+        for line in sources_section.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            # Match pattern like "[1] document_name.pdf"
+            match = re.match(r'\[(\d+)\]\s*(.+)', line)
+            if match:
+                source_name = match.group(2).strip()
+                # Find this source in all_sources (case-insensitive match)
+                for src in all_sources:
+                    if src.lower() == source_name.lower() or src.lower().endswith(source_name.lower()):
+                        if src not in seen:
+                            cited_sources.append(src)
+                            seen.add(src)
+                        break
+        
+        if cited_sources:
+            return cited_sources
+    
+    # Fallback: return deduplicated all_sources
+    seen = set()
+    result = []
+    for src in all_sources:
+        if src not in seen:
+            result.append(src)
+            seen.add(src)
+    return result
+
+
+def _add_inline_citations(content: str, sources: List[str]) -> str:
+    """
+    Automatically add inline citation markers to the response text.
+    If the LLM didn't include [1], [2] style citations, we add them at paragraph boundaries.
+    
+    Args:
+        content: The LLM response text
+        sources: List of unique sources
+        
+    Returns:
+        Content with inline citations added
+    """
+    import re
+    
+    # Check if content already has inline citations
+    has_inline = bool(re.search(r'\[\d+\](?!\s*[^\n]*\n)', content))  # [N] not at start of line
+    if has_inline:
+        return content  # Already has inline citations, leave as is
+    
+    # Remove the Sources: section if it exists (we'll add our own)
+    content_without_sources = re.sub(
+        r'\n*Sources?:\s*\n(?:\[\d+\][^\n]+\n?)+\s*$',
+        '',
+        content,
+        flags=re.IGNORECASE | re.MULTILINE
+    ).strip()
+    
+    if not sources:
+        return content_without_sources
+    
+    # Split content into paragraphs
+    paragraphs = content_without_sources.split('\n\n')
+    
+    # Add citation at the end of each substantial paragraph
+    # Distribute citations across paragraphs
+    modified_paragraphs = []
+    source_idx = 0
+    
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            modified_paragraphs.append(para)
+            continue
+            
+        # For substantial paragraphs (more than just a short sentence), add citations
+        if len(para) > 50 and source_idx < len(sources):
+            # Cycle through sources
+            cite_num = (source_idx % len(sources)) + 1
+            # Add citation at end of paragraph
+            if not para.endswith('.'):
+                para += '.'
+            para += f" [{cite_num}]"
+            source_idx += 1
+        
+        modified_paragraphs.append(para)
+    
+    return '\n\n'.join(modified_paragraphs)
+
+
 def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # pylint: disable=too-many-locals
     """
     Conversational chat using Ollama with RAG context from indexed documents.
@@ -1141,8 +1253,24 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         "assumptions beyond what is explicitly stated in the documents. "
         "If the answer is not contained in the provided documents, reply exactly: "
         "\"I don't know.\" "
-        "At the end of your response, include a 'Sources:' section listing the source URIs "
-        "for the information you used."
+        "\n\n"
+        "CRITICAL CITATION REQUIREMENTS:\n"
+        "1. Use inline citations throughout your answer with numbered brackets: [1], [2], [3]\n"
+        "2. Place the citation immediately after each claim or fact from a source\n"
+        "3. If a sentence uses information from multiple sources, cite all: [1][2]\n"
+        "4. Assign a unique number to each source document and reuse it consistently\n"
+        "\n"
+        "Example response format:\n"
+        "John has 10 years of experience in software engineering [1]. He specialized in "
+        "cloud architecture [2] and led several major projects [1][3]. His expertise includes "
+        "Kubernetes and AWS [2].\n"
+        "\n"
+        "Sources:\n"
+        "[1] resume.pdf\n"
+        "[2] cover_letter.docx\n"
+        "[3] portfolio.pdf\n"
+        "\n"
+        "You MUST include inline citations [1], [2], etc. in your response text."
     )
 
     # Build messages with context: keep conversation history but add document context
@@ -1186,7 +1314,14 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         # Normalize response to extract conten
         normalized = _normalize_llm_response(resp, sources)
         content = normalized.get("answer") or normalized.get("content") or str(resp)
-        return {"role": "assistant", "content": content, "sources": sources}
+        
+        # Extract and deduplicate sources based on what was actually cited
+        cited_sources = _extract_cited_sources(content, sources)
+        
+        # Add inline citations if the LLM didn't include them
+        content_with_citations = _add_inline_citations(content, cited_sources)
+        
+        return {"role": "assistant", "content": content_with_citations, "sources": cited_sources}
 
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Chat completion failed: %s", exc)
