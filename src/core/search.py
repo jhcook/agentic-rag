@@ -1,6 +1,7 @@
 """
 Thin wrapper module to centralize search helpers.
 """
+# pylint: disable=protected-access
 from src.core import rag_core
 
 _vector_search = rag_core._vector_search

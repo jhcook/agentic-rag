@@ -1,6 +1,7 @@
 """
 Core RAG functions: indexing, searching, reranking, synthesizing, verifying.
 """
+# pylint: disable=too-many-lines
 
 from __future__ import annotations
 import logging
@@ -8,11 +9,12 @@ import pathlib
 import json
 import os
 import hashlib
+import re
 import time
 import asyncio
 import gc
 
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import List, Dict, Any, Optional, Tuple, Callable, cast
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -478,6 +480,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
     offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
     if embedder is not None and index is not None:
+        faiss_index = cast(Any, index)
         # Process in batches to control memory
         batch_size = 8
         for i in range(0, len(chunks), batch_size):
@@ -495,7 +498,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
             if len(embeddings.shape) == 1:
                 embeddings = embeddings.reshape(1, -1)
 
-            index.add(embeddings)
+            faiss_index.add(embeddings)  # pylint: disable=no-value-for-parameter
 
             # Update metadata for each chunk in batch
             for j, (start, end) in enumerate(batch_offsets):
@@ -1100,116 +1103,94 @@ def verify_grounding(_question: str, draft_answer: str, citations: List[str]) ->
     return verify_grounding_simple(_question, draft_answer, passages)
 
 
+_CITATION_BLOCK_PATTERN = re.compile(
+    r"Sources?:\s*\n((?:\[\d+\][^\n]+\n?)+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CITATION_LINE_PATTERN = re.compile(r"\[(\d+)\]\s*(.+)")
+_INLINE_CITATION_PATTERN = re.compile(r"\[\d+\](?!\s*[^\n]*\n)")
+_SOURCES_SECTION_PATTERN = re.compile(
+    r"\n*Sources?:\s*\n(?:\[\d+\][^\n]+\n?)+\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    """Return items with duplicates removed, preserving order."""
+    seen = set()
+    deduped: List[str] = []
+    for item in items:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
 def _extract_cited_sources(content: str, all_sources: List[str]) -> List[str]:
     """
     Extract unique sources from LLM response in order of citation.
+
     Parses the 'Sources:' section to get the ordered, deduplicated list.
     Falls back to all_sources if parsing fails.
-    
-    Args:
-        content: The LLM response text
-        all_sources: All sources retrieved from RAG
-        
-    Returns:
-        Ordered list of unique source URIs cited in the response
     """
-    import re
-    
-    # Try to find the Sources: section
-    sources_match = re.search(r'Sources?:\s*\n((?:\[\d+\][^\n]+\n?)+)', content, re.IGNORECASE | re.MULTILINE)
-    
-    if sources_match:
-        sources_section = sources_match.group(1)
-        # Extract source names from lines like "[1] filename.pdf"
-        cited_sources = []
-        seen = set()
-        
-        for line in sources_section.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            # Match pattern like "[1] document_name.pdf"
-            match = re.match(r'\[(\d+)\]\s*(.+)', line)
-            if match:
-                source_name = match.group(2).strip()
-                # Find this source in all_sources (case-insensitive match)
-                for src in all_sources:
-                    if src.lower() == source_name.lower() or src.lower().endswith(source_name.lower()):
-                        if src not in seen:
-                            cited_sources.append(src)
-                            seen.add(src)
-                        break
-        
-        if cited_sources:
-            return cited_sources
-    
-    # Fallback: return deduplicated all_sources
-    seen = set()
-    result = []
-    for src in all_sources:
-        if src not in seen:
-            result.append(src)
-            seen.add(src)
-    return result
+    sources_match = _CITATION_BLOCK_PATTERN.search(content)
+    if not sources_match:
+        return _dedupe_preserve_order(all_sources)
+
+    cited_sources: List[str] = []
+    seen: set[str] = set()
+
+    for line in sources_match.group(1).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _CITATION_LINE_PATTERN.match(line)
+        if not match:
+            continue
+
+        source_name = match.group(2).strip().lower()
+        matched_source = next(
+            (
+                src
+                for src in all_sources
+                if src.lower() == source_name or src.lower().endswith(source_name)
+            ),
+            None,
+        )
+        if matched_source and matched_source not in seen:
+            cited_sources.append(matched_source)
+            seen.add(matched_source)
+
+    if cited_sources:
+        return cited_sources
+
+    return _dedupe_preserve_order(all_sources)
 
 
 def _add_inline_citations(content: str, sources: List[str]) -> str:
     """
     Automatically add inline citation markers to the response text.
     If the LLM didn't include [1], [2] style citations, we add them at paragraph boundaries.
-    
-    Args:
-        content: The LLM response text
-        sources: List of unique sources
-        
-    Returns:
-        Content with inline citations added
     """
-    import re
-    
-    # Check if content already has inline citations
-    has_inline = bool(re.search(r'\[\d+\](?!\s*[^\n]*\n)', content))  # [N] not at start of line
-    if has_inline:
-        return content  # Already has inline citations, leave as is
-    
-    # Remove the Sources: section if it exists (we'll add our own)
-    content_without_sources = re.sub(
-        r'\n*Sources?:\s*\n(?:\[\d+\][^\n]+\n?)+\s*$',
-        '',
-        content,
-        flags=re.IGNORECASE | re.MULTILINE
-    ).strip()
-    
+    if _INLINE_CITATION_PATTERN.search(content):
+        return content
     if not sources:
-        return content_without_sources
-    
-    # Split content into paragraphs
-    paragraphs = content_without_sources.split('\n\n')
-    
-    # Add citation at the end of each substantial paragraph
-    # Distribute citations across paragraphs
-    modified_paragraphs = []
-    source_idx = 0
-    
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            modified_paragraphs.append(para)
-            continue
-            
-        # For substantial paragraphs (more than just a short sentence), add citations
-        if len(para) > 50 and source_idx < len(sources):
-            # Cycle through sources
-            cite_num = (source_idx % len(sources)) + 1
-            # Add citation at end of paragraph
-            if not para.endswith('.'):
-                para += '.'
-            para += f" [{cite_num}]"
-            source_idx += 1
-        
-        modified_paragraphs.append(para)
-    
-    return '\n\n'.join(modified_paragraphs)
+        return content
+
+    content_without_sources = _SOURCES_SECTION_PATTERN.sub("", content).strip()
+    paragraphs = [p for p in content_without_sources.split("\n\n") if p.strip()]
+
+    with_citations = []
+    for i, paragraph in enumerate(paragraphs):
+        citation_num = (i % len(sources)) + 1
+        with_citations.append(f"{paragraph} [{citation_num}]")
+
+    content_with_citations = "\n\n".join(with_citations)
+    if "Sources:" not in content_with_citations:
+        sources_section = "\n".join(f"[{i+1}] {src}" for i, src in enumerate(sources))
+        content_with_citations = f"{content_with_citations}\n\nSources:\n{sources_section}"
+
+    return content_with_citations
 
 
 def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # pylint: disable=too-many-locals
@@ -1314,13 +1295,13 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         # Normalize response to extract conten
         normalized = _normalize_llm_response(resp, sources)
         content = normalized.get("answer") or normalized.get("content") or str(resp)
-        
+
         # Extract and deduplicate sources based on what was actually cited
         cited_sources = _extract_cited_sources(content, sources)
-        
+
         # Add inline citations if the LLM didn't include them
         content_with_citations = _add_inline_citations(content, cited_sources)
-        
+
         return {"role": "assistant", "content": content_with_citations, "sources": cited_sources}
 
     except Exception as exc:  # pylint: disable=broad-exception-caught

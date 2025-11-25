@@ -25,8 +25,8 @@ os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
-_EMBEDDER: Optional[SentenceTransformer] = None
-_EMBEDDER_NAME: Optional[str] = None
+_EMBEDDER: Optional[SentenceTransformer] = None  # pylint: disable=invalid-name
+_EMBEDDER_NAME: Optional[str] = None  # pylint: disable=invalid-name
 
 OPENAI_EMBED_DIMS = {
     "text-embedding-3-small": 1536,
@@ -131,7 +131,11 @@ def _is_device_error(exc: Exception) -> bool:
     ])
 
 
-def _load_with_strategy(model_name: str, strategy: dict, logger: logging.Logger) -> SentenceTransformer:
+def _load_with_strategy(
+    model_name: str,
+    strategy: dict,
+    logger: logging.Logger,
+) -> SentenceTransformer:
     """Load model with specific strategy parameters."""
     logger.info("Attempting load with strategy: %s", strategy.get("name", "unknown"))
     return SentenceTransformer(
@@ -142,16 +146,20 @@ def _load_with_strategy(model_name: str, strategy: dict, logger: logging.Logger)
     )
 
 
-def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> Optional[object]:  # pylint: disable=too-many-statements
+def get_embedder(
+    model_name: str,
+    debug_mode: bool,
+    logger: logging.Logger,
+) -> Optional[object]:  # pylint: disable=too-many-statements
     """
     Lazily load and cache the embedding model with automatic mitigation strategies.
-    
+
     Implements progressive fallback strategies to handle:
     - Meta tensor device errors
-    - CUDA/MPS device issues  
+    - CUDA/MPS device issues
     - Cache corruption
     - Model incompatibilities
-    
+
     Respects debug_mode by skipping model loading.
     """
     # pylint: disable=global-statement
@@ -210,25 +218,29 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
     ]
 
     last_error = None
-    
+
     for strategy in strategies:
         try:
-            logger.info("Loading embedding model '%s' with strategy: %s", model_name, strategy["name"])
+            logger.info(
+                "Loading embedding model '%s' with strategy: %s",
+                model_name,
+                strategy["name"],
+            )
             _EMBEDDER = _load_with_strategy(model_name, strategy, logger)
             _EMBEDDER_NAME = model_name
             logger.info("Successfully loaded '%s' with strategy: %s", model_name, strategy["name"])
             return _EMBEDDER
-            
+
         except Exception as exc:  # pylint: disable=broad-exception-caught
             last_error = exc
             error_type = "meta_tensor" if _is_meta_tensor_error(exc) else \
                         "device" if _is_device_error(exc) else "general"
-            
+
             logger.warning(
                 "Strategy '%s' failed for '%s' (%s error): %s",
                 strategy["name"], model_name, error_type, exc
             )
-            
+
             # For meta tensor or device errors, clear cache and retry once
             if _is_meta_tensor_error(exc) or _is_device_error(exc):
                 logger.info("Detected %s error - clearing cache and retrying", error_type)
@@ -248,7 +260,7 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
         "All loading strategies failed for '%s' (last error: %s). Falling back to '%s'",
         model_name, last_error, fallback
     )
-    
+
     try:
         _clear_sentence_transformer_cache(fallback, logger)
         _EMBEDDER = SentenceTransformer(
@@ -259,10 +271,10 @@ def get_embedder(model_name: str, debug_mode: bool, logger: logging.Logger) -> O
         _EMBEDDER_NAME = fallback
         logger.info("Fallback embedding model '%s' loaded successfully", fallback)
         return _EMBEDDER
-        
+
     except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
         logger.critical(
-            "Fallback embedding model '%s' also failed to load: %s", 
+            "Fallback embedding model '%s' also failed to load: %s",
             fallback, fallback_exc
         )
         raise RuntimeError(

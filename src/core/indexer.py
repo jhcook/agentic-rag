@@ -1,6 +1,7 @@
 """
 Thin wrapper module to centralize indexing helpers.
 """
+# pylint: disable=protected-access
 from src.core import rag_core
 
 upsert_document = rag_core.upsert_document

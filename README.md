@@ -44,16 +44,87 @@ agentic-rag/
 
 ## Features
 
+- **Multiple AI Backends**: Choose between Local (Ollama), OpenAI Assistants, or Google Vertex AI
+  - **Local (Ollama)**: Free, private, offline-capable with local LLMs
+  - **OpenAI Assistants**: GPT-4 quality with function calling bridge to local documents
+  - **Google Vertex AI**: Cloud integration with Drive/Gmail and 2M token context
 - **Hybrid Architecture**: Support for both Monolithic (Local) and Distributed (Remote) deployments
 - **Role-Based Startup**: flexible `start.sh` script to launch specific components (`monolith`, `server`, `client`)
 - **Document Indexing**: Index text documents for efficient retrieval using FAISS vector store
 - **Search Functionality**: Perform semantic searches on indexed documents using natural language queries
 - **Answer Synthesis**: Generate answers based on retrieved documents using LLM integration
+- **Automatic Citations**: Inline citations [1], [2] with source references
 - **Grounding Verification**: Verify the grounding of generated answers against the source documents
 - **MCP Server**: Model Context Protocol server for integration with AI assistants
 - **REST API**: RESTful API for document search and RAG operations
+- **Modern Web UI**: React-based interface for chat, file management, and settings
 - **Debug Mode**: Skip expensive embedding operations for testing (`RAG_DEBUG_MODE=true`)
 - **Automated Startup**: Shell scripts for easy service management
+
+## AI Backend Options
+
+Agentic RAG supports three AI backends, each with different trade-offs:
+
+### 1. Local (Ollama) - Default
+**Best for**: Privacy, offline use, no API costs
+
+- ✅ 100% local and private
+- ✅ Works offline
+- ✅ Free to use
+- ✅ Fast responses (local inference)
+- ❌ Lower quality than GPT-4
+- ❌ Requires local GPU/CPU resources
+
+**Setup**: Install Ollama and pull a model
+```bash
+brew install ollama
+ollama pull qwen2.5:3b
+```
+
+### 2. OpenAI Assistants - **NEW!**
+**Best for**: GPT-4 quality while keeping documents private
+
+- ✅ Excellent reasoning and answer quality
+- ✅ Documents stay local (only queries sent to API)
+- ✅ Automatic function calling orchestration
+- ✅ Built-in citation support
+- ✅ No file upload needed
+- ❌ Costs ~$0.01 per query
+- ❌ Requires internet and API key
+
+**Setup**: See [docs/openai_assistants.md](docs/openai_assistants.md)
+```bash
+# Add to .env
+OPENAI_API_KEY=sk-...
+RAG_MODE=openai_assistants
+```
+
+### 3. Google Vertex AI
+**Best for**: Drive/Gmail integration, massive context windows
+
+- ✅ 2M token context window
+- ✅ Native Drive and Gmail OAuth
+- ✅ Automatic grounding with Agent Builder
+- ✅ Multi-modal support (PDFs, images, video)
+- ❌ Complex setup (GCP project required)
+- ❌ Files uploaded to Google Cloud
+- ❌ Costs per query + storage
+
+**Setup**: See [docs/vertex_ai_setup.md](docs/vertex_ai_setup.md) and [docs/google_integration.md](docs/google_integration.md)
+
+### Comparison Table
+
+| Feature | Local (Ollama) | OpenAI Assistants | Google Vertex AI |
+|---------|----------------|-------------------|------------------|
+| **Cost** | Free | ~$0.01/query | ~$0.005/query + storage |
+| **Privacy** | 100% local | Queries sent | Files + queries sent |
+| **Quality** | Good | Excellent | Excellent |
+| **Setup** | Easy | Medium | Complex |
+| **Offline** | Yes | No | No |
+| **Context** | 8K-128K | 128K | 1M-2M |
+| **Cloud Storage** | No | No | Yes (Drive/Gmail) |
+
+**Switch backends anytime** - your local FAISS index works with all three!
 
 ## Installation
 

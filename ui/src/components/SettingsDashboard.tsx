@@ -50,6 +50,7 @@ interface SettingsDashboardProps {
   onSaveVertexConfig: () => void
   onGoogleLogin: () => void
   onGoogleLogout: () => void
+  activeMode?: string
 }
 
 export function SettingsDashboard({
@@ -61,9 +62,11 @@ export function SettingsDashboard({
   onVertexConfigChange,
   onSaveVertexConfig,
   onGoogleLogin,
-  onGoogleLogout
+  onGoogleLogout,
+  activeMode = 'local'
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
+  const [openaiExpanded, setOpenaiExpanded] = useState(false)
   const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
 
@@ -176,7 +179,7 @@ export function SettingsDashboard({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge>Active</Badge>
+                    {activeMode === 'local' && <Badge>Active</Badge>}
                     {ollamaExpanded ? (
                       <CaretUp className="h-5 w-5 text-muted-foreground" />
                     ) : (
@@ -534,18 +537,84 @@ export function SettingsDashboard({
             </div>
           </Collapsible>
 
-          <div className="flex items-center justify-between rounded-lg border border-border p-4 opacity-60">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                <CloudArrowUp className="h-5 w-5 text-muted-foreground" />
-              </div>
-              <div>
-                <p className="font-semibold">OpenAI + OneDrive</p>
-                <p className="text-sm text-muted-foreground">Cloud AI with OneDrive integration</p>
-              </div>
+          <Collapsible open={openaiExpanded} onOpenChange={setOpenaiExpanded}>
+            <div className="rounded-lg border border-border">
+              <CollapsibleTrigger asChild>
+                <button className="w-full flex items-center justify-between p-4 hover:bg-muted/50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                      <Lightning className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div className="text-left">
+                      <p className="font-semibold">OpenAI Assistants</p>
+                      <p className="text-sm text-muted-foreground">GPT-4 orchestration with local search</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {activeMode === 'openai_assistants' && <Badge>Active</Badge>}
+                    {openaiExpanded ? (
+                      <CaretUp className="h-5 w-5 text-muted-foreground" />
+                    ) : (
+                      <CaretDown className="h-5 w-5 text-muted-foreground" />
+                    )}
+                  </div>
+                </button>
+              </CollapsibleTrigger>
+              
+              <CollapsibleContent>
+                <div className="border-t border-border p-6 space-y-6">
+                  <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 text-muted-foreground" />
+                      <p className="text-sm font-medium">How it works</p>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      OpenAI Assistants orchestrates conversations using GPT-4 while keeping your documents local. 
+                      When it needs information, it calls our search function to query your FAISS index. 
+                      You get GPT-4 quality with local privacy.
+                    </p>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="openai-api-key">OpenAI API Key</Label>
+                      <Input
+                        id="openai-api-key"
+                        type="password"
+                        placeholder="sk-..."
+                        className="font-mono text-sm"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="underline">platform.openai.com</a>
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="openai-model">Model</Label>
+                      <Input
+                        id="openai-model"
+                        defaultValue="gpt-4-turbo-preview"
+                        placeholder="gpt-4-turbo-preview"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Recommended: gpt-4-turbo-preview or gpt-4o
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <Button className="flex-1">
+                      <CheckCircle className="mr-2 h-4 w-4" />
+                      Save Configuration
+                    </Button>
+                    <Button variant="outline" className="flex-1">
+                      Test Connection
+                    </Button>
+                  </div>
+                </div>
+              </CollapsibleContent>
             </div>
-            <Badge variant="secondary">Coming Soon</Badge>
-          </div>
+          </Collapsible>
 
           <Collapsible open={googleExpanded} onOpenChange={setGoogleExpanded}>
             <div className="rounded-lg border border-border">
@@ -561,6 +630,7 @@ export function SettingsDashboard({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {(activeMode === 'manual' || activeMode === 'vertex_ai_search') && <Badge>Active</Badge>}
                     {googleExpanded ? (
                       <CaretUp className="h-5 w-5 text-muted-foreground" />
                     ) : (

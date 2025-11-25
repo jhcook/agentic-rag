@@ -212,7 +212,7 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     raise HTTPException(status_code=502, detail=error_msg)
 
 # Mutable server state
-class ServerState:
+class ServerState:  # pylint: disable=too-many-instance-attributes
     """Mutable server state."""
     search_worker_started: bool = False
     search_jobs: Dict[str, Dict[str, Any]] = {}
@@ -352,7 +352,7 @@ def _start_service_controller(service: str) -> Dict[str, Any]:
 
     PROCESS_CONTROLLER_LOG.parent.mkdir(parents=True, exist_ok=True)
     with PROCESS_CONTROLLER_LOG.open("a", encoding="utf-8") as ctl_log:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
             [
                 sys.executable,
                 str(PROCESS_CONTROLLER_PATH),

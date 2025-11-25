@@ -13,6 +13,11 @@ This directory contains project documentation, guides, and specifications.
 - [Main README](../README.md) - Project overview, installation, and setup
 - [Quick Start](../README.md#quick-start) - Fast setup guide
 - [Models and Configuration](models-and-configuration.md) - AI models and their integration
+
+### AI Backend Options
+- [OpenAI Assistants](openai_assistants.md) - **NEW!** GPT-4 with local document search
+- [OpenAI Assistants Capabilities](openai_assistants_capabilities.md) - Technical analysis and comparison
+- [Cloud Provider Comparison](cloud_provider_comparison.md) - Google vs Azure vs OpenAI comparison
 - [Google Integration](google_integration.md) - Setup for Google Drive and Gemini
 - [Vertex AI Setup](vertex_ai_setup.md) - Enterprise Vertex AI Agent Builder configuration
 

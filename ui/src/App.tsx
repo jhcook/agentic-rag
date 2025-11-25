@@ -1285,6 +1285,7 @@ function App() {
               onSaveVertexConfig={handleSaveVertexConfig}
               onGoogleLogin={handleGoogleLogin}
               onGoogleLogout={handleGoogleLogout}
+              activeMode={activeMode}
             />
           </TabsContent>
         </Tabs>

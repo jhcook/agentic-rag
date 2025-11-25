@@ -19,6 +19,7 @@ local_core = None  # pylint: disable=invalid-name
 _extract_text_from_file = None  # pylint: disable=invalid-name
 DB_PATH = None
 GoogleGeminiBackend = None  # pylint: disable=invalid-name
+OpenAIAssistantsBackend = None  # pylint: disable=invalid-name
 
 # Import local implementation
 try:
@@ -35,6 +36,13 @@ try:
     HAS_GOOGLE_BACKEND = True
 except ImportError:
     HAS_GOOGLE_BACKEND = False
+
+# Import OpenAI Assistants implementation
+try:
+    from src.core.openai_assistants_backend import OpenAIAssistantsBackend
+    HAS_OPENAI_ASSISTANTS = True
+except ImportError:
+    HAS_OPENAI_ASSISTANTS = False
 
 logger = logging.getLogger(__name__)
 
@@ -152,10 +160,10 @@ class LocalBackend:
                     uris = self._deletion_queue.get(timeout=1)
                     if not uris:
                         continue
-                    
+
                     with self._deletion_lock:
                         self._deletion_status["processing"] = True
-                    
+
                     # Perform deletion
                     store = local_core.get_store()
                     deleted = 0
@@ -163,18 +171,18 @@ class LocalBackend:
                         if uri in store.docs:
                             del store.docs[uri]
                             deleted += 1
-                    
+
                     local_core.save_store()
                     local_core._rebuild_faiss_index()  # pylint: disable=protected-access
-                    
+
                     with self._deletion_lock:
                         self._deletion_status["processing"] = False
                         self._deletion_status["queue_size"] = self._deletion_queue.qsize()
                         self._deletion_status["last_completed"] = time.time()
                         self._deletion_status["total_processed"] += deleted
-                    
+
                     self._deletion_queue.task_done()
-                    
+
                 except queue.Empty:
                     continue
                 except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -192,13 +200,13 @@ class LocalBackend:
         """Delete documents by URI (queued)."""
         self._check_core()
         self._start_deletion_worker()
-        
+
         # Add to queue
         self._deletion_queue.put(uris)
-        
+
         with self._deletion_lock:
             self._deletion_status["queue_size"] = self._deletion_queue.qsize()
-        
+
         return {
             "status": "queued",
             "uris": uris,
@@ -411,9 +419,20 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 logger.error(
                     "HybridBackend: Failed to init GoogleGeminiBackend: %s", exc)
 
+        # Initialize OpenAI Assistants
+        if HAS_OPENAI_ASSISTANTS and OpenAIAssistantsBackend:
+            try:
+                self.backends["openai_assistants"] = OpenAIAssistantsBackend()
+                logger.info("HybridBackend: OpenAIAssistantsBackend initialized")
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.error(
+                    "HybridBackend: Failed to init OpenAIAssistantsBackend: %s", exc)
+
         # Default to what's available
         if ("google" in self.backends and initial_mode == "google"):
             self.current_mode = "google"
+        elif ("openai_assistants" in self.backends and initial_mode == "openai_assistants"):
+            self.current_mode = "openai_assistants"
         elif "local" in self.backends:
             self.current_mode = "local"
         else:
@@ -426,6 +445,14 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             if "local" in self.backends:
                 self.current_mode = "local"
                 logger.info("HybridBackend: Switched to local")
+                return True
+            return False
+
+        # Handle OpenAI Assistants
+        if mode == "openai_assistants":
+            if "openai_assistants" in self.backends:
+                self.current_mode = "openai_assistants"
+                logger.info("HybridBackend: Switched to openai_assistants")
                 return True
             return False
 
@@ -462,6 +489,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         modes = []
         if "local" in self.backends:
             modes.append("local")
+        if "openai_assistants" in self.backends:
+            modes.append("openai_assistants")
         if "google" in self.backends:
             if hasattr(self.backends["google"], "get_available_modes"):
                 modes.extend(self.backends["google"].get_available_modes())

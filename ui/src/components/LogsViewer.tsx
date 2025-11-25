@@ -110,16 +110,16 @@ const generateMockLog = (source: string): LogEntry => {
       'Memory usage: 512 MB / 2 GB'
     ],
     openai: [
-      'OpenAI API client initialized',
-      'GPT-4 model selected',
-      'Processing chat completion request',
+      'OpenAI Assistants API initialized',
+      'GPT-4 Turbo selected for orchestration',
+      'Function calling: search_documents registered',
+      'Local FAISS search invoked by assistant',
+      'Retrieved 5 documents from local index',
+      'Assistant synthesizing response',
       'Token count: 450 input, 280 output',
-      'OneDrive integration active',
-      'File sync completed: 12 documents',
       'API rate limit: 90% remaining',
       'Response streaming initiated',
-      'Connection established',
-      'Billing check passed'
+      'Connection established'
     ],
     gemini: [
       'Gemini API client initialized',

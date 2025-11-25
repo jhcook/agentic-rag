@@ -7,6 +7,9 @@ def test_deletion_queue():
     """Test that deletions are queued and processed atomically."""
     backend = LocalBackend()
     
+    # Clear any existing documents to ensure clean test state
+    backend.flush_cache()
+    
     # Add some test documents
     backend.upsert_document("test1.txt", "Content 1")
     backend.upsert_document("test2.txt", "Content 2")

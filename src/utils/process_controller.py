@@ -140,55 +140,55 @@ def launch_service(service: str, host: str, port: int, lifetime: int) -> None:
     cmd, service_log = build_command(service, host, port)
     log(f"[controller] Starting {service} on {host}:{port} using: {' '.join(cmd)}")
 
-    with service_log.open("a", encoding="utf-8") as svc_log:
-        process = subprocess.Popen(
-            cmd,
-            stdout=svc_log,
-            stderr=svc_log,
-            env=env,
-            cwd=str(ROOT_DIR),
-        )
+    with service_log.open("a", encoding="utf-8") as svc_log, subprocess.Popen(
+        cmd,
+        stdout=svc_log,
+        stderr=svc_log,
+        env=env,
+        cwd=str(ROOT_DIR),
+    ) as process:
 
-    def _shutdown_child(sig: int) -> None:
-        if process.poll() is None:
-            log(f"[controller] Received signal {sig}, stopping {service} (PID {process.pid})")
-            try:
-                process.terminate()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
+        def _shutdown_child(sig: int) -> None:
+            if process.poll() is None:
+                log(f"[controller] Received signal {sig}, stopping {service} (PID {process.pid})")
                 try:
-                    process.kill()
-                except Exception:
+                    process.terminate()
+                except OSError:
                     pass
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
 
-    # Ensure child is terminated when controller gets a signal
-    signal.signal(signal.SIGTERM, lambda _s, _f: _shutdown_child(signal.SIGTERM))
-    signal.signal(signal.SIGINT, lambda _s, _f: _shutdown_child(signal.SIGINT))
+        # Ensure child is terminated when controller gets a signal
+        signal.signal(signal.SIGTERM, lambda _s, _f: _shutdown_child(signal.SIGTERM))
+        signal.signal(signal.SIGINT, lambda _s, _f: _shutdown_child(signal.SIGINT))
 
-    deadline = time.time() + lifetime
-    exit_reason = "normal"
+        deadline = time.time() + lifetime
+        exit_reason = "normal"
 
-    try:
-        while time.time() < deadline:
-            ret = process.poll()
-            if ret is not None:
-                exit_reason = f"child exited (code {ret})"
-                break
-            time.sleep(1)
-        else:
-            exit_reason = "lifetime_exceeded"
-    finally:
-        if process.poll() is None:
-            log(f"[controller] Lifetime reached; stopping {service} (PID {process.pid})")
-            _shutdown_child(signal.SIGTERM)
+        try:
+            while time.time() < deadline:
+                ret = process.poll()
+                if ret is not None:
+                    exit_reason = f"child exited (code {ret})"
+                    break
+                time.sleep(1)
+            else:
+                exit_reason = "lifetime_exceeded"
+        finally:
+            if process.poll() is None:
+                log(f"[controller] Lifetime reached; stopping {service} (PID {process.pid})")
+                _shutdown_child(signal.SIGTERM)
 
     log(f"[controller] {service} controller exiting: {exit_reason}")
 
 
 def parse_range(range_str: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Parse start-end range strings into integer tuples."""
     if not range_str:
         return None
     parts = range_str.split("-", 1)
@@ -202,6 +202,7 @@ def parse_range(range_str: Optional[str]) -> Optional[Tuple[int, int]]:
 
 
 def main() -> None:
+    """CLI entry point for launching process controller workers."""
     parser = argparse.ArgumentParser(description="Process controller for Agentic RAG services.")
     parser.add_argument("--service", required=True, choices=["rest", "mcp", "ui", "ollama"])
     parser.add_argument("--host", default=None, help="Host to bind")
