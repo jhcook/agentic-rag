@@ -197,11 +197,14 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     }
   }, [])
 
-  const parseLogLine = (line: string, source: string): LogEntry | null => {
+const stripAnsi = (input: string) => input.replace(/\u001b\[[0-9;]*m/g, '').replace(/\r/g, '')
+
+const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
+    const line = stripAnsi(rawLine)
     if (!line.trim()) return null
     
     // Try to parse REST/MCP server logs: "YYYY-MM-DD HH:MM:SS - name - LEVEL - message"
-    const standardLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?) - [^-]+ - (\w+) - (.+)$/)
+    const standardLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - [^-]+ - (\w+) - (.+)$/)
     if (standardLogMatch) {
       const [, timestampStr, levelStr, message] = standardLogMatch
       const level = (levelStr.toLowerCase() as LogLevel) || 'info'
@@ -217,7 +220,7 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     }
     
     // Try to parse access logs: Apache combined format with milliseconds
-    const accessLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - .+$/)
+    const accessLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - .+$/)
     if (accessLogMatch) {
       const [, timestampStr] = accessLogMatch
       const timestamp = new Date(timestampStr.replace(',', '.'))
@@ -239,7 +242,7 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     }
     
     // Try to parse Python logging format: "YYYY-MM-DD HH:MM:SS,mmm - logger - LEVEL - message"
-    const pythonLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) - \S+ - (\w+) - (.+)$/)
+    const pythonLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - \S+ - (\w+) - (.+)$/)
     if (pythonLogMatch) {
       const [, timestampStr, levelStr, message] = pythonLogMatch
       const level = (levelStr.toLowerCase() as LogLevel) || 'info'

@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { MetricsChart } from '@/components/MetricsChart'
-import { MemoryUsageChart } from '@/components/MemoryUsageChart'
 import { 
   LineChart as ChartLine, 
   Database, 
@@ -47,31 +45,66 @@ type QualityMetrics = {
   avg_sources: number
 }
 
+type TodayMetrics = {
+  queries_today: number
+  documents_added_today: number
+  avg_latency_today: number
+}
+
+type EmbeddingStageMetrics = {
+  requests: number
+  errors: number
+  avgMs: number
+}
+
+type RestMetrics = {
+  latencyMs: number | null
+  requestsTotal: number | null
+  inflight: number | null
+  memoryMb: number | null
+  documentsIndexed: number | null
+  mcpMemoryMb: number | null
+}
+
 export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   const [healthData, setHealth] = useState<HealthData | null>(null)
   const [mcpData, setMcpMetrics] = useState<MCPMetrics | null>(null)
   const [qualityData, setQualityMetrics] = useState<QualityMetrics | null>(null)
+  const [todayData, setTodayMetrics] = useState<TodayMetrics | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [qualityError, setQualityError] = useState<string | null>(null)
-  const [restData, setRestMetrics] = useState<Record<string, number>>({})
+  const [todayError, setTodayError] = useState<string | null>(null)
+  const [restData, setRestMetrics] = useState<RestMetrics>({
+    latencyMs: null,
+    requestsTotal: null,
+    inflight: null,
+    memoryMb: null,
+    documentsIndexed: null,
+    mcpMemoryMb: null,
+  })
+  const [embeddingMetrics, setEmbeddingMetrics] = useState<Record<string, EmbeddingStageMetrics>>({})
   const [restMetricsError, setRestMetricsError] = useState<string | null>(null)
-  const [metricHistory, setMetricHistory] = useState<Record<string, Array<{ timestamp: string; value: number }>>>({})
 
   useEffect(() => {
     const controller = new AbortController()
     const fetchRestMetrics = async () => {
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
-      const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/metrics`
 
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body = await res.text()
-        const metrics: Record<string, number> = {}
-        const now = new Date().toISOString()
+        const metrics: RestMetrics = {
+          latencyMs: null,
+          requestsTotal: null,
+          inflight: null,
+          memoryMb: null,
+          documentsIndexed: null,
+          mcpMemoryMb: null,
+        }
 
         // Parse average latency: sum / count (convert seconds to ms)
         const sumMatch = body.match(/rest_http_request_duration_seconds_sum\{[^}]*\}\s+(\d+(?:\.\d+)?)/)
@@ -80,13 +113,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
         const count = countMatch ? Number(countMatch[1]) : 0
         if (count > 0) {
           const avgSeconds = sum / count
-          metrics['rest_http_request_duration_avg'] = avgSeconds * 1000 // Convert to ms
-          // Update history for latency
-          setMetricHistory(prev => {
-            const history = prev['query_latency'] || []
-            const newHistory = [...history, { timestamp: now, value: avgSeconds * 1000 }].slice(-60) // Keep last 60 points
-            return { ...prev, 'query_latency': newHistory }
-          })
+          metrics.latencyMs = avgSeconds * 1000
         }
 
         // Total requests (all statuses)
@@ -96,54 +123,91 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
         while ((m = reqRegex.exec(body)) !== null) {
           reqSum += Number(m[1])
         }
-        metrics['rest_http_requests_total'] = reqSum
-        // Update history for query count
-        setMetricHistory(prev => {
-          const history = prev['query_count'] || []
-          const lastValue = history.length > 0 ? history[history.length - 1].value : 0
-          const delta = reqSum - lastValue
-          if (delta > 0 || history.length === 0) {
-            const newHistory = [...history, { timestamp: now, value: reqSum }].slice(-60)
-            return { ...prev, 'query_count': newHistory }
-          }
-          return prev
-        })
+        metrics.requestsTotal = reqSum
 
         // Inflight gauge
         const inflight = body.match(/rest_inflight_requests\s+(\d+(?:\.\d+)?)/)
         if (inflight) {
-          metrics['rest_inflight_requests'] = Number(inflight[1])
-          // Update history for active connections
-          setMetricHistory(prev => {
-            const history = prev['active_connections'] || []
-            const newHistory = [...history, { timestamp: now, value: Number(inflight[1]) }].slice(-60)
-            return { ...prev, 'active_connections': newHistory }
-          })
+          metrics.inflight = Number(inflight[1])
         }
 
         // Parse memory usage
         const memMatch = body.match(/rest_memory_usage_megabytes\s+(\d+(?:\.\d+)?)/)
         if (memMatch) {
-          metrics['rest_memory_usage_mb'] = Number(memMatch[1])
+          metrics.memoryMb = Number(memMatch[1])
+        }
+
+        // Parse MCP memory (proxied via REST)
+        const mcpMemMatch = body.match(/mcp_memory_usage_megabytes\s+(\d+(?:\.\d+)?)/)
+        if (mcpMemMatch) {
+          metrics.mcpMemoryMb = Number(mcpMemMatch[1])
         }
 
         // Parse documents indexed from REST metrics
         const docsMatch = body.match(/rest_documents_indexed_total\s+(\d+(?:\.\d+)?)/)
         if (docsMatch) {
-          metrics['rest_documents_indexed'] = Number(docsMatch[1])
-          // Update history for documents indexed
-          setMetricHistory(prev => {
-            const history = prev['documents_indexed'] || []
-            const newHistory = [...history, { timestamp: now, value: Number(docsMatch[1]) }].slice(-60)
-            return { ...prev, 'documents_indexed': newHistory }
-          })
+          metrics.documentsIndexed = Number(docsMatch[1])
         }
 
+        // Embedding metrics by stage
+        const embedRequests: Record<string, number> = {}
+        const embedErrors: Record<string, number> = {}
+        const embedCounts: Record<string, number> = {}
+        const embedSums: Record<string, number> = {}
+
+        const embedReqRegex = /embedding_requests_total\{[^}]*stage=\"([^\"]+)\"[^}]*\}\s+(\d+(?:\.\d+)?)/g
+        const embedErrRegex = /embedding_errors_total\{[^}]*stage=\"([^\"]+)\"[^}]*\}\s+(\d+(?:\.\d+)?)/g
+        const embedCountRegex = /embedding_duration_seconds_count\{[^}]*stage=\"([^\"]+)\"[^}]*\}\s+(\d+(?:\.\d+)?)/g
+        const embedSumRegex = /embedding_duration_seconds_sum\{[^}]*stage=\"([^\"]+)\"[^}]*\}\s+(\d+(?:\.\d+)?)/g
+
+        let match: RegExpExecArray | null
+        while ((match = embedReqRegex.exec(body)) !== null) {
+          embedRequests[match[1]] = Number(match[2])
+        }
+        while ((match = embedErrRegex.exec(body)) !== null) {
+          embedErrors[match[1]] = Number(match[2])
+        }
+        while ((match = embedCountRegex.exec(body)) !== null) {
+          embedCounts[match[1]] = Number(match[2])
+        }
+        while ((match = embedSumRegex.exec(body)) !== null) {
+          embedSums[match[1]] = Number(match[2])
+        }
+
+        const stageMetrics: Record<string, EmbeddingStageMetrics> = {}
+        const stages = new Set([
+          ...Object.keys(embedRequests),
+          ...Object.keys(embedErrors),
+          ...Object.keys(embedCounts),
+          ...Object.keys(embedSums),
+        ])
+        stages.forEach(stage => {
+          const requests = embedRequests[stage] ?? 0
+          const errors = embedErrors[stage] ?? 0
+          const countVal = embedCounts[stage] ?? 0
+          const sumVal = embedSums[stage] ?? 0
+          const avgMs = countVal > 0 ? (sumVal / countVal) * 1000 : 0
+          stageMetrics[stage] = { requests, errors, avgMs }
+        })
+
         setRestMetrics(metrics)
+        setEmbeddingMetrics(stageMetrics)
         setRestMetricsError(null)
+        setMcpMetrics(metrics.mcpMemoryMb !== null ? { memory_mb: metrics.mcpMemoryMb } : null)
+        setMcpError(null)
       } catch (err: unknown) {
-        setRestMetrics({})
+        setRestMetrics({
+          latencyMs: null,
+          requestsTotal: null,
+          inflight: null,
+          memoryMb: null,
+          documentsIndexed: null,
+          mcpMemoryMb: null,
+        })
+        setEmbeddingMetrics({})
         setRestMetricsError(err instanceof Error ? err.message : 'Failed to load REST metrics')
+        setMcpMetrics(null)
+        setMcpError(err instanceof Error ? err.message : 'Failed to load MCP metrics')
       }
     }
 
@@ -184,32 +248,9 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   }, [config?.ragHost, config?.ragPort, config?.ragPath])
 
   useEffect(() => {
-    const controller = new AbortController()
-    const fetchMcpMetrics = async () => {
-      const host = config?.mcpHost || '127.0.0.1'
-      const port = config?.mcpPort || '8000'
-      // MCP /metrics is exposed at the root (not under mcpPath)
-      const url = `http://${host}:${port}/metrics`
-      try {
-        const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const body = await res.text()
-        // Parse Prometheus text for mcp_memory_usage_megabytes
-        const match = body.match(/mcp_memory_usage_megabytes\s+(\d+(?:\.\d+)?)/)
-        const mem = match ? Number(match[1]) : 0
-        setMcpMetrics({ memory_mb: mem })
-        setMcpError(null)
-      } catch (err: unknown) {
-        setMcpMetrics(null)
-        setMcpError(err instanceof Error ? err.message : 'Failed to load MCP metrics')
-      }
-    }
-    fetchMcpMetrics()
-    const id = setInterval(fetchMcpMetrics, 20000)
-    return () => {
-      controller.abort()
-      clearInterval(id)
-    }
+    // MCP metrics now proxied via REST metrics (see fetchRestMetrics)
+    const id = setInterval(() => {}, 20000)
+    return () => clearInterval(id)
   }, [config?.mcpHost, config?.mcpPort, config?.mcpPath])
 
   useEffect(() => {
@@ -246,6 +287,36 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
     }
   }, [config?.ragHost, config?.ragPort, config?.ragPath])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchToday = async () => {
+      const host = config?.ragHost || '127.0.0.1'
+      const port = config?.ragPort || '8001'
+      const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      const url = `http://${host}:${port}/${base}/metrics/today`
+      try {
+        const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        setTodayMetrics({
+          queries_today: Number(data?.queries_today || 0),
+          documents_added_today: Number(data?.documents_added_today || 0),
+          avg_latency_today: Number(data?.avg_latency_today || 0),
+        })
+        setTodayError(null)
+      } catch (err: unknown) {
+        setTodayMetrics(null)
+        setTodayError(err instanceof Error ? err.message : 'Failed to load today metrics')
+      }
+    }
+    fetchToday()
+    const id = setInterval(fetchToday, 20000)
+    return () => {
+      controller.abort()
+      clearInterval(id)
+    }
+  }, [config?.ragHost, config?.ragPort, config?.ragPath])
+
   const formatSize = (bytes: number) => {
     if (!bytes) return '0 B'
     const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -265,9 +336,26 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   const totalSize = formatSize(sizeBytes)
   const mcpMemoryMb = mcpData?.memory_mb ?? null
   const quality = qualityData
-  const restAvgLatency = restData['rest_http_request_duration_avg'] || null
-  const restReqCount = restData['rest_http_requests_total'] || null
-  const restInflight = restData['rest_inflight_requests'] || null
+  const restAvgLatency = restData.latencyMs ?? null
+  const restReqCount = restData.requestsTotal ?? null
+  const restInflight = restData.inflight ?? null
+  const restDocsIndexed = restData.documentsIndexed ?? null
+  const searchEmbedMetrics = embeddingMetrics['search_query']
+  const totalEmbedRequests = Object.keys(embeddingMetrics).length
+    ? Object.values(embeddingMetrics).reduce(
+        (acc, stage) => acc + (stage.requests || 0),
+        0
+      )
+    : null
+  const indexedDocuments = restDocsIndexed ?? (healthData ? docCount : null)
+  const docsSourceLabel = restDocsIndexed !== null
+    ? 'From REST /metrics'
+    : healthData
+      ? 'From REST /health'
+      : 'No metrics available'
+  const effectiveLatencyMs = todayData?.avg_latency_today ?? restAvgLatency
+  const queriesToday = todayData?.queries_today ?? null
+  const documentsAddedToday = todayData?.documents_added_today ?? null
 
   return (
     <div className="space-y-6">
@@ -344,111 +432,205 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
         </TabsList>
 
         <TabsContent value="performance" className="space-y-6">
-          <div className="grid gap-6 lg:grid-cols-2">
-            <MetricsChart
-              title="Query Latency"
-              description="Average response time for search queries"
-              metricKey="query_latency"
-              unit="ms"
-              chartType="area"
-              color="#3b82f6"
-              dataOverride={metricHistory['query_latency'] || null}
-              summaryOverride={restAvgLatency !== null ? {
-                current: restAvgLatency,
-                avg: restAvgLatency,
-                max: restAvgLatency,
-                min: restAvgLatency
-              } : undefined}
-            />
-            
-            <MetricsChart
-              title="Embedding Generation Time"
-              description="Time to generate vector embeddings"
-              metricKey="embedding_time"
-              unit="ms"
-              chartType="area"
-              color="#8b5cf6"
-            />
-          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Query Latency</CardTitle>
+                  <Timer className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {effectiveLatencyMs !== null ? `${effectiveLatencyMs.toFixed(0)} ms` : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {todayData?.avg_latency_today ? 'Today\u2019s average latency' : 'From REST /metrics'}
+                </p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {effectiveLatencyMs !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+                {restMetricsError && (
+                  <p className="text-xs text-destructive mt-2 flex items-center gap-1">
+                    <WarningCircle className="h-3 w-3" /> {restMetricsError}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <MetricsChart
-              title="Vector Search Time"
-              description="FAISS vector similarity search latency"
-              metricKey="vector_search_time"
-              unit="ms"
-              chartType="line"
-              color="#06b6d4"
-            />
-            
-            <MetricsChart
-              title="Cache Hit Rate"
-              description="Percentage of requests served from cache"
-              metricKey="cache_hit_rate"
-              unit="%"
-              chartType="area"
-              color="#10b981"
-            />
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Embedding Latency</CardTitle>
+                  <ChartLine className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {searchEmbedMetrics ? `${searchEmbedMetrics.avgMs.toFixed(1)} ms` : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Avg encode time for search embeddings
+                </p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {searchEmbedMetrics ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Success Rate</CardTitle>
+                  <CheckCircle className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {quality ? `${(quality.success_rate * 100).toFixed(1)}%` : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Query success rate</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {quality ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Embedding Requests</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {totalEmbedRequests !== null ? totalEmbedRequests.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Total embedding calls (all stages)</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {totalEmbedRequests !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
 
         <TabsContent value="usage" className="space-y-6">
-          <div className="grid gap-6 lg:grid-cols-2">
-            <MetricsChart
-              title="Query Count"
-              description="Number of search queries over time"
-              metricKey="query_count"
-              chartType="bar"
-              color="#3b82f6"
-              dataOverride={metricHistory['query_count'] || null}
-              summaryOverride={restReqCount !== null ? {
-                current: restReqCount,
-                avg: restReqCount,
-                max: restReqCount,
-                min: 0
-              } : undefined}
-            />
-            
-            <MetricsChart
-              title="Active Connections"
-              description="Concurrent active connections to the system"
-              metricKey="active_connections"
-              chartType="area"
-              color="#f59e0b"
-              dataOverride={metricHistory['active_connections'] || null}
-              summaryOverride={restInflight !== null ? {
-                current: restInflight,
-                avg: restInflight,
-                max: restInflight,
-                min: 0
-              } : undefined}
-            />
-          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Total Queries</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {restReqCount !== null ? restReqCount.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">All-time requests</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {restReqCount !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
 
-          <div className="grid gap-6 lg:grid-cols-2">
-            <MetricsChart
-              title="Documents Indexed"
-              description="Total documents in the search index"
-              metricKey="documents_indexed"
-              chartType="line"
-              color="#8b5cf6"
-              dataOverride={metricHistory['documents_indexed'] || null}
-              summaryOverride={docCount > 0 ? {
-                current: docCount,
-                avg: docCount,
-                max: docCount,
-                min: 0
-              } : undefined}
-            />
-            
-            <MetricsChart
-              title="Token Usage"
-              description="Average tokens per LLM request"
-              metricKey="token_count"
-              unit="tokens"
-              chartType="area"
-              color="#06b6d4"
-            />
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Queries Today</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {queriesToday !== null ? queriesToday.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Since midnight</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {queriesToday !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+                {todayError && (
+                  <p className="text-xs text-destructive mt-2">{todayError}</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Active Connections</CardTitle>
+                  <Lightning className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {restInflight !== null ? restInflight.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Current inflight REST requests</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {restInflight !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Documents Indexed</CardTitle>
+                  <Database className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {indexedDocuments !== null ? indexedDocuments.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">{docsSourceLabel}</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {indexedDocuments !== null ? 'Healthy' : 'Unknown'}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium text-muted-foreground">Docs Added Today</CardTitle>
+                  <Database className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {documentsAddedToday !== null ? documentsAddedToday.toLocaleString() : '--'}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">New documents</p>
+                <div className="mt-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {documentsAddedToday !== null ? 'Active' : 'Unknown'}
+                  </Badge>
+                </div>
+                {todayError && (
+                  <p className="text-xs text-destructive mt-2">{todayError}</p>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
         <TabsContent value="system" className="space-y-6">

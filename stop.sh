@@ -162,6 +162,29 @@ else
     echo -e "${YELLOW}Ollama (remote): Not stopping${NC}"
 fi
 
+# Stop any running process controllers (they also terminate managed children)
+controller_pids=$(pgrep -f "src/utils/process_controller.py" || true)
+if [[ -n "$controller_pids" ]]; then
+    echo -e "${YELLOW}Stopping process controllers...${NC}"
+    while read -r cpid; do
+        if [[ -n "$cpid" ]]; then
+            kill "$cpid" 2>/dev/null || true
+        fi
+    done <<< "$controller_pids"
+    sleep 1
+    controller_pids=$(pgrep -f "src/utils/process_controller.py" || true)
+    if [[ -n "$controller_pids" ]]; then
+        echo -e "${YELLOW}  Forcing controller shutdown...${NC}"
+        while read -r cpid; do
+            if [[ -n "$cpid" ]]; then
+                kill -9 "$cpid" 2>/dev/null || true
+            fi
+        done <<< "$controller_pids"
+    fi
+else
+    echo -e "${YELLOW}Process controllers: Not running${NC}"
+fi
+
 echo ""
 
 # Summary

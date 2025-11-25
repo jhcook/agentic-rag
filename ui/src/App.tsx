@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -26,7 +26,8 @@ import {
   ChevronUp as CaretUp,
   Info,
   LineChart as ChartLine,
-  List as ListBullets
+  List as ListBullets,
+  RotateCcw
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { MetricsDashboard } from '@/components/MetricsDashboard'
@@ -76,6 +77,13 @@ type IndexJob = {
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [systemStatus, setSystemStatus] = useState<'running' | 'stopped' | 'error' | 'warning'>('stopped')
+  const [selectedService, setSelectedService] = useState<'rest' | 'mcp' | 'ui' | 'ollama'>('rest')
+  const [serviceStatuses, setServiceStatuses] = useState<Record<string, 'running' | 'stopped' | 'error' | 'warning'>>({
+    rest: 'stopped',
+    mcp: 'stopped',
+    ui: 'stopped',
+    ollama: 'stopped'
+  })
   const [backendDocs, setBackendDocs] = useState<number | null>(null)
   const [backendSize, setBackendSize] = useState<number | null>(null)
   const [backendDocumentList, setBackendDocumentList] = useState<IndexedItem[]>([])
@@ -126,6 +134,64 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activeMode, setActiveMode] = useState<string>('local')
+  const getApiBase = useCallback(() => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    return { host, port, base }
+  }, [ollamaConfig])
+
+  const refreshServiceStatuses = useCallback(async () => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/services`)
+      if (!res.ok) return
+      const data = await res.json()
+      if (Array.isArray(data?.services)) {
+        setServiceStatuses(prev => {
+          const next = { ...prev }
+          data.services.forEach((svc: any) => {
+            if (svc?.service) {
+              next[svc.service] = svc.status || 'stopped'
+            }
+          })
+          return next
+        })
+      }
+    } catch (err) {
+      console.error('Failed to load service status', err)
+    }
+  }, [getApiBase])
+
+  const performServiceAction = useCallback(async (action: 'start' | 'stop' | 'restart') => {
+    const { host, port, base } = getApiBase()
+    const toastId = `service-${action}`
+    toast.loading(`${action === 'restart' ? 'Restarting' : action === 'start' ? 'Starting' : 'Stopping'} ${selectedService}...`, { id: toastId })
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/services/${selectedService}/${action}`, {
+        method: 'POST'
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `Failed to ${action} ${selectedService}`)
+      }
+      const data = await res.json()
+      const portDetail = action === 'restart' ? data?.start?.port : data?.port
+      const successLabel = action === 'restart' ? 'restarted' : action === 'start' ? 'started' : 'stopped'
+      toast.success(`${selectedService} ${successLabel}`, {
+        id: toastId,
+        description: portDetail ? `Port: ${portDetail}` : undefined
+      })
+      refreshServiceStatuses()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `Failed to ${action} ${selectedService}`, { id: toastId })
+    }
+  }, [getApiBase, refreshServiceStatuses, selectedService])
+
+  useEffect(() => {
+    const status = serviceStatuses[selectedService] || 'stopped'
+    setSystemStatus(status)
+  }, [selectedService, serviceStatuses])
 
   // Fetch app config on mount
   useEffect(() => {
@@ -890,6 +956,12 @@ function App() {
     }
   }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
 
+  useEffect(() => {
+    refreshServiceStatuses()
+    const id = setInterval(refreshServiceStatuses, 15000)
+    return () => clearInterval(id)
+  }, [refreshServiceStatuses])
+
   const handleTestConnection = async () => {
     toast.loading('Testing connection...', { id: 'test-connection' })
     
@@ -944,22 +1016,39 @@ function App() {
                   {systemStatus.charAt(0).toUpperCase() + systemStatus.slice(1)}
                 </Badge>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Service</span>
+                <select
+                  className="border rounded-md px-2 py-1 text-sm bg-background"
+                  value={selectedService}
+                  onChange={(e) => setSelectedService(e.target.value as 'rest' | 'mcp' | 'ui' | 'ollama')}
+                >
+                  <option value="rest">REST</option>
+                  <option value="mcp">MCP</option>
+                  <option value="ui">UI</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+              </div>
               <Button
                 variant={systemStatus === 'running' ? 'outline' : 'default'}
                 size="sm"
-                onClick={() => setSystemStatus(systemStatus === 'running' ? 'stopped' : 'running')}
+                onClick={() => performServiceAction(systemStatus === 'running' ? 'stop' : 'start')}
               >
                 {systemStatus === 'running' ? (
                   <>
                     <Pause className="h-4 w-4 mr-2" />
-                    Stop Services
+                    Stop Service
                   </>
                 ) : (
                   <>
                     <Play className="h-4 w-4 mr-2" />
-                    Start Services
+                    Start Service
                   </>
                 )}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => performServiceAction('restart')}>
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Restart
               </Button>
             </div>
           </div>

@@ -7,18 +7,22 @@ Run with:
 """
 
 import os
+import re
 import sys
 import json
 import logging
 import time
+import socket
+import signal
+import subprocess
 import threading
 import queue
 import asyncio
 import uuid
 import inspect
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, List, Dict, Any, Callable
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any, Callable, Tuple
 from contextlib import asynccontextmanager
 
 import psutil
@@ -77,6 +81,19 @@ access_logger = logging.getLogger('rest_access')
 access_logger.setLevel(logging.INFO)
 access_logger.handlers.clear()
 access_logger.propagate = False
+
+PROCESS_CONTROLLER_PATH = Path(__file__).resolve().parent.parent / "utils" / "process_controller.py"
+PROCESS_CONTROLLER_LOG = LOG_DIR / "process_controller.log"
+
+DEFAULT_PORT_RANGES = {
+    "rest": (int(os.getenv("RAG_PORT", "8001")), int(os.getenv("RAG_PORT", "8001")) + 9),
+    "mcp": (int(os.getenv("MCP_PORT", "8000")), int(os.getenv("MCP_PORT", "8000")) + 9),
+    "ui": (int(os.getenv("UI_PORT", "5173")), int(os.getenv("UI_PORT", "5173")) + 9),
+    "ollama": (int(os.getenv("OLLAMA_PORT", "11434")), int(os.getenv("OLLAMA_PORT", "11434")) + 9),
+}
+SUPPORTED_SERVICES = {"rest", "mcp", "ui", "ollama"}
+SERVICE_CONTROLLERS: Dict[str, Dict[str, Any]] = {}
+SERVICE_LOCK = threading.Lock()
 
 # Explicitly disable uvicorn's default access logger so access lines don't hit rest_server.log
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
@@ -209,7 +226,192 @@ class ServerState:
     responses_with_sources: int = 0
     fallback_responses: int = 0
 
+    # Daily metrics
+    today_date: str = date.today().isoformat()
+    queries_today: int = 0
+    documents_added_today: int = 0
+    latency_sum_today: float = 0.0
+    latency_count_today: int = 0
+
 state = ServerState()
+
+
+def _reset_today_if_needed() -> None:
+    """Reset per-day counters when the calendar day changes."""
+    current = date.today().isoformat()
+    if state.today_date != current:
+        state.today_date = current
+        state.queries_today = 0
+        state.documents_added_today = 0
+        state.latency_sum_today = 0.0
+        state.latency_count_today = 0
+
+
+def _record_today_request(duration_seconds: float, path: str) -> None:
+    """Update daily request counters (search-only to match dashboard intent)."""
+    try:
+        _reset_today_if_needed()
+        if "/search" not in str(path):
+            return
+        state.queries_today += 1
+        state.latency_sum_today += max(duration_seconds, 0.0)
+        state.latency_count_today += 1
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("record today metrics failed: %s", exc)
+
+
+def _record_documents_added(count: int) -> None:
+    """Update daily documents added counter."""
+    try:
+        _reset_today_if_needed()
+        state.documents_added_today += max(0, int(count))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("record documents added failed: %s", exc)
+
+
+def _fetch_mcp_memory_mb() -> Optional[float]:
+    """Scrape MCP /metrics for memory usage and return MB if available."""
+    prefix = MCP_PATH.strip("/")
+    urls = [f"http://{MCP_HOST}:{MCP_PORT}/metrics"]
+    if prefix:
+        urls.insert(0, f"http://{MCP_HOST}:{MCP_PORT}/{prefix}/metrics")
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=3)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            body = resp.text
+            match = re.search(r"mcp_memory_usage_megabytes\\s+(\\d+(?:\\.\\d+)?)", body)
+            if match:
+                return float(match.group(1))
+        except requests.RequestException:
+            continue
+    return None
+
+
+def _parse_port_range(service: str) -> Tuple[int, int]:
+    """Return a port range for the given service (env override or default)."""
+    env_key = f"{service.upper()}_PORT_RANGE"
+    override = os.getenv(env_key)
+    if override and "-" in override:
+        try:
+            start, end = override.split("-", 1)
+            return int(start), int(end)
+        except ValueError:
+            logger.warning("Invalid %s, using defaults: %s", env_key, override)
+    return DEFAULT_PORT_RANGES.get(service, (0, 0))
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) != 0
+
+
+def _pick_port(service: str, host: str) -> int:
+    start, end = _parse_port_range(service)
+    if not start or not end:
+        raise RuntimeError(f"No port range configured for service '{service}'")
+    for port in range(start, end + 1):
+        if _is_port_free(host, port):
+            return port
+    raise RuntimeError(f"No available ports for {service} in range {start}-{end}")
+
+
+def _service_host(service: str) -> str:
+    if service == "rest":
+        return os.getenv("RAG_HOST", "127.0.0.1")
+    if service == "mcp":
+        return os.getenv("MCP_HOST", "127.0.0.1")
+    if service == "ui":
+        return os.getenv("UI_HOST", "127.0.0.1")
+    if service == "ollama":
+        return "127.0.0.1"
+    return "127.0.0.1"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _start_service_controller(service: str) -> Dict[str, Any]:
+    """Launch a controller daemon for the requested service."""
+    if not PROCESS_CONTROLLER_PATH.exists():
+        raise RuntimeError("process_controller.py is missing; cannot start controller.")
+
+    host = _service_host(service)
+    port = _pick_port(service, host)
+    start, end = _parse_port_range(service)
+    port_range_arg = f"{start}-{end}"
+
+    PROCESS_CONTROLLER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with PROCESS_CONTROLLER_LOG.open("a", encoding="utf-8") as ctl_log:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(PROCESS_CONTROLLER_PATH),
+                "--service",
+                service,
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--port-range",
+                port_range_arg,
+            ],
+            stdout=ctl_log,
+            stderr=ctl_log,
+        )
+
+    SERVICE_CONTROLLERS[service] = {
+        "pid": proc.pid,
+        "port": port,
+        "host": host,
+        "started_at": time.time(),
+    }
+    logger.info("Started %s controller (PID %s) on %s:%s", service, proc.pid, host, port)
+    return {
+        "service": service,
+        "status": "starting",
+        "controller_pid": proc.pid,
+        "port": port,
+        "host": host,
+        "port_range": port_range_arg,
+    }
+
+
+def _stop_service_controller(service: str) -> Dict[str, Any]:
+    """Stop a running controller (and its child) if present."""
+    info = SERVICE_CONTROLLERS.get(service)
+    if not info:
+        return {"service": service, "status": "not_running"}
+
+    pid = info.get("pid")
+    if pid and _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        # brief wait
+        for _ in range(10):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.5)
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    SERVICE_CONTROLLERS.pop(service, None)
+    logger.info("Stopped controller for %s (PID %s)", service, pid)
+    return {"service": service, "status": "stopped", "controller_pid": pid}
 
 @asynccontextmanager
 async def lifespan(_fastapi_app: FastAPI):
@@ -387,6 +589,10 @@ REST_EMBEDDING_DIM = Gauge(
     "rest_embedding_dimension",
     "Embedding dimension used by the current model (REST server view).",
 )
+MCP_MEMORY_USAGE_MB = Gauge(
+    "mcp_memory_usage_megabytes",
+    "Current MCP server process RSS memory in MB (proxied via REST).",
+)
 
 def _start_search_worker():
     """Start the background search worker thread if not already started."""
@@ -477,6 +683,9 @@ def refresh_prometheus_metrics():
     try:
         REST_MEMORY_USAGE_MB.set(_get_memory_usage_mb())
         REST_MEMORY_LIMIT_MB.set(REST_MAX_MEMORY_MB)
+        mcp_mem = _fetch_mcp_memory_mb()
+        if mcp_mem is not None:
+            MCP_MEMORY_USAGE_MB.set(mcp_mem)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("refresh metrics: memory gauge failed: %s", exc)
 
@@ -519,6 +728,7 @@ async def add_prometheus_metrics(request: Request, call_next: Callable):
         HTTP_INFLIGHT.dec()
         HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=status_code).inc()
         HTTP_REQUEST_DURATION.labels(method=method, path=path, status=status_code).observe(duration)
+        _record_today_request(duration, path)
 
 ACCESS_LOG_PATH = LOG_DIR / "rest_server_access.log"
 
@@ -555,11 +765,14 @@ def api_upsert(req: UpsertReq):
             )
 
         # Proxy to MCP worker which creates jobs for progress tracking
-        return _proxy_to_mcp(
+        result = _proxy_to_mcp(
             "POST",
             "/rest/upsert_document",
             {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64}
         )
+        if isinstance(result, dict) and result.get("upserted") and not result.get("existed"):
+            _record_documents_added(1)
+        return result
     except HTTPException:
         raise
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -571,7 +784,10 @@ def api_index_path(req: IndexPathReq):
     """Index a filesystem path into the retrieval store."""
     logger.info("Indexing path: path=%s, glob=%s", req.path, req.glob)
     try:
-        return backend.index_path(req.path, req.glob or "**/*")
+        result = backend.index_path(req.path, req.glob or "**/*")
+        if isinstance(result, dict) and "indexed" in result:
+            _record_documents_added(int(result.get("indexed") or 0))
+        return result
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error indexing path %s: %s", req.path, e)
         raise
@@ -861,6 +1077,101 @@ def api_quality_metrics():
         "success_rate": success_rate,
         "avg_sources": avg_sources,
     }
+
+
+@app.get(f"/{pth}/metrics/today")
+def api_today_metrics():
+    """Return same-day aggregates for queries, docs added, and avg latency."""
+    _reset_today_if_needed()
+    avg_latency_ms = 0.0
+    if state.latency_count_today:
+        avg_latency_ms = (state.latency_sum_today / state.latency_count_today) * 1000.0
+    return {
+        "queries_today": state.queries_today,
+        "documents_added_today": state.documents_added_today,
+        "avg_latency_today": avg_latency_ms,
+    }
+
+
+@app.get(f"/{pth}/services")
+def api_service_status():
+    """List controller state for managed services."""
+    statuses = []
+    with SERVICE_LOCK:
+        for service in SUPPORTED_SERVICES:
+            info = SERVICE_CONTROLLERS.get(service, {})
+            pid = info.get("pid")
+            alive = bool(pid and _pid_alive(pid))
+            if info and not alive:
+                SERVICE_CONTROLLERS.pop(service, None)
+            statuses.append({
+                "service": service,
+                "status": "running" if alive else "stopped",
+                "controller_pid": pid if alive else None,
+                "port": info.get("port"),
+                "host": info.get("host"),
+                "started_at": info.get("started_at"),
+            })
+    return {"services": statuses}
+
+
+@app.post(f"/{pth}/services/{{service}}/start")
+def api_start_service(service: str):
+    """Start a controller for the given service."""
+    svc = service.lower()
+    if svc not in SUPPORTED_SERVICES:
+        raise HTTPException(status_code=400, detail="Unsupported service")
+
+    with SERVICE_LOCK:
+        existing = SERVICE_CONTROLLERS.get(svc)
+        if existing and existing.get("pid") and _pid_alive(int(existing["pid"])):
+            return {
+                "service": svc,
+                "status": "running",
+                "controller_pid": existing["pid"],
+                "port": existing.get("port"),
+                "host": existing.get("host"),
+                "started_at": existing.get("started_at"),
+                "message": "already running",
+            }
+        try:
+            return _start_service_controller(svc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to start %s controller: %s", svc, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post(f"/{pth}/services/{{service}}/stop")
+def api_stop_service(service: str):
+    """Stop a controller for the given service."""
+    svc = service.lower()
+    if svc not in SUPPORTED_SERVICES:
+        raise HTTPException(status_code=400, detail="Unsupported service")
+
+    with SERVICE_LOCK:
+        try:
+            return _stop_service_controller(svc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to stop %s controller: %s", svc, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post(f"/{pth}/services/{{service}}/restart")
+def api_restart_service(service: str):
+    """Restart a service controller."""
+    svc = service.lower()
+    if svc not in SUPPORTED_SERVICES:
+        raise HTTPException(status_code=400, detail="Unsupported service")
+
+    with SERVICE_LOCK:
+        stop_res = _stop_service_controller(svc)
+        try:
+            start_res = _start_service_controller(svc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to restart %s: %s", svc, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"stop": stop_res, "start": start_res}
 
 @app.get(f"/{pth}/auth/login")
 def auth_login(request: Request):
