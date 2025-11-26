@@ -87,7 +87,7 @@ class GoogleGeminiBackend(RAGBackend):
         self.creds = self.auth_manager.get_credentials()
 
         # Mode configuration
-        self.mode = os.getenv("GOOGLE_GROUNDING_MODE", "manual")  # manual | vertex_ai_search
+        self.mode = os.getenv("GOOGLE_GROUNDING_MODE", "google_gemini")  # google_gemini | vertex_ai_search
         self.model_name = os.getenv(
             "GOOGLE_MODEL_NAME", "models/gemini-2.0-flash"
         )
@@ -278,9 +278,10 @@ class GoogleGeminiBackend(RAGBackend):
 
         return " and ".join(clauses) + " and trashed = false"
 
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
         Search Google Drive for files matching the query.
+        Note: kwargs like model/temperature are not used for Drive search.
         """
         if not self.drive_service:
             # Try to reload if not initialized
@@ -583,13 +584,13 @@ class GoogleGeminiBackend(RAGBackend):
     def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
         Generate an answer using Gemini with content from Drive files.
-        Dispatches to the configured mode (manual or vertex_ai_search).
+        Dispatches to the configured mode (google_gemini or vertex_ai_search).
         """
         if self.mode == "vertex_ai_search":
             return self.grounded_answer_vertex(question)
 
-        # Default: Manual Drive API + Gemini
-        return self.grounded_answer_manual(question, k, **kwargs)
+        # Default: Google Gemini with Drive API + Gemini
+        return self.grounded_answer_gemini(question, k, **kwargs)
 
     def grounded_answer_vertex(self, question: str) -> Dict[str, Any]:
         """
@@ -867,10 +868,10 @@ class GoogleGeminiBackend(RAGBackend):
             return []
 
     # pylint: disable=too-many-locals
-    def grounded_answer_manual(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
+    def grounded_answer_gemini(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
-        Generate an answer using Gemini 1.5 Pro with content from Drive files and Gmail
-        (Manual Mode).
+        Generate an answer using Gemini API with content from Drive files and Gmail
+        (Google Gemini Mode).
         """
         if not self.gen_service or not self.drive_service:
             self.reload_auth()
@@ -957,7 +958,7 @@ class GoogleGeminiBackend(RAGBackend):
                 return {
                     "answer": answer_text,
                     "sources": sources,
-                    "mode": "manual"
+                    "mode": "google_gemini"
                 }
             # pylint: disable=no-else-return
             return {"answer": "No answer generated." + api_error_msg, "sources": []}
@@ -1190,11 +1191,19 @@ class GoogleGeminiBackend(RAGBackend):
         return self.mode
 
     def get_available_modes(self) -> List[str]:
-        """Get available grounding modes."""
-        modes = ["manual"]
+        """Get available grounding modes (only if properly authenticated)."""
+        modes = []
+        
+        # Only include google_gemini if we have valid credentials
+        if self.creds and self.gen_service:
+            modes.append("google_gemini")
+        
         # Only enable Vertex AI if dependencies AND configuration are present
         if HAS_VERTEX_DEPS and os.getenv("VERTEX_PROJECT_ID") and os.getenv("VERTEX_DATA_STORE_ID"):
-            modes.append("vertex_ai_search")
+            # Also check if we have credentials for Vertex
+            if self.creds:
+                modes.append("vertex_ai_search")
+        
         return modes
 
     def set_mode(self, mode: str) -> bool:

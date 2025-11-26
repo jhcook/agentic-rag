@@ -177,6 +177,20 @@ async def rest_search(request: Request):
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
+@rest_api.post("/vector_search")
+async def rest_vector_search(request: Request):
+    """Vector search endpoint that returns raw search results without LLM synthesis."""
+    body = await request.json()
+    query = body.get("query", "")
+    k = int(body.get("k", 5))
+    try:
+        # Import rag_core to access _vector_search
+        from src.core import rag_core
+        results = await anyio.to_thread.run_sync(rag_core._vector_search, query, k)
+        return JSONResponse({"results": results})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
 @rest_api.post("/grounded_answer")
 async def rest_grounded_answer(request: Request):
     body = await request.json()

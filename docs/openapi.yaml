@@ -213,7 +213,7 @@ paths:
   /api/documents:
     get:
       summary: Api Documents
-      description: List indexed document URIs and their approximate text size (bytes).
+      description: List all documents in the store.
       operationId: api_documents_api_documents_get
       responses:
         '200':
@@ -245,6 +245,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/documents/delete/status:
+    get:
+      summary: Api Deletion Status
+      description: Get deletion queue status.
+      operationId: api_deletion_status_api_documents_delete_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /api/config/mode:
     get:
       summary: Api Get Mode
@@ -309,12 +320,12 @@ paths:
       description: Get a single async indexing job (pass-through to MCP).
       operationId: api_job_api_jobs__job_id__get
       parameters:
-      - name: job_id
-        in: path
+      - name: _job_id
+        in: query
         required: true
         schema:
           type: string
-          title: Job Id
+          title: ' Job Id'
       responses:
         '200':
           description: Successful Response
@@ -380,6 +391,100 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QualityMetricsResp'
+  /api/metrics/today:
+    get:
+      summary: Api Today Metrics
+      description: Return same-day aggregates for queries, docs added, and avg latency.
+      operationId: api_today_metrics_api_metrics_today_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/services:
+    get:
+      summary: Api Service Status
+      description: List controller state for managed services.
+      operationId: api_service_status_api_services_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/services/{service}/start:
+    post:
+      summary: Api Start Service
+      description: Start a controller for the given service.
+      operationId: api_start_service_api_services__service__start_post
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Service
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/services/{service}/stop:
+    post:
+      summary: Api Stop Service
+      description: Stop a controller for the given service.
+      operationId: api_stop_service_api_services__service__stop_post
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Service
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/services/{service}/restart:
+    post:
+      summary: Api Restart Service
+      description: Restart a service controller.
+      operationId: api_restart_service_api_services__service__restart_post
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Service
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/auth/login:
     get:
       summary: Auth Login
@@ -436,14 +541,14 @@ paths:
         schema:
           type: string
           title: Code
-      - name: state
+      - name: _oauth_state
         in: query
         required: false
         schema:
           anyOf:
           - type: string
           - type: 'null'
-          title: State
+          title: ' Oauth State'
       responses:
         '200':
           description: Successful Response
@@ -467,6 +572,39 @@ paths:
           content:
             application/json:
               schema: {}
+  /api/config/openai:
+    get:
+      summary: Get Openai Config
+      description: Get OpenAI configuration (without exposing the full API key).
+      operationId: get_openai_config_api_config_openai_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      summary: Save Openai Config
+      description: Save OpenAI API configuration to secrets/openai_config.json.
+      operationId: save_openai_config_api_config_openai_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIConfigModel'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/chat:
     post:
       summary: Api Chat
@@ -803,6 +941,7 @@ components:
       - ragPort
       - ragPath
       title: AppConfigReq
+      description: Request model for application configuration.
     Body_api_drive_create_folder_api_drive_folders_post:
       properties:
         name:
@@ -868,6 +1007,7 @@ components:
       - role
       - content
       title: ChatMessage
+      description: Model for a chat message.
     ChatReq:
       properties:
         messages:
@@ -900,6 +1040,7 @@ components:
       required:
       - messages
       title: ChatReq
+      description: Request model for chat completion.
     ConfigModeReq:
       properties:
         mode:
@@ -947,6 +1088,7 @@ components:
       required:
       - documents
       title: DocumentsResp
+      description: Response model for document listing.
     GroundedAnswerReq:
       properties:
         question:
@@ -1052,6 +1194,24 @@ components:
       type: object
       title: LoadStoreReq
       description: Request model for sending the store to an LLM.
+    OpenAIConfigModel:
+      properties:
+        api_key:
+          type: string
+          title: Api Key
+        model:
+          type: string
+          title: Model
+          default: gpt-4-turbo-preview
+        assistant_id:
+          type: string
+          title: Assistant Id
+          default: ''
+      type: object
+      required:
+      - api_key
+      title: OpenAIConfigModel
+      description: OpenAI configuration model.
     QualityMetricsResp:
       properties:
         total_searches:
@@ -1123,6 +1283,26 @@ components:
           - type: 'null'
           title: Timeout Seconds
           default: 300
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Temperature
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Tokens
+        top_k:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Top K
       type: object
       required:
       - query
@@ -1227,3 +1407,4 @@ components:
       - location
       - data_store_id
       title: VertexConfigReq
+      description: Request model for Vertex AI configuration.

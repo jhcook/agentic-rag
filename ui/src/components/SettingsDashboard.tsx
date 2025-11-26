@@ -15,6 +15,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 export type OllamaConfig = {
   apiEndpoint: string
@@ -40,6 +41,12 @@ export type VertexConfig = {
   dataStoreId: string
 }
 
+export type OpenAIConfig = {
+  apiKey: string
+  model: string
+  assistantId: string
+}
+
 interface SettingsDashboardProps {
   config: OllamaConfig
   onConfigChange: (field: keyof OllamaConfig, value: string) => void
@@ -50,6 +57,12 @@ interface SettingsDashboardProps {
   onSaveVertexConfig: () => void
   onGoogleLogin: () => void
   onGoogleLogout: () => void
+  openaiConfig: OpenAIConfig
+  openaiModels: string[]
+  onOpenaiConfigChange: (config: OpenAIConfig) => void
+  onSaveOpenAIConfig: () => void
+  onTestOpenAIConnection: () => void
+  onSwitchBackend: (mode: string) => void
   activeMode?: string
 }
 
@@ -63,6 +76,12 @@ export function SettingsDashboard({
   onSaveVertexConfig,
   onGoogleLogin,
   onGoogleLogout,
+  openaiConfig,
+  openaiModels,
+  onOpenaiConfigChange,
+  onSaveOpenAIConfig,
+  onTestOpenAIConnection,
+  onSwitchBackend,
   activeMode = 'local'
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
@@ -527,10 +546,15 @@ export function SettingsDashboard({
                       <CheckCircle className="h-4 w-4 mr-2" />
                       Test Connection
                     </Button>
-                    <Button onClick={onSaveConfig}>
+                    <Button onClick={onSaveConfig} variant="outline">
                       <GearSix className="h-4 w-4 mr-2" />
                       Save Configuration
                     </Button>
+                    {activeMode !== 'local' && (
+                      <Button onClick={() => onSwitchBackend('local')}>
+                        Use this Backend
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CollapsibleContent>
@@ -582,6 +606,8 @@ export function SettingsDashboard({
                         id="openai-api-key"
                         type="password"
                         placeholder="sk-..."
+                        value={openaiConfig.apiKey}
+                        onChange={(e) => onOpenaiConfigChange({ ...openaiConfig, apiKey: e.target.value })}
                         className="font-mono text-sm"
                       />
                       <p className="text-xs text-muted-foreground">
@@ -591,26 +617,50 @@ export function SettingsDashboard({
 
                     <div className="space-y-2">
                       <Label htmlFor="openai-model">Model</Label>
-                      <Input
-                        id="openai-model"
-                        defaultValue="gpt-4-turbo-preview"
-                        placeholder="gpt-4-turbo-preview"
-                      />
+                      {openaiModels.length > 0 ? (
+                        <Select
+                          value={openaiConfig.model}
+                          onValueChange={(value) => onOpenaiConfigChange({ ...openaiConfig, model: value })}
+                        >
+                          <SelectTrigger id="openai-model">
+                            <SelectValue placeholder="Select a model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {openaiModels.map((model) => (
+                              <SelectItem key={model} value={model}>
+                                {model}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          id="openai-model"
+                          value={openaiConfig.model}
+                          onChange={(e) => onOpenaiConfigChange({ ...openaiConfig, model: e.target.value })}
+                          placeholder="gpt-4-turbo-preview"
+                        />
+                      )}
                       <p className="text-xs text-muted-foreground">
-                        Recommended: gpt-4-turbo-preview or gpt-4o
+                        {openaiModels.length > 0 ? 'Select from your available models' : 'Test connection to load available models'}
                       </p>
                     </div>
                   </div>
 
                   <div className="flex gap-3">
-                    <Button className="flex-1">
+                    <Button onClick={onSaveOpenAIConfig} className="flex-1" variant="outline">
                       <CheckCircle className="mr-2 h-4 w-4" />
                       Save Configuration
                     </Button>
-                    <Button variant="outline" className="flex-1">
+                    <Button onClick={onTestOpenAIConnection} variant="outline" className="flex-1">
                       Test Connection
                     </Button>
                   </div>
+                  {activeMode !== 'openai_assistants' && (
+                    <Button onClick={() => onSwitchBackend('openai_assistants')} className="w-full">
+                      Use this Backend
+                    </Button>
+                  )}
                 </div>
               </CollapsibleContent>
             </div>
@@ -630,7 +680,7 @@ export function SettingsDashboard({
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {(activeMode === 'manual' || activeMode === 'vertex_ai_search') && <Badge>Active</Badge>}
+                    {(activeMode === 'google_gemini' || activeMode === 'vertex_ai_search') && <Badge>Active</Badge>}
                     {googleExpanded ? (
                       <CaretUp className="h-5 w-5 text-muted-foreground" />
                     ) : (
@@ -691,6 +741,12 @@ export function SettingsDashboard({
                     <Button onClick={onSaveVertexConfig} size="sm" variant="secondary" className="w-full">
                       Save Vertex Configuration
                     </Button>
+                    
+                    {(activeMode !== 'google_gemini' && activeMode !== 'vertex_ai_search') && (
+                      <Button onClick={() => onSwitchBackend('google_gemini')} className="w-full">
+                        Use this Backend
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CollapsibleContent>

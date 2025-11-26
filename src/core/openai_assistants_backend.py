@@ -37,32 +37,53 @@ class OpenAIAssistantsBackend:
 
     def __init__(self):
         """Initialize OpenAI Assistants backend."""
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
-
-        self.client = OpenAI(api_key=self.api_key)
-        self.assistant_id = os.getenv("OPENAI_ASSISTANT_ID")
-        self.model = os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4-turbo-preview")
-
-        # Create or get assistant
-        if not self.assistant_id:
-            self.assistant = self._create_assistant()
-            self.assistant_id = self.assistant.id
-            logger.info("Created OpenAI Assistant: %s", self.assistant_id)
-        else:
+        # Try loading from secrets file first, then fall back to env var
+        secrets_path = "secrets/openai_config.json"
+        if os.path.exists(secrets_path):
             try:
-                self.assistant = self.client.beta.assistants.retrieve(self.assistant_id)
-                logger.info("Using existing OpenAI Assistant: %s", self.assistant_id)
-            except OpenAIError as exc:
-                logger.warning("Failed to retrieve assistant %s: %s", self.assistant_id, exc)
-                self.assistant = self._create_assistant()
-                self.assistant_id = self.assistant.id
+                with open(secrets_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                self.api_key = config.get("api_key")
+                self.model = config.get("model", "gpt-4-turbo-preview")
+                self.assistant_id = config.get("assistant_id") or None
+                logger.info("Loaded OpenAI config from %s", secrets_path)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to load %s: %s", secrets_path, exc)
+                self.api_key = os.getenv("OPENAI_API_KEY")
+                self.model = os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4-turbo-preview")
+                self.assistant_id = os.getenv("OPENAI_ASSISTANT_ID")
+        else:
+            self.api_key = os.getenv("OPENAI_API_KEY")
+            self.model = os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4-turbo-preview")
+            self.assistant_id = os.getenv("OPENAI_ASSISTANT_ID")
+
+        # Initialize as unconfigured if no API key
+        # This allows the backend to be listed in available_modes even before configuration
+        self.client = None
+        self.assistant = None
+        self.configured = False
+        
+        if self.api_key and self.api_key.strip():
+            try:
+                # Just validate API key by creating client, don't create assistant yet
+                self.client = OpenAI(api_key=self.api_key)
+                
+                # Test that the key works with a simple call
+                self.client.models.list()
+                
+                self.configured = True
+                logger.info("OpenAI Assistants backend initialized and configured (assistant creation deferred)")
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("OpenAI Assistants backend initialized but not configured: %s", exc)
+                self.configured = False
+        else:
+            logger.info(
+                "OpenAI Assistants backend initialized but not configured. "
+                "Add API key via UI settings or secrets/openai_config.json and restart services."
+            )
 
         # Active threads (could persist these)
         self.threads: Dict[str, str] = {}
-
-        logger.info("OpenAI Assistants backend initialized")
 
     def _create_assistant(self):
         """Create a new OpenAI Assistant with function calling."""
@@ -115,9 +136,42 @@ class OpenAIAssistantsBackend:
             }]
         )
 
+    def _ensure_assistant(self):
+        """Ensure assistant is created (lazy initialization)."""
+        if self.assistant is not None:
+            return
+        
+        # Create or get assistant
+        if not self.assistant_id:
+            self.assistant = self._create_assistant()
+            self.assistant_id = self.assistant.id
+            logger.info("Created OpenAI Assistant: %s", self.assistant_id)
+            
+            # Save the assistant ID back to config
+            secrets_path = "secrets/openai_config.json"
+            if os.path.exists(secrets_path):
+                try:
+                    with open(secrets_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    config["assistant_id"] = self.assistant_id
+                    with open(secrets_path, "w", encoding="utf-8") as f:
+                        json.dump(config, f, indent=2)
+                    logger.info("Saved assistant ID to %s", secrets_path)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.warning("Failed to save assistant ID: %s", exc)
+        else:
+            try:
+                self.assistant = self.client.beta.assistants.retrieve(self.assistant_id)
+                logger.info("Using existing OpenAI Assistant: %s", self.assistant_id)
+            except OpenAIError as exc:
+                logger.warning("Failed to retrieve assistant %s: %s", self.assistant_id, exc)
+                self.assistant = self._create_assistant()
+                self.assistant_id = self.assistant.id
+
     def search_documents_function(self, query: str, top_k: int = 5) -> str:
         """
         Function called by OpenAI Assistant to search local documents.
+        Delegates to MCP server to avoid duplicating FAISS index in memory.
 
         Args:
             query: Search query
@@ -127,15 +181,30 @@ class OpenAIAssistantsBackend:
             JSON string with search results
         """
         try:
-            # Call local FAISS search
-            results = local_core.search(query, top_k=min(top_k, 20))
-
-            # Format for assistant consumption
-            if "error" in results:
-                return json.dumps({"error": results["error"]})
+            # Call MCP server's vector_search endpoint instead of local_core directly
+            mcp_port = os.getenv("MCP_PORT", "8000")
+            mcp_host = os.getenv("MCP_HOST", "127.0.0.1")
+            
+            import requests
+            response = requests.post(
+                f"http://{mcp_host}:{mcp_port}/vector_search",
+                json={"query": query, "k": min(top_k, 20)},
+                timeout=30
+            )
+            
+            if not response.ok:
+                logger.error("MCP vector_search failed: %s", response.text)
+                return json.dumps({"error": f"Search failed: {response.status_code}"})
+            
+            data = response.json()
+            results = data.get("results", [])
+            
+            if not results:
+                logger.warning("MCP vector_search returned no results for query: %s", query)
+                return json.dumps({"passages": [], "total": 0})
 
             passages = []
-            for i, result in enumerate(results.get("results", []), 1):
+            for i, result in enumerate(results, 1):
                 passages.append({
                     "index": i,
                     "uri": result.get("uri", "unknown"),
@@ -143,6 +212,11 @@ class OpenAIAssistantsBackend:
                     "score": result.get("score", 0.0)
                 })
 
+            logger.info("Search found %d results for query: %s", len(passages), query)
+            if passages:
+                logger.debug("First result: uri=%s, score=%.3f, text_len=%d", 
+                           passages[0]["uri"], passages[0]["score"], len(passages[0]["text"]))
+            
             return json.dumps({
                 "passages": passages,
                 "total": len(passages)
@@ -251,7 +325,16 @@ class OpenAIAssistantsBackend:
         Returns:
             Dict with 'content' and optional 'sources'
         """
+        if not self.configured:
+            return {
+                "error": "OpenAI Assistants backend not configured. "
+                "Add your API key in Settings and restart services."
+            }
+        
         try:
+            # Ensure assistant is created before use
+            self._ensure_assistant()
+            
             if kwargs:
                 logger.debug("Extra chat kwargs ignored: %s", list(kwargs.keys()))
             user_message = next(
@@ -298,9 +381,9 @@ class OpenAIAssistantsBackend:
             return {"error": str(exc)}
 
     # Delegate other methods to local backend
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Search for documents."""
-        return local_core.search(query, top_k=top_k)
+        return local_core.search(query, top_k=top_k, **kwargs)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""
@@ -369,3 +452,31 @@ class OpenAIAssistantsBackend:
         stats["assistant_id"] = self.assistant_id
         stats["model"] = self.model
         return stats
+
+    def list_models(self) -> List[str]:
+        """List available OpenAI models."""
+        if not self.configured or not self.client:
+            logger.warning("Cannot list models: backend not configured")
+            return []
+        
+        try:
+            models_response = self.client.models.list()
+            all_model_ids = [model.id for model in models_response.data]
+            logger.info("Retrieved %d models from OpenAI API", len(all_model_ids))
+            logger.debug("All available models: %s", all_model_ids[:10])  # Log first 10
+            
+            # Filter for models suitable for assistants (GPT models)
+            suitable_models = []
+            for model in models_response.data:
+                model_id = model.id
+                # Include GPT-4, GPT-3.5, and o1 models
+                if any(prefix in model_id for prefix in ['gpt-4', 'gpt-3.5', 'o1']):
+                    suitable_models.append(model_id)
+            
+            logger.info("Filtered to %d suitable models", len(suitable_models))
+            # Sort alphabetically
+            suitable_models.sort()
+            return suitable_models
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to list OpenAI models: %s", exc)
+            return []

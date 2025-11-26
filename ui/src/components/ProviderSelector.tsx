@@ -76,7 +76,8 @@ export function ProviderSelector({ config }: { config: any }) {
 
   const providers = [
     { value: 'local', label: 'Ollama (Local)', icon: Server },
-    { value: 'manual', label: 'Gemini + Drive (Manual)', icon: Cloud },
+    { value: 'openai_assistants', label: 'OpenAI Assistants', icon: Cloud },
+    { value: 'google_gemini', label: 'Gemini + Drive', icon: Cloud },
     { value: 'vertex_ai_search', label: 'Vertex AI Agent', icon: Cloud },
   ]
 

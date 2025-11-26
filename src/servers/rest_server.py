@@ -95,6 +95,11 @@ SUPPORTED_SERVICES = {"rest", "mcp", "ui", "ollama"}
 SERVICE_CONTROLLERS: Dict[str, Dict[str, Any]] = {}
 SERVICE_LOCK = threading.Lock()
 
+# Background store loading
+store_loading = False
+store_loaded = False
+store_load_thread: Optional[threading.Thread] = None
+
 # Explicitly disable uvicorn's default access logger so access lines don't hit rest_server.log
 uvicorn_access_logger = logging.getLogger("uvicorn.access")
 uvicorn_access_logger.handlers.clear()
@@ -310,6 +315,20 @@ def _is_port_free(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) != 0
 
 
+def _is_service_running(service: str) -> bool:
+    """Check if a service is running by checking if its port is in use."""
+    host = _service_host(service)
+    start_port, end_port = _parse_port_range(service)
+    if not start_port:
+        return False
+    
+    # Check if any port in the service's range is in use
+    for port in range(start_port, end_port + 1):
+        if not _is_port_free(host, port):
+            return True
+    return False
+
+
 def _pick_port(service: str, host: str) -> int:
     start, end = _parse_port_range(service)
     if not start or not end:
@@ -422,17 +441,6 @@ async def lifespan(_fastapi_app: FastAPI):
         os.getenv("RAG_PORT", "8001")
     )
 
-    # Start background store load to prevent first-query latency
-    def _warmup():
-        try:
-            logger.info("Starting background store warmup...")
-            backend.load_store()
-            logger.info("Background store warmup complete")
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error("Background warmup failed: %s", e)
-
-    threading.Thread(target=_warmup, daemon=True).start()
-
     yield
     logger.info("REST server shutting down")
     try:
@@ -459,9 +467,13 @@ class IndexPathReq(BaseModel):
 
 class SearchReq(BaseModel):
     """Request model for performing a search."""
-    query: str
-    async_mode: bool = Field(default=False, alias="async")
-    timeout_seconds: Optional[int] = 300
+    query: str = Field(description="The search query")
+    async_mode: bool = Field(default=False, alias="async", description="Run search asynchronously with polling")
+    timeout_seconds: Optional[int] = Field(default=300, description="Timeout for async searches in seconds")
+    model: Optional[str] = Field(default=None, description="Override LLM model (Ollama only, e.g. 'ollama/qwen2.5:3b')")
+    temperature: Optional[float] = Field(default=None, description="Generation temperature 0.0-1.0 (lower=factual, higher=creative)")
+    max_tokens: Optional[int] = Field(default=None, description="Maximum tokens in response")
+    top_k: Optional[int] = Field(default=None, description="Number of documents to retrieve (default 5)")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -528,7 +540,7 @@ class DeleteDocsReq(BaseModel):
 
 class ConfigModeReq(BaseModel):
     """Request model for setting the backend mode."""
-    mode: str
+    mode: str = Field(description="Backend mode: 'local' (Ollama), 'openai_assistants', 'google_gemini', or 'vertex_ai_search'")
 
 class QualityMetricsResp(BaseModel):
     """Aggregated quality metrics for searches."""
@@ -606,7 +618,18 @@ def _start_search_worker():
                 continue
             job_id = job["id"]
             try:
-                result = backend.search(job["query"])
+                # Build kwargs from job parameters
+                kwargs = {}
+                if job.get("top_k") is not None:
+                    kwargs['top_k'] = job["top_k"]
+                if job.get("model") is not None:
+                    kwargs['model'] = job["model"]
+                if job.get("temperature") is not None:
+                    kwargs['temperature'] = job["temperature"]
+                if job.get("max_tokens") is not None:
+                    kwargs['max_tokens'] = job["max_tokens"]
+                
+                result = backend.search(job["query"], **kwargs)
                 status = "completed"
                 error = None
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -806,6 +829,10 @@ def api_search(req: SearchReq):
             "status": "queued",
             "query": req.query,
             "timeout_seconds": req.timeout_seconds or 300,
+            "model": req.model,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
+            "top_k": req.top_k,
         }
         with state.search_jobs_lock:
             state.search_jobs[job_id] = job
@@ -813,7 +840,18 @@ def api_search(req: SearchReq):
         return {"job_id": job_id, "status": "queued"}
 
     try:
-        result = backend.search(req.query)
+        # Build kwargs for backend.search
+        kwargs = {}
+        if req.top_k is not None:
+            kwargs['top_k'] = req.top_k
+        if req.model is not None:
+            kwargs['model'] = req.model
+        if req.temperature is not None:
+            kwargs['temperature'] = req.temperature
+        if req.max_tokens is not None:
+            kwargs['max_tokens'] = req.max_tokens
+        
+        result = backend.search(req.query, **kwargs)
         _record_quality_metrics(result)
         # Ensure result is JSON-serializable (already normalized by _normalize_llm_response)
         if hasattr(result, 'model_dump'):
@@ -1099,15 +1137,24 @@ def api_service_status():
     statuses = []
     with SERVICE_LOCK:
         for service in SUPPORTED_SERVICES:
+            # Check both controller state and actual port availability
             info = SERVICE_CONTROLLERS.get(service, {})
             pid = info.get("pid")
-            alive = bool(pid and _pid_alive(pid))
-            if info and not alive:
+            controller_alive = bool(pid and _pid_alive(pid))
+            
+            # Also check if service is actually running on its port (even if not managed by controller)
+            port_alive = _is_service_running(service)
+            
+            # Service is running if either the controller knows about it OR the port is in use
+            is_running = controller_alive or port_alive
+            
+            if info and not controller_alive:
                 SERVICE_CONTROLLERS.pop(service, None)
+            
             statuses.append({
                 "service": service,
-                "status": "running" if alive else "stopped",
-                "controller_pid": pid if alive else None,
+                "status": "running" if is_running else "stopped",
+                "controller_pid": pid if controller_alive else None,
                 "port": info.get("port"),
                 "host": info.get("host"),
                 "started_at": info.get("started_at"),
@@ -1347,6 +1394,137 @@ def auth_logout(_request: Request):
         return JSONResponse({"status": "logged_out"})
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error logging out: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+class OpenAIConfigModel(BaseModel):
+    """OpenAI configuration model."""
+    api_key: str = Field(description="OpenAI API key (sk-...)", alias="apiKey")
+    model: str = Field(default="gpt-4-turbo-preview", description="OpenAI model to use")
+    assistant_id: str = Field(default="", description="Optional OpenAI Assistant ID", alias="assistantId")
+    
+    class Config:
+        populate_by_name = True  # Allow both api_key and apiKey
+
+@app.post(f"/{pth}/config/openai")
+def save_openai_config(_request: Request, config: OpenAIConfigModel):
+    """Save OpenAI API configuration to secrets/openai_config.json."""
+    try:
+        os.makedirs("secrets", exist_ok=True)
+        config_data = {
+            "api_key": config.api_key,
+            "model": config.model,
+            "assistant_id": config.assistant_id
+        }
+        with open("secrets/openai_config.json", "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+        
+        logger.info("OpenAI configuration saved to secrets/openai_config.json")
+        return JSONResponse({"status": "success", "message": "Configuration saved"})
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to save OpenAI config: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.post(f"/{pth}/config/openai/reload")
+def reload_openai_backend(_request: Request):
+    """Reload OpenAI backend to pick up configuration changes."""
+    global backend  # pylint: disable=global-statement
+    try:
+        if not backend:
+            raise HTTPException(status_code=500, detail="Backend not initialized")
+        
+        result = backend.reload_backend("openai_assistants")
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=500, detail=result["message"])
+        
+        logger.info("OpenAI backend reloaded successfully")
+        return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to reload OpenAI backend: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get(f"/{pth}/config/openai")
+def get_openai_config(_request: Request):
+    """Get OpenAI configuration (without exposing the full API key)."""
+    try:
+        if not os.path.exists("secrets/openai_config.json"):
+            return JSONResponse({"api_key": "", "model": "gpt-4-turbo-preview", "assistant_id": ""})
+        
+        with open("secrets/openai_config.json", "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        # Mask the API key for security (show only last 4 chars)
+        api_key = config.get("api_key", "")
+        if len(api_key) > 4:
+            masked_key = "sk-..." + api_key[-4:]
+        else:
+            masked_key = ""
+        
+        return JSONResponse({
+            "api_key": masked_key,
+            "model": config.get("model", "gpt-4-turbo-preview"),
+            "assistant_id": config.get("assistant_id", "")
+        })
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to load OpenAI config: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get(f"/{pth}/config/openai/models")
+def get_openai_models(_request: Request):
+    """Get list of available OpenAI models using the configured API key."""
+    try:
+        if not os.path.exists("secrets/openai_config.json"):
+            raise HTTPException(status_code=400, detail="OpenAI not configured")
+        
+        with open("secrets/openai_config.json", "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        api_key = config.get("api_key", "")
+        if not api_key or not api_key.strip():
+            raise HTTPException(status_code=400, detail="API key not configured")
+        
+        # Fetch models from OpenAI API
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        models_response = client.models.list()
+        
+        all_model_ids = [m.id for m in models_response.data]
+        
+        # Filter for models suitable for assistants (GPT, o1, and text models)
+        suitable_models = []
+        for model in models_response.data:
+            model_id = model.id
+            # Include GPT-4, GPT-3.5, o1, and text-davinci models
+            # Exclude embeddings, whisper, tts, dall-e, and sora models
+            if any(prefix in model_id for prefix in ['gpt-4', 'gpt-3.5', 'o1', 'text-davinci']):
+                suitable_models.append({
+                    "id": model_id,
+                    "name": model_id,
+                    "created": model.created
+                })
+        
+        # If no GPT models found, return warning
+        if not suitable_models:
+            logger.warning("No GPT models found. Available models: %s", all_model_ids)
+            return JSONResponse({
+                "models": [],
+                "warning": "No GPT models available",
+                "message": f"Your OpenAI account only has access to: {', '.join(all_model_ids)}. The Assistants API requires GPT-4, GPT-3.5-turbo, or o1 models. Please add credits to your OpenAI account or use a different API key with GPT model access.",
+                "available_models": all_model_ids
+            })
+        
+        # Sort by creation date (newest first)
+        suitable_models.sort(key=lambda x: x["created"], reverse=True)
+        
+        logger.info("Retrieved %d OpenAI models (from %d total)", len(suitable_models), len(models_response.data))
+        return JSONResponse({"models": suitable_models})
+        
+    except HTTPException:
+        raise
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to fetch OpenAI models: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 class ChatMessage(BaseModel):

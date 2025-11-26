@@ -66,10 +66,10 @@ class LocalBackend:
         if local_core is None:
             raise RuntimeError("Local core dependencies not available")
 
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Search for documents."""
         self._check_core()
-        return local_core.search(query, top_k=top_k)
+        return local_core.search(query, top_k=top_k, **kwargs)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""
@@ -267,6 +267,21 @@ class LocalBackend:
         """Chat with the backend."""
         self._check_core()
         return local_core.chat(messages, **kwargs)
+
+    def list_models(self) -> List[str]:
+        """List available Ollama models."""
+        try:
+            import requests  # pylint: disable=import-outside-toplevel
+            ollama_base = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
+            response = requests.get(f"{ollama_base}/api/tags", timeout=5)
+            if response.ok:
+                data = response.json()
+                models = data.get("models", [])
+                # Return list of model names
+                return [model.get("name", "") for model in models if model.get("name")]
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to list Ollama models: %s", exc)
+        return []
 
 class RemoteBackend:
     """HTTP calls to the REST API."""
@@ -467,11 +482,11 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                     logger.info("HybridBackend: Switched to google (%s)", mode)
                     return True
 
-            # Fallback for legacy "google" mode request -> manual
+            # Fallback for legacy "google" mode request -> google_gemini
             if mode == "google":
                 self.current_mode = "google"
-                google_backend.set_mode("manual")
-                logger.info("HybridBackend: Switched to google (manual)")
+                google_backend.set_mode("google_gemini")
+                logger.info("HybridBackend: Switched to google (google_gemini)")
                 return True
 
         return False
@@ -479,23 +494,88 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def get_mode(self) -> str:
         """Get the current backend mode."""
         if self.current_mode == "google":
-            # Return the specific google mode (manual or vertex_ai_search)
+            # Return the specific google mode (google_gemini or vertex_ai_search)
             if hasattr(self.backends["google"], "get_mode"):
                 return self.backends["google"].get_mode()
         return self.current_mode
 
+    def reload_backend(self, backend_name: str) -> Dict[str, Any]:
+        """
+        Reload a specific backend to pick up configuration changes.
+        
+        Args:
+            backend_name: Name of backend to reload ("openai_assistants", "google", etc.)
+            
+        Returns:
+            Dict with status and message
+        """
+        try:
+            if backend_name == "openai_assistants":
+                if not HAS_OPENAI_ASSISTANTS or not OpenAIAssistantsBackend:
+                    return {"status": "error", "message": "OpenAI Assistants backend not available"}
+                
+                # Reinitialize the backend
+                old_backend = self.backends.get("openai_assistants")
+                self.backends["openai_assistants"] = OpenAIAssistantsBackend()
+                logger.info("HybridBackend: OpenAI Assistants backend reloaded")
+                
+                # If this was the current mode and reload failed, fall back to local
+                if self.current_mode == "openai_assistants":
+                    if not self.backends["openai_assistants"].configured:
+                        if "local" in self.backends:
+                            self.current_mode = "local"
+                            logger.warning("OpenAI backend not configured, falling back to local")
+                
+                return {
+                    "status": "success", 
+                    "message": "OpenAI Assistants backend reloaded",
+                    "configured": self.backends["openai_assistants"].configured
+                }
+                
+            elif backend_name == "google":
+                if not HAS_GOOGLE_BACKEND or not GoogleGeminiBackend:
+                    return {"status": "error", "message": "Google backend not available"}
+                
+                self.backends["google"] = GoogleGeminiBackend()
+                logger.info("HybridBackend: Google backend reloaded")
+                return {"status": "success", "message": "Google backend reloaded"}
+                
+            else:
+                return {"status": "error", "message": f"Backend '{backend_name}' cannot be reloaded"}
+                
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to reload backend %s: %s", backend_name, exc)
+            return {"status": "error", "message": str(exc)}
+
     def get_available_modes(self) -> List[str]:
-        """Get list of available backend modes."""
+        """Get list of available backend modes (only properly configured ones)."""
         modes = []
+        
+        # Local backend - check if Ollama is reachable
         if "local" in self.backends:
-            modes.append("local")
+            try:
+                import requests
+                response = requests.get("http://127.0.0.1:11434/api/tags", timeout=2)
+                if response.ok:
+                    data = response.json()
+                    if data.get("models") and len(data["models"]) > 0:
+                        modes.append("local")
+            except Exception:
+                pass  # Ollama not available
+        
+        # OpenAI Assistants - check if configured
         if "openai_assistants" in self.backends:
-            modes.append("openai_assistants")
+            backend = self.backends["openai_assistants"]
+            if hasattr(backend, "configured") and backend.configured:
+                modes.append("openai_assistants")
+        
+        # Google backends - delegate to backend's own check
         if "google" in self.backends:
             if hasattr(self.backends["google"], "get_available_modes"):
                 modes.extend(self.backends["google"].get_available_modes())
             else:
                 modes.append("google")
+        
         return modes
 
     @property
@@ -508,9 +588,9 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         return self.backends[self.current_mode]
 
     # Delegate all methods
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Search for documents."""
-        return self._backend.search(query, top_k)
+        return self._backend.search(query, top_k, **kwargs)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""

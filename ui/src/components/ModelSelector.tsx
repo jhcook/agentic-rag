@@ -45,9 +45,9 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
     return () => clearInterval(interval)
   }, [config])
 
-  // Fetch models if mode is manual (Google)
+  // Fetch models if mode is manual (Google or OpenAI)
   useEffect(() => {
-    if (mode !== 'manual') {
+    if (mode !== 'google_gemini' && mode !== 'openai_assistants') {
         setModels([])
         return
     }
@@ -65,7 +65,8 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
             setModels(data.models)
             
             // Try to restore from localStorage
-            const savedModel = localStorage.getItem("gemini_model")
+            const storageKey = mode === 'google_gemini' ? 'gemini_model' : 'openai_model'
+            const savedModel = localStorage.getItem(storageKey)
             
             if (savedModel && data.models.includes(savedModel)) {
                 setSelectedModel(savedModel)
@@ -90,11 +91,12 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
   const handleSelect = (currentValue: string) => {
     setSelectedModel(currentValue)
     onModelSelect(currentValue)
-    localStorage.setItem("gemini_model", currentValue)
+    const storageKey = mode === 'google_gemini' ? 'gemini_model' : 'openai_model'
+    localStorage.setItem(storageKey, currentValue)
     setOpen(false)
   }
 
-  if (mode !== 'manual' || models.length === 0) {
+  if ((mode !== 'google_gemini' && mode !== 'openai_assistants') || models.length === 0) {
     return null
   }
 

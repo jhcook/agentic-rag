@@ -49,7 +49,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const directoryInputRef = useRef<HTMLInputElement>(null)
 
   const mode = activeMode || 'local'
-  const isLocalMode = mode === 'local'
+  const isLocalMode = mode === 'local' || mode === 'openai_assistants'
 
   const fetchDriveFiles = async (folderId: string | null = null) => {
     setLoading(true)

@@ -615,6 +615,30 @@ def verify_grounding_tool(question: str, answer: str, citations: List[str]) -> D
         logger.error("Error verifying grounding: %s", e, exc_info=True)
         return {"error": str(e)}
 
+@mcp.custom_route("/vector_search", methods=["POST"])
+async def vector_search_endpoint(request) -> Response:
+    """Vector search endpoint that returns raw search results without LLM synthesis."""
+    try:
+        body = await request.json()
+        query = body.get("query", "")
+        k = int(body.get("k", 5))
+        
+        # Import rag_core to access _vector_search
+        from src.core import rag_core
+        results = await anyio.to_thread.run_sync(rag_core._vector_search, query, k)
+        
+        return Response(
+            content=json.dumps({"results": results}),
+            media_type="application/json"
+        )
+    except Exception as exc:
+        logger.error("Vector search error: %s", exc, exc_info=True)
+        return Response(
+            content=json.dumps({"error": str(exc)}),
+            status_code=500,
+            media_type="application/json"
+        )
+
 @mcp.custom_route("/metrics", methods=["GET"])
 async def metrics_endpoint(_request) -> Response:
     """Expose Prometheus metrics for the MCP server and Ollama backend."""

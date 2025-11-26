@@ -122,6 +122,12 @@ function App() {
     location: 'us-central1',
     dataStoreId: ''
   })
+  const [openaiConfig, setOpenaiConfig] = useState({
+    apiKey: '',
+    model: 'gpt-4-turbo-preview',
+    assistantId: ''
+  })
+  const [openaiModels, setOpenaiModels] = useState<string[]>([])
   const searchAbortRef = useRef<AbortController | null>(null)
   const [jobProgress, setJobProgress] = useState<{
     total: number
@@ -157,9 +163,23 @@ function App() {
           })
           return next
         })
+        
+        // Update overall system status based on all services
+        const allRunning = data.services.every((svc: any) => svc.status === 'running')
+        const allStopped = data.services.every((svc: any) => svc.status === 'stopped')
+        const someRunning = data.services.some((svc: any) => svc.status === 'running')
+        
+        if (allRunning) {
+          setSystemStatus('running')
+        } else if (allStopped) {
+          setSystemStatus('stopped')
+        } else if (someRunning) {
+          setSystemStatus('warning')
+        }
       }
     } catch (err) {
       console.error('Failed to load service status', err)
+      setSystemStatus('error')
     }
   }, [getApiBase])
 
@@ -187,11 +207,6 @@ function App() {
       toast.error(err instanceof Error ? err.message : `Failed to ${action} ${selectedService}`, { id: toastId })
     }
   }, [getApiBase, refreshServiceStatuses, selectedService])
-
-  useEffect(() => {
-    const status = serviceStatuses[selectedService] || 'stopped'
-    setSystemStatus(status)
-  }, [selectedService, serviceStatuses])
 
   // Fetch app config on mount
   useEffect(() => {
@@ -261,6 +276,19 @@ function App() {
           setChatMessages(mostRecent.messages)
         }
       }
+      
+      // Load OpenAI config from backend
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      fetch(`http://${host}:${port}/${base}/config/openai`)
+        .then(res => res.json())
+        .then(config => {
+          if (config.api_key || config.model) {
+            setOpenaiConfig(config)
+          }
+        })
+        .catch(err => console.error('Failed to load OpenAI config:', err))
     } catch (e) {
       console.error('Failed to load conversations:', e)
     }
@@ -774,6 +802,176 @@ function App() {
     }
   }
 
+  const handleSaveOpenAIConfig = async () => {
+    if (!openaiConfig.apiKey) {
+      toast.error('Please enter an API key')
+      return
+    }
+    
+    try {
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      
+      // Save configuration
+      const saveResponse = await fetch(`http://${host}:${port}/${base}/config/openai`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(openaiConfig)
+      })
+      
+      if (!saveResponse.ok) {
+        throw new Error(`HTTP ${saveResponse.status}`)
+      }
+      
+      // Reload backend to pick up changes
+      toast.loading('Reloading backend...', { id: 'openai-reload' })
+      
+      const reloadResponse = await fetch(`http://${host}:${port}/${base}/config/openai/reload`, {
+        method: 'POST'
+      })
+      
+      if (!reloadResponse.ok) {
+        const errorData = await reloadResponse.json().catch(() => ({}))
+        throw new Error(errorData.detail || `Reload failed: HTTP ${reloadResponse.status}`)
+      }
+      
+      const reloadData = await reloadResponse.json()
+      toast.dismiss('openai-reload')
+      
+      if (reloadData.configured) {
+        toast.success('OpenAI configuration saved and loaded', {
+          description: 'Backend is now ready. Switch to OpenAI Assistants in the provider dropdown.'
+        })
+      } else {
+        toast.success('Configuration saved', {
+          description: 'Backend loaded but check your API key if issues persist.'
+        })
+      }
+      
+      // Refresh available modes to update UI
+      await refreshServiceStatuses()
+      
+    } catch (err) {
+      toast.dismiss('openai-reload')
+      toast.error('Failed to save configuration', {
+        description: err instanceof Error ? err.message : 'Unknown error'
+      })
+    }
+  }
+
+  const handleTestOpenAIConnection = async () => {
+    if (!openaiConfig.apiKey) {
+      toast.error('Please enter an API key first')
+      return
+    }
+    
+    toast.loading('Testing OpenAI connection...', { id: 'openai-test' })
+    
+    try {
+      // Test by making a simple API call
+      const response = await fetch('https://api.openai.com/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${openaiConfig.apiKey}`
+        }
+      })
+      
+      if (response.ok) {
+        // Fetch available models from our backend
+        const host = ollamaConfig?.ragHost || '127.0.0.1'
+        const port = ollamaConfig?.ragPort || '8001'
+        const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+        
+        try {
+          const modelsRes = await fetch(`http://${host}:${port}/${base}/config/openai/models`)
+          if (modelsRes.ok) {
+            const modelsData = await modelsRes.json()
+            
+            // Check for warning about missing GPT models
+            if (modelsData.warning) {
+              toast.warning('API key valid but limited access', {
+                id: 'openai-test',
+                description: modelsData.message || 'No GPT models available',
+                duration: 10000
+              })
+              setOpenaiModels([])
+              return
+            }
+            
+            if (modelsData.models && Array.isArray(modelsData.models)) {
+              const modelIds = modelsData.models.map((m: any) => m.id || m.name || m)
+              setOpenaiModels(modelIds)
+              toast.success('Connection successful!', { 
+                id: 'openai-test',
+                description: `Found ${modelIds.length} available models`
+              })
+              return
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch models:', e)
+        }
+        
+        toast.success('Connection successful!', { 
+          id: 'openai-test',
+          description: 'API key is valid'
+        })
+      } else {
+        const error = await response.json()
+        toast.error('Connection failed', {
+          id: 'openai-test',
+          description: error.error?.message || 'Invalid API key'
+        })
+      }
+    } catch (err) {
+      toast.error('Connection failed', {
+        id: 'openai-test',
+        description: err instanceof Error ? err.message : 'Network error'
+      })
+    }
+  }
+
+  const handleSwitchBackend = async (mode: string) => {
+    try {
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      
+      const response = await fetch(`http://${host}:${port}/${base}/config/mode`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ mode })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || `HTTP ${response.status}`)
+      }
+      
+      const result = await response.json()
+      setActiveMode(result.mode)
+      
+      const modeNames: Record<string, string> = {
+        'local': 'Ollama (Local)',
+        'openai_assistants': 'OpenAI Assistants',
+        'google_gemini': 'Google Gemini + Drive',
+        'vertex_ai_search': 'Google Vertex AI'
+      }
+      
+      toast.success(`Switched to ${modeNames[mode] || mode}`, {
+        description: 'Backend is now active'
+      })
+    } catch (err) {
+      toast.error('Failed to switch backend', {
+        description: err instanceof Error ? err.message : 'Unknown error'
+      })
+    }
+  }
+
   const handleSearch = async () => {
     // cancel any in-flight search before starting a new one
     if (searchAbortRef.current) {
@@ -880,7 +1078,8 @@ function App() {
     setStatusMessage(jobProgress.visible ? `Indexing ${jobProgress.total - jobProgress.completed - jobProgress.failed} job(s)` : 'Idle')
   }
 
-  // Periodically ping REST health endpoint to reflect actual status
+  // Periodically ping REST health endpoint for document stats
+  // System status is primarily managed by the /api/services endpoint
   useEffect(() => {
     const controller = new AbortController()
 
@@ -900,15 +1099,12 @@ function App() {
         if (typeof data?.total_size_bytes === 'number') {
           setBackendSize(data.total_size_bytes)
         }
-        if (data?.status === 'warning') {
-          setSystemStatus('warning')
-        } else {
-          setSystemStatus('running')
-        }
+        // Don't override system status here - let /api/services be the source of truth
       } catch (error) {
-        // Only mark error if not manually stopped
+        // Only update docs/size on error
         setBackendDocs(null)
         setBackendSize(null)
+        // If we can't reach the API at all, mark as error (unless manually stopped)
         setSystemStatus(prev => (prev === 'stopped' ? 'stopped' : 'error'))
       }
     }
@@ -1285,6 +1481,12 @@ function App() {
               onSaveVertexConfig={handleSaveVertexConfig}
               onGoogleLogin={handleGoogleLogin}
               onGoogleLogout={handleGoogleLogout}
+              openaiConfig={openaiConfig}
+              openaiModels={openaiModels}
+              onOpenaiConfigChange={setOpenaiConfig}
+              onSaveOpenAIConfig={handleSaveOpenAIConfig}
+              onTestOpenAIConnection={handleTestOpenAIConnection}
+              onSwitchBackend={handleSwitchBackend}
               activeMode={activeMode}
             />
           </TabsContent>

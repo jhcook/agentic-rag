@@ -68,47 +68,54 @@ Agentic RAG supports three AI backends, each with different trade-offs:
 ### 1. Local (Ollama) - Default
 **Best for**: Privacy, offline use, no API costs
 
-- ✅ 100% local and private
-- ✅ Works offline
-- ✅ Free to use
-- ✅ Fast responses (local inference)
-- ❌ Lower quality than GPT-4
-- ❌ Requires local GPU/CPU resources
+- 100% local and private
+- Works offline
+- Free to use
+- Fast responses (local inference)
+- Lower quality than GPT-4
+- Requires local GPU/CPU resources
 
 **Setup**: Install Ollama and pull a model
 ```bash
 brew install ollama
 ollama pull qwen2.5:3b
+# Start the app, then go to Settings > AI Provider > Ollama to configure
 ```
+
+Ollama is the default backend and activates automatically when services start.
 
 ### 2. OpenAI Assistants - **NEW!**
 **Best for**: GPT-4 quality while keeping documents private
 
-- ✅ Excellent reasoning and answer quality
-- ✅ Documents stay local (only queries sent to API)
-- ✅ Automatic function calling orchestration
-- ✅ Built-in citation support
-- ✅ No file upload needed
-- ❌ Costs ~$0.01 per query
-- ❌ Requires internet and API key
+- Excellent reasoning and answer quality
+- Documents stay local (only queries sent to API)
+- Automatic function calling orchestration
+- Built-in citation support
+- No file upload needed
+- Costs ~$0.01 per query
+- Requires internet and API key
 
 **Setup**: See [docs/openai_assistants.md](docs/openai_assistants.md)
 ```bash
-# Add to .env
-OPENAI_API_KEY=sk-...
-RAG_MODE=openai_assistants
+# Configure via UI (Settings > AI Provider > OpenAI Assistants)
+# 1. Enter API key and save (backend reloads automatically)
+# 2. Test connection
+# 3. Provider appears in Active Provider dropdown
+# 4. Click "Use this Backend" button to switch
 ```
+
+Configuration is saved to `secrets/openai_config.json`. The backend automatically reloads when you save configuration changes - no restart required!
 
 ### 3. Google Vertex AI
 **Best for**: Drive/Gmail integration, massive context windows
 
-- ✅ 2M token context window
-- ✅ Native Drive and Gmail OAuth
-- ✅ Automatic grounding with Agent Builder
-- ✅ Multi-modal support (PDFs, images, video)
-- ❌ Complex setup (GCP project required)
-- ❌ Files uploaded to Google Cloud
-- ❌ Costs per query + storage
+- 2M token context window
+- Native Drive and Gmail OAuth
+- Automatic grounding with Agent Builder
+- Multi-modal support (PDFs, images, video)
+- Complex setup (GCP project required)
+- Files uploaded to Google Cloud
+- Costs per query + storage
 
 **Setup**: See [docs/vertex_ai_setup.md](docs/vertex_ai_setup.md) and [docs/google_integration.md](docs/google_integration.md)
 
@@ -324,12 +331,61 @@ uvicorn src.servers.rest_server:app --host 127.0.0.1 --port 8001
 - **Features**: `/api/search`, `/api/index_path`, `/api/upsert_document`
 
 #### CLI Client
+
+The CLI agent provides full access to search, backend switching, and model selection:
+
 ```bash
+# Basic usage
 python src/clients/cli_agent.py "your search query"
 python src/clients/cli_agent.py "index documents"
+
+# Get help and see all options
+python src/clients/cli_agent.py --help
 ```
-- **Purpose**: Command-line interface to REST API
-- **Features**: Search queries and document indexing
+
+**Backend Management:**
+```bash
+# Show current backend
+python src/clients/cli_agent.py --show-backend
+
+# List available backends
+python src/clients/cli_agent.py --list-backends
+
+# Switch backends
+python src/clients/cli_agent.py --set-backend local
+python src/clients/cli_agent.py --set-backend openai_assistants
+python src/clients/cli_agent.py --set-backend google_gemini
+
+# Query with backend switch
+python src/clients/cli_agent.py "Fast query" --set-backend local
+```
+
+**Model Selection (Ollama only):**
+```bash
+# List available models
+python src/clients/cli_agent.py --list-models
+
+# Use specific model
+python src/clients/cli_agent.py "Explain architecture" --model llama3.2:3b
+
+# Adjust temperature
+python src/clients/cli_agent.py "Suggest ideas" --temperature 0.9
+
+# Combine parameters
+python src/clients/cli_agent.py "Complex query" \
+  --model qwen2.5:3b \
+  --temperature 0.7 \
+  --top-k 10 \
+  --max-tokens 2048
+```
+
+**Async Mode:**
+```bash
+# Long-running query with polling
+python src/clients/cli_agent.py "Detailed analysis" --async --timeout 600
+```
+
+See [docs/api_model_selection.md](docs/api_model_selection.md) for complete CLI reference.
 
 ### REST API Examples
 

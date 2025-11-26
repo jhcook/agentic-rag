@@ -5,8 +5,14 @@ from typing import Protocol, List, Dict, Any
 class RAGBackend(Protocol):
     """Interface for RAG operations (Local or Remote)."""
 
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        """Search for documents."""
+    def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
+        """Search for documents.
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            **kwargs: Optional parameters like model, temperature, max_tokens
+        """
         ...
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:

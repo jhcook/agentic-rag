@@ -10,6 +10,92 @@ The Agentic RAG system uses multiple AI models working together to provide retri
 2. **LLM Models** - Generate human-like responses based on retrieved context
 3. **Ollama Integration** - Local model serving and API communication
 
+## Backend Switching
+
+The system supports multiple backend providers that can be switched at runtime **via the REST API or UI**, without restart:
+
+### Available Backends
+
+1. **`local`** - Ollama with local models (default)
+   - Supports per-query model selection
+   - Fast, private, runs offline
+   - Models: qwen2.5:3b, llama3.2:3b, mistral:7b, etc.
+
+2. **`openai_assistants`** - OpenAI Assistants API
+   - Uses GPT-4 Turbo with file search
+   - Enterprise-grade reasoning
+   - Requires OpenAI API key
+
+3. **`google_gemini`** - Google Gemini with Drive API
+   - Integrates with Google Drive for document retrieval
+   - Uses Gemini 2.0 Flash
+   - Requires Google Cloud credentials
+
+4. **`vertex_ai_search`** - Google Vertex AI Search
+   - Enterprise search with Google Cloud
+   - Managed service with SLA
+   - Requires GCP project and search engine
+
+### Backend Management API
+
+**GET `/api/config/mode`** - Get current backend
+```bash
+curl http://localhost:8001/api/config/mode
+```
+
+Response:
+```json
+{
+  "mode": "local",
+  "available_modes": ["local", "openai_assistants", "google_gemini", "vertex_ai_search"]
+}
+```
+
+**POST `/api/config/mode`** - Switch backend
+```bash
+curl -X POST http://localhost:8001/api/config/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "openai_assistants"}'
+```
+
+Response:
+```json
+{
+  "status": "ok",
+  "mode": "openai_assistants"
+}
+```
+
+### CLI Backend Management
+
+```bash
+# List available backends
+python src/clients/cli_agent.py --list-backends
+
+# Show current backend
+python src/clients/cli_agent.py --show-backend
+
+# Switch backends
+python src/clients/cli_agent.py --set-backend local
+python src/clients/cli_agent.py --set-backend openai_assistants
+python src/clients/cli_agent.py --set-backend google_gemini
+python src/clients/cli_agent.py --set-backend vertex_ai_search
+
+# Query with backend switch
+python src/clients/cli_agent.py "My question" --set-backend local
+```
+
+### Backend Configuration Files
+
+Each backend can be configured via its own config file:
+
+- **Ollama (local)**: `config/settings.json` → `LLM_MODEL_NAME`, `LLM_TEMPERATURE`
+- **OpenAI**: `secrets/openai_config.json` → `api_key`, `model`, `assistant_id`
+- **Google Gemini**: `.env` → `GOOGLE_GROUNDING_MODE=google_gemini`, `client_secrets.json`
+- **Vertex AI**: `.env` → `GCP_PROJECT_ID`, `GCP_SEARCH_ENGINE_ID`
+
+See [OpenAI Assistants Setup](openai_assistants.md) and [Google Integration](google_integration.md) for detailed configuration.
+
 ## Model Configuration
 
 The Agentic RAG system uses a hierarchical configuration system:
@@ -29,6 +115,7 @@ OLLAMA_API_BASE=http://127.0.0.1:11434
 OLLAMA_KEEP_ALIVE=-1
 LLM_TEMPERATURE=0.1
 RAG_BACKEND_TYPE=local  # or 'remote'
+GOOGLE_GROUNDING_MODE=google_gemini  # or 'vertex_ai_search'
 ```
 
 ### Runtime Configuration (`config/settings.json`)
@@ -300,7 +387,7 @@ The system supports a Google Drive-backed RAG implementation that bypasses the l
 3. **Environment**: Set the variables in your `.env` file.
 
 ```dotenv
-GOOGLE_GROUNDING_MODE=manual
+GOOGLE_GROUNDING_MODE=google_gemini
 GOOGLE_MODEL_NAME=models/gemini-3.0-pro
 ```
 

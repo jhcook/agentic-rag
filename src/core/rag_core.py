@@ -838,8 +838,18 @@ def _build_rag_context(
 
 
 def search(query: str, top_k: int = SEARCH_TOP_K,
-           max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS):
-    """Search the indexed documents and ask the LLM using only those documents as context."""
+           max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS,
+           model: str = None, temperature: float = None, max_tokens: int = None):
+    """Search the indexed documents and ask the LLM using only those documents as context.
+    
+    Args:
+        query: The search query
+        top_k: Number of top results to retrieve
+        max_context_chars: Maximum characters of context
+        model: LLM model to use (overrides LLM_MODEL_NAME)
+        temperature: Temperature for generation (overrides LLM_TEMPERATURE)
+        max_tokens: Maximum tokens in response
+    """
     context, sources, candidates = _build_rag_context(query, top_k, max_context_chars)
 
     if not context:
@@ -862,15 +872,29 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
         if completion is None:
             return {"error": "LiteLLM not available"}
 
-        resp = completion(  # type: ignore
-            model=LLM_MODEL_NAME,
-            messages=[{"role": "system", "content": system_msg},
-                      {"role": "user", "content": user_msg}],
-            api_base=OLLAMA_API_BASE,
-            temperature=LLM_TEMPERATURE,
-            stream=False,
-            timeout=300,
-        )
+        # Build completion kwargs
+        # Normalize model name: add "ollama/" prefix if not present and not already prefixed
+        effective_model = model or LLM_MODEL_NAME
+        if effective_model and not effective_model.startswith(('ollama/', 'openai/', 'anthropic/', 'huggingface/')):
+            # If it looks like an Ollama model (no provider prefix), add ollama/ prefix
+            effective_model = f"ollama/{effective_model}"
+        
+        completion_kwargs = {
+            "model": effective_model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg}
+            ],
+            "api_base": OLLAMA_API_BASE,
+            "temperature": temperature if temperature is not None else LLM_TEMPERATURE,
+            "stream": False,
+            "timeout": 300,
+        }
+        
+        if max_tokens is not None:
+            completion_kwargs["max_tokens"] = max_tokens
+
+        resp = completion(**completion_kwargs)  # type: ignore
         return _normalize_llm_response(resp, sources)
     except (ValueError, OllamaError, APIConnectionError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)

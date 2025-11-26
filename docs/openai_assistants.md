@@ -436,7 +436,7 @@ No re-indexing needed!
 
 1. Documents in local FAISS work as-is
 2. Lose Drive/Gmail OAuth features
-3. Keep manual mode if needed
+3. Keep google_gemini mode if needed
 4. Set `RAG_MODE=openai_assistants`
 
 ### Hybrid Usage
@@ -451,7 +451,7 @@ rag_backend.set_mode("local")
 rag_backend.set_mode("openai_assistants")
 
 # Google for Drive access
-rag_backend.set_mode("manual")
+rag_backend.set_mode("google_gemini")
 ```
 
 ## FAQ
