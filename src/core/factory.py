@@ -576,6 +576,15 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             else:
                 modes.append("google")
         
+        # Auto-switch to first available mode if current mode is not available
+        if modes and self.current_mode not in modes:
+            old_mode = self.current_mode
+            self.current_mode = modes[0]
+            logger.warning(
+                "HybridBackend: Current mode '%s' not available, auto-switched to '%s'",
+                old_mode, self.current_mode
+            )
+        
         return modes
 
     @property

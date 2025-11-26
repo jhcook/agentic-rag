@@ -85,6 +85,9 @@ export function ProviderSelector({ config }: { config: any }) {
 
   // Filter providers based on available modes from backend
   const availableProviders = providers.filter(p => modeData.available_modes.includes(p.value))
+  
+  // Check if current mode is actually available
+  const isCurrentModeAvailable = modeData.available_modes.includes(modeData.mode)
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -93,12 +96,21 @@ export function ProviderSelector({ config }: { config: any }) {
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between"
-          disabled={loading}
+          className={cn(
+            "w-full justify-between",
+            !isCurrentModeAvailable && "border-destructive/50 bg-destructive/10"
+          )}
+          disabled={loading || availableProviders.length === 0}
         >
           <div className="flex items-center gap-2 truncate">
-            <currentProvider.icon className="h-4 w-4" />
-            {currentProvider.label}
+            <currentProvider.icon className={cn(
+              "h-4 w-4",
+              !isCurrentModeAvailable && "text-destructive"
+            )} />
+            <span className={cn(!isCurrentModeAvailable && "text-destructive")}>
+              {currentProvider.label}
+              {!isCurrentModeAvailable && " (Unavailable)"}
+            </span>
           </div>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
