@@ -1654,6 +1654,15 @@ def api_save_app_config(req: AppConfigReq):
             # or dump by name and let frontend handle it?
             # Frontend expects camelCase. Pydantic .model_dump(by_alias=True) does this.
             json.dump(req.model_dump(by_alias=True), f, indent=2)
+        
+        # Reload configuration in rag_core
+        try:
+            from src.core import rag_core
+            rag_core.reload_settings()
+            logger.info("Reloaded rag_core configuration")
+        except Exception as reload_err:  # pylint: disable=broad-exception-caught
+            logger.warning("Failed to reload rag_core: %s", reload_err)
+        
         return {"status": "saved"}
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to save app config: %s", e)

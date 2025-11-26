@@ -186,23 +186,28 @@ Key configuration options in `.env`:
 
 - `RAG_BACKEND_TYPE`: Backend type (`local` or `remote`)
 - `RAG_REMOTE_URL`: URL for remote backend (if type is `remote`)
-- `EMBED_MODEL_NAME`: Embedding model (default: Snowflake/arctic-embed-xs)
-- `LLM_MODEL_NAME`: LLM model for completions (default: ollama/qwen2.5:3b)
-- `OLLAMA_API_BASE`: Ollama server URL (default: 127.0.0.1:11434)
+- `EMBED_MODEL_NAME`: Embedding model (default: Snowflake/arctic-embed-xs) - **overridden by settings.json**
+- `LLM_MODEL_NAME`: LLM model for completions (default: ollama/llama3.2:1b) - **overridden by settings.json**
+- `OLLAMA_API_BASE`: Ollama server URL (default: 127.0.0.1:11434) - **overridden by settings.json**
 - `RAG_DB`: Path to document store (default: ./cache/rag_store.jsonl)
 - `MCP_HOST`/`MCP_PORT`: MCP server binding (default: 127.0.0.1:8000)
 - `REST_HOST`/`REST_PORT`: REST API binding (default: 127.0.0.1:8001)
 - `MAX_MEMORY_MB`: Memory limit for HTTP server (default: 75% of system RAM)
 
+**Priority**: `config/settings.json` values take precedence over `.env` variables for models and API endpoints.
+
 #### Runtime Configuration (`config/settings.json`)
 
-Application settings like model selection, temperature, and search parameters can be modified at runtime without restarting the server. These settings are stored in `config/settings.json` and can be managed via the **Settings Dashboard** in the web UI.
+Application settings like model selection, temperature, and search parameters can be modified at runtime without restarting the server. These settings are stored in `config/settings.json` and are **automatically reloaded** when saved via the **Settings Dashboard** in the web UI.
 
 Available runtime settings:
-- **Model Selection**: Switch between available Ollama models
+- **Model Selection**: Switch between available Ollama models (auto-reloaded on save)
 - **Temperature**: Adjust generation creativity
+- **API Endpoints**: Configure Ollama, MCP, and REST server URLs
 - **Search Parameters**: Configure top-k results and context window size
-- **System Prompts**: Customize the persona and instructions for the RAG agent
+- **Embedding Models**: Select sentence transformer models for embeddings
+
+**Note**: Changes to `config/settings.json` are picked up immediately for new requests - no server restart needed!
 
 ## Quick Start
 
@@ -226,6 +231,8 @@ The `start.sh` script supports different roles for flexible deployment:
    ```
 
 **Additional Flags:**
+- `--skip-ollama`: Skip Ollama (use OpenAI Assistants or Google Gemini only)
+- `--skip-model-pull`: Skip automatic Ollama model pulling
 - `--skip-rest`: Skip starting the REST API server
 - `--skip-ui`: Skip starting the UI (if applicable)
 - `--env FILE`: Use a custom environment file
@@ -244,6 +251,8 @@ agentic-rag$ ./stop.sh
 
 Options:
   --role {monolith,server,client}  Startup role (default: monolith)
+  --skip-ollama                    Skip Ollama (OpenAI/Gemini only)
+  --skip-model-pull                Skip automatic model pulling
   --skip-rest                      Skip starting REST API
   --skip-ui                        Skip starting UI
   -h, --help                       Show detailed help
@@ -261,6 +270,12 @@ agentic-rag$ ./start.sh --role server
 
 # Start as a client connecting to a remote backend
 agentic-rag$ ./start.sh --role client
+
+# Use OpenAI Assistants only (no Ollama)
+agentic-rag$ ./start.sh --skip-ollama
+
+# Use Google Gemini only (no Ollama)
+agentic-rag$ ./start.sh --skip-ollama
 ```
 
 ### Manual Startup

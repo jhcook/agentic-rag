@@ -151,6 +151,11 @@ OPTIONS:
         Skip automatic Ollama model pulling
         Useful for offline usage or when models are already available
 
+    --skip-ollama
+        Do not start Ollama locally
+        Useful when using only OpenAI Assistants or Google Gemini backends
+        Note: MCP server will still start (required for OpenAI Assistants)
+
     --skip-ui
         Do not start the UI dev server
 
@@ -225,6 +230,9 @@ EXAMPLES:
     # Skip model pulling for offline usage
     ./start.sh --skip-model-pull
 
+    # Skip Ollama (use only OpenAI Assistants or Google Gemini)
+    ./start.sh --skip-ollama
+
     # Force recreate with custom settings
     ./start.sh --venv .venv --python python3.12 --recreate-venv
 
@@ -276,6 +284,7 @@ VENV_NAME=".venv"
 PYTHON_CMD="python3.11"
 RECREATE_VENV=false
 SKIP_MODEL_PULL=false
+SKIP_OLLAMA=false
 START_UI=true
 START_REST=true
 ROLE="monolith"
@@ -311,6 +320,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_MODEL_PULL=true
             shift
             ;;
+        --skip-ollama)
+            SKIP_OLLAMA=true
+            shift
+            ;;
         --skip-ui)
             START_UI=false
             shift
@@ -322,7 +335,7 @@ while [[ $# -gt 0 ]]; do
         *)
             echo -e "${RED}Unknown option: $1${NC}"
             echo ""
-            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--role ROLE] [--recreate-venv] [--skip-model-pull] [--skip-ui]"
+            echo "Usage: $0 [-h|--help] [--env ENV_FILE] [--venv VENV_NAME] [--python PYTHON_CMD] [--role ROLE] [--recreate-venv] [--skip-model-pull] [--skip-ollama] [--skip-ui]"
             echo ""
             echo "Run './start.sh --help' for detailed information"
             exit 1
@@ -389,7 +402,7 @@ fi
 
 # Determine if Ollama should be started locally
 START_OLLAMA=false
-if [[ "$ROLE" != "client" ]]; then
+if [[ "$SKIP_OLLAMA" == false ]] && [[ "$ROLE" != "client" ]]; then
     if [[ "$OLLAMA_HOST" == "127.0.0.1" ]] || [[ "$OLLAMA_HOST" == "localhost" ]]; then
         START_OLLAMA=true
     fi
@@ -485,13 +498,18 @@ if [[ "$START_OLLAMA" == true ]]; then
         echo "Ollama is required for local startup"
         echo "Install: brew install ollama"
         echo "Or use remote Ollama by setting OLLAMA_API_BASE in $ENV_FILE to a remote URL"
+        echo "Or skip Ollama with --skip-ollama (use OpenAI Assistants or Google Gemini only)"
         exit 1
     fi
 
     OLLAMA_VERSION=$(ollama --version 2>&1 | head -1)
     echo "✓ ollama: $OLLAMA_VERSION"
 else
-    echo "✓ Using remote Ollama (local installation not required)"
+    if [[ "$SKIP_OLLAMA" == true ]]; then
+        echo "✓ Ollama skipped (--skip-ollama flag)"
+    else
+        echo "✓ Using remote Ollama (local installation not required)"
+    fi
 fi
 
 if [[ "$START_UI" == true ]]; then
@@ -738,7 +756,11 @@ if [[ "$START_OLLAMA" == true ]]; then
     pull_ollama_models
     echo ""
 else
-    echo -e "${GREEN}Using remote Ollama at $OLLAMA_API_BASE${NC}"
+    if [[ "$SKIP_OLLAMA" == true ]]; then
+        echo -e "${YELLOW}Ollama skipped (--skip-ollama). Using OpenAI Assistants or Google Gemini only.${NC}"
+    else
+        echo -e "${GREEN}Using remote Ollama at $OLLAMA_API_BASE${NC}"
+    fi
     echo ""
 fi
 

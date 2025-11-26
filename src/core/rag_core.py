@@ -33,6 +33,26 @@ from src.core.extractors import _extract_text_from_file
 # Load .env early so configuration is available at module import time
 load_dotenv()
 
+# Load settings from settings.json if available
+def _load_settings() -> Dict[str, Any]:
+    """Load settings from config/settings.json if it exists."""
+    settings_path = pathlib.Path("config/settings.json")
+    if settings_path.exists():
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to load settings.json: %s", e)
+    return {}
+
+_SETTINGS = _load_settings()
+
+def reload_settings() -> None:
+    """Reload settings from config/settings.json."""
+    global _SETTINGS  # pylint: disable=global-statement
+    _SETTINGS = _load_settings()
+    logger.info("Reloaded settings from config/settings.json")
+
 # Optional dependencies
 try:
     from tqdm import tqdm
@@ -74,20 +94,29 @@ if not logging.getLogger().handlers:
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
-EMBED_MODEL_NAME = os.getenv(
+def _get_config_value(json_key: str, env_key: str, default: str) -> str:
+    """Get config value from settings.json or environment variable."""
+    return _SETTINGS.get(json_key) or os.getenv(env_key, default)
+
+EMBED_MODEL_NAME = _get_config_value(
+    "embeddingModel",
     "EMBED_MODEL_NAME",
     "sentence-transformers/paraphrase-MiniLM-L3-v2"
 )
 DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
-OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
-ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+OLLAMA_API_BASE = _get_config_value("apiEndpoint", "OLLAMA_API_BASE", "http://127.0.0.1:11434")
+LLM_MODEL_NAME = _get_config_value("model", "LLM_MODEL_NAME", "ollama/llama3.2:1b")
+ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", LLM_MODEL_NAME.replace("ollama/", ""))
+LLM_TEMPERATURE = float(_get_config_value("temperature", "LLM_TEMPERATURE", "0.1"))
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))
 SEARCH_MAX_CONTEXT_CHARS = int(os.getenv("SEARCH_MAX_CONTEXT_CHARS", "8000"))
 EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
+
+def get_llm_model_name() -> str:
+    """Get the current LLM model name from settings or env."""
+    return _SETTINGS.get("model") or os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 
 # Lazy-initialized global state
 _STORE: Optional['Store'] = None  # pylint: disable=invalid-name
@@ -874,7 +903,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
 
         # Build completion kwargs
         # Normalize model name: add "ollama/" prefix if not present and not already prefixed
-        effective_model = model or LLM_MODEL_NAME
+        effective_model = model or get_llm_model_name()
         if effective_model and not effective_model.startswith(('ollama/', 'openai/', 'anthropic/', 'huggingface/')):
             # If it looks like an Ollama model (no provider prefix), add ollama/ prefix
             effective_model = f"ollama/{effective_model}"
@@ -991,7 +1020,7 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         "sincerely",
     )
 
-    model_name = kwargs.get("model", LLM_MODEL_NAME)
+    model_name = kwargs.get("model", get_llm_model_name())
     temperature = kwargs.get("temperature", LLM_TEMPERATURE)
 
     def _is_low_signal(passage: Dict[str, Any]) -> bool:
@@ -1225,7 +1254,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
     if completion is None:
         return {"error": "LiteLLM not available"}
 
-    model_name = kwargs.get("model", LLM_MODEL_NAME)
+    model_name = kwargs.get("model", get_llm_model_name())
     temperature = kwargs.get("temperature", LLM_TEMPERATURE)
 
     # Extract the latest user message to use as search query
