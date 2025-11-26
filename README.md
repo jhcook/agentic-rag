@@ -211,7 +211,29 @@ Available runtime settings:
 
 ## Quick Start
 
-### Using the Startup Script (Recommended)
+### Cross-Platform Python Launcher (Windows/Mac/Linux)
+
+The easiest way to start on any platform:
+
+```bash
+# Start all services
+python start.py
+
+# Stop all services
+python stop.py
+```
+
+**Options:**
+```bash
+python start.py --help                 # Show all options
+python start.py --skip-ollama          # Skip Ollama (OpenAI/Gemini only)
+python start.py --skip-ui              # Skip UI
+python start.py --create-venv          # Recreate virtual environment
+python start.py --role server          # Server mode (no UI)
+python start.py --role client          # Client mode (no Ollama/MCP)
+```
+
+### Using the Bash Script (Mac/Linux only)
 
 The `start.sh` script supports different roles for flexible deployment:
 

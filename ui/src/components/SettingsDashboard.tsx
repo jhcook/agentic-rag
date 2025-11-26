@@ -99,7 +99,7 @@ export function SettingsDashboard({
       <Card>
         <CardHeader>
           <CardTitle>REST API Server Configuration</CardTitle>
-          <CardDescription>Connection details for the Agentic RAG REST API</CardDescription>
+          <CardDescription>Connection details for the Lauren AI REST API</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-3">
