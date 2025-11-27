@@ -14,6 +14,10 @@ import requests
 
 from src.core.interfaces import RAGBackend
 
+# Optional feature toggles
+DISABLE_LOCAL_BACKEND = os.getenv("DISABLE_LOCAL_BACKEND", "").lower() in {"1", "true", "yes"}
+DISABLE_OLLAMA = os.getenv("SKIP_OLLAMA", "").lower() in {"1", "true", "yes"} or DISABLE_LOCAL_BACKEND
+
 # Initialize optional modules to None
 local_core = None  # pylint: disable=invalid-name
 extract_text_from_file_fn: Optional[Callable[[pathlib.Path], str]] = None
@@ -413,13 +417,31 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     A backend that wraps multiple implementations and allows switching between them.
     """
 
+    class NullBackend:
+        """Placeholder backend when no providers are available."""
+
+        configured = False
+
+        def get_stats(self) -> Dict[str, Any]:
+            return {
+                "status": "unavailable",
+                "mode": "none",
+                "available_modes": [],
+                "documents": 0,
+                "vectors": 0,
+                "memory_mb": 0,
+                "memory_limit_mb": 0,
+                "total_size_bytes": 0,
+                "store_file_bytes": 0,
+            }
+
     def __init__(self, initial_mode: str = "local"):
         """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
         self.current_mode = "local"
 
         # Initialize Local
-        if HAS_LOCAL_CORE:
+        if HAS_LOCAL_CORE and not DISABLE_OLLAMA:
             try:
                 self.backends["local"] = LocalBackend()
                 logger.info("HybridBackend: LocalBackend initialized")
@@ -444,15 +466,17 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 logger.error(
                     "HybridBackend: Failed to init OpenAIAssistantsBackend: %s", exc)
 
-        # Default to what's available
-        if ("google" in self.backends and initial_mode == "google"):
-            self.current_mode = "google"
-        elif ("openai_assistants" in self.backends and initial_mode == "openai_assistants"):
-            self.current_mode = "openai_assistants"
+        # Default to what's available (prefer requested mode, otherwise any available)
+        if initial_mode in self.backends:
+            self.current_mode = initial_mode
         elif "local" in self.backends:
             self.current_mode = "local"
+        elif self.backends:
+            self.current_mode = next(iter(self.backends.keys()))
         else:
-            logger.warning("HybridBackend: No backends available!")
+            logger.warning("HybridBackend: No backends available! Running in config-only mode.")
+            self.backends["none"] = HybridBackend.NullBackend()
+            self.current_mode = "none"
 
     def set_mode(self, mode: str) -> bool:
         """Set the active backend mode."""
@@ -576,15 +600,30 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 modes.extend(self.backends["google"].get_available_modes())
             else:
                 modes.append("google")
-        
+
+        # Resolve google alias so we don't drop back to local while authenticated
+        effective_current = self.current_mode
+        if self.current_mode == "google" and "google" in self.backends:
+            if hasattr(self.backends["google"], "get_mode"):
+                google_mode = self.backends["google"].get_mode()
+                # If the specific google mode is available, treat current as valid
+                if google_mode in modes:
+                    effective_current = google_mode
+
         # Auto-switch to first available mode if current mode is not available
-        if modes and self.current_mode not in modes:
+        if modes and effective_current not in modes:
             old_mode = self.current_mode
             self.current_mode = modes[0]
             logger.warning(
                 "HybridBackend: Current mode '%s' not available, auto-switched to '%s'",
                 old_mode, self.current_mode
             )
+
+        # If nothing is available, drop into null/config-only mode
+        if not modes:
+            if "none" not in self.backends:
+                self.backends["none"] = HybridBackend.NullBackend()
+            self.current_mode = "none"
         
         return modes
 
@@ -592,6 +631,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def _backend(self) -> RAGBackend:
         """Get the current backend instance."""
         if self.current_mode not in self.backends:
+            if "none" in self.backends:
+                return self.backends["none"]
             raise RuntimeError(
                 f"Current mode {self.current_mode} not available in backends: "
                 f"{list(self.backends.keys())}")
@@ -729,8 +770,12 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
     def reload_auth(self) -> None:
         """Reload authentication for the current backend if supported."""
-        if hasattr(self._backend, "reload_auth"):
-            self._backend.reload_auth()
+        # Reload auth for all backends that support it (e.g., Google) so that
+        # new credentials picked up via the REST auth callback immediately
+        # enable those modes, even if they aren't currently active.
+        for backend in self.backends.values():
+            if hasattr(backend, "reload_auth"):
+                backend.reload_auth()
 
 
 def get_rag_backend() -> RAGBackend:

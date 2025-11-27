@@ -27,6 +27,8 @@
       "../src/**",
       "../config/**",
       "../scripts/**",
+      "../.venv/**",
+      "../cache/**",
       "../requirements*.txt",
       "main.js",
       "preload.js",
@@ -42,6 +44,8 @@
           "src/**",
           "config/**",
           "scripts/**",
+          ".venv/**",
+          "cache/**",
           "requirements*.txt",
           "ui/dist/**"
         ]

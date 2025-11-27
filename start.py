@@ -439,7 +439,11 @@ def main():
         args.skip_ui = True
     elif args.role == "client":
         args.skip_ollama = True
-        args.skip_mcp = True
+
+    # Propagate skip flags to environment so downstream services pick them up
+    if args.skip_ollama:
+        os.environ["SKIP_OLLAMA"] = "1"
+        os.environ["DISABLE_LOCAL_BACKEND"] = "1"
     
     # Load environment
     env_file = ROOT_DIR / args.env
@@ -499,13 +503,6 @@ def main():
         # Start REST API
         if not args.skip_rest:
             proc = start_rest_server(rag_host, rag_port, VENV_DIR)
-            if proc:
-                STARTED_PROCESSES.append((proc, "REST API Server"))
-        print()
-        
-        # Start REST API
-        if not args.skip_rest:
-            proc = start_rest_server(rag_host, rag_port)
             if proc:
                 STARTED_PROCESSES.append((proc, "REST API Server"))
         print()

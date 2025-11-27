@@ -3,17 +3,40 @@ const path = require('path')
 
 let child = null
 
-function pickPython(repoRoot) {
+function pickPython(appRoot) {
   if (process.env.PYTHON_EXE) return process.env.PYTHON_EXE
-  // Prefer repo venv if present
-  const venvPy = process.platform === 'win32'
-    ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
-    : path.join(repoRoot, '.venv', 'bin', 'python3')
-  try {
-    if (require('fs').existsSync(venvPy)) return venvPy
-  } catch (_) {
-    // ignore
+
+  const candidates = []
+
+  const addVenv = venvRoot => {
+    if (!venvRoot) return
+    const exe = process.platform === 'win32'
+      ? path.join(venvRoot, 'Scripts', 'python.exe')
+      : path.join(venvRoot, 'bin', 'python3')
+    candidates.push(exe)
   }
+
+  // Packaged appRoot (Resources/app) first
+  addVenv(appRoot && path.join(appRoot, '.venv'))
+
+  // Resources/app if appRoot differed
+  const resourcesApp = process.resourcesPath ? path.join(process.resourcesPath, 'app') : null
+  if (!resourcesApp || resourcesApp !== appRoot) {
+    addVenv(resourcesApp && path.join(resourcesApp, '.venv'))
+  }
+
+  // Repo checkout fallback
+  const repoRoot = path.join(__dirname, '..')
+  addVenv(path.join(repoRoot, '.venv'))
+
+  for (const exe of candidates) {
+    try {
+      if (require('fs').existsSync(exe)) return exe
+    } catch {
+      // ignore
+    }
+  }
+
   return process.platform === 'win32' ? 'python' : 'python3'
 }
 
@@ -84,7 +107,7 @@ function stopBackend() {
   })
 }
 
-async function waitForBackend(timeoutMs = 20000) {
+async function waitForBackend(timeoutMs = 60000) {
   const host = process.env.RAG_HOST || '127.0.0.1'
   const port = process.env.RAG_PORT || '8001'
   const basePath = (process.env.RAG_PATH || 'api').replace(/^\/+|\/+$/g, '')

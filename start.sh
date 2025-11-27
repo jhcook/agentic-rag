@@ -352,8 +352,8 @@ case $ROLE in
         START_UI=false
         ;;
     client)
-        START_MCP=false
-        # We will disable Ollama later in the script
+        # Disable Ollama for client-only runs, but keep MCP for FAISS
+        SKIP_OLLAMA=true
         ;;
     *)
         echo -e "${RED}Error: Unknown role '$ROLE'. Valid roles: monolith, server, client${NC}"
@@ -373,6 +373,12 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a  # Disable automatic export
 else
     echo -e "${YELLOW}Warning: $ENV_FILE file not found, using defaults${NC}"
+fi
+
+# Respect skip-Ollama toggles for downstream processes
+if [[ "$SKIP_OLLAMA" == true ]]; then
+    export SKIP_OLLAMA=1
+    export DISABLE_LOCAL_BACKEND=1
 fi
 
 ARCH_NAME=$(uname -m)
@@ -438,11 +444,7 @@ echo "Role: $ROLE"
 echo "Virtual environment: $VENV_NAME"
 echo "Python command: $PYTHON_CMD"
 echo "Ollama API: $OLLAMA_API_BASE (start locally: $START_OLLAMA)"
-if [[ "$START_MCP" == true ]]; then
-    echo "MCP Server: http://${MCP_HOST}:${MCP_PORT}"
-else
-    echo "MCP Server: skipped (client role)"
-fi
+echo "MCP Server: http://${MCP_HOST}:${MCP_PORT}"
 echo "REST API: http://${RAG_HOST}:${RAG_PORT}"
 if [[ "$START_REST" == false ]]; then
     echo "REST API: skipped (--skip-rest)"

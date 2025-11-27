@@ -158,8 +158,9 @@ def load_app_config():
 
 app_config = load_app_config()
 
-# Get base path
-pth = os.getenv("RAG_PATH", "api")
+# Get base path (normalize leading/trailing slashes)
+_pth_env = os.getenv("RAG_PATH", "api")
+pth = _pth_env.strip("/") or "api"
 
 # Initialize Backend
 backend: RAGBackend = get_rag_backend()
@@ -975,13 +976,28 @@ def api_health():
         )
     except HTTPException as exc:
         logger.error("Health check failed: %s", exc.detail)
-        raise
+        return HealthResp(
+            status="unavailable",
+            base_path=f"/{pth}",
+            documents=0,
+            vectors=0,
+            memory_mb=0,
+            memory_limit_mb=int(REST_MAX_MEMORY_MB),
+            total_size_bytes=0,
+            store_file_bytes=0,
+        )
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Health check failed: %s", exc)
-        raise HTTPException(
-            status_code=502,
-            detail={"error": "Backend unreachable", "detail": str(exc)}
-        ) from exc
+        return HealthResp(
+            status="unavailable",
+            base_path=f"/{pth}",
+            documents=0,
+            vectors=0,
+            memory_mb=0,
+            memory_limit_mb=int(REST_MAX_MEMORY_MB),
+            total_size_bytes=0,
+            store_file_bytes=0,
+        )
 
 @app.get(f"/{pth}/documents", response_model=DocumentsResp)
 def api_documents():

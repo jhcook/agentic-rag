@@ -39,7 +39,7 @@ npm run build:linux  # Linux AppImage
 npm run build
 ```
 Outputs land in `electron/dist/`.
-- Packaging now copies the Python backend (`start.py`, `src/**`, `config/**`, `scripts/**`) beside the Electron app, and `asar` is disabled so the Python files remain regular files under `Contents/Resources/app`. Bring your `.env` along if the backend needs it at runtime.
+- Packaging now copies the Python backend (`start.py`, `src/**`, `config/**`, `scripts/**`, `.venv/**`) beside the Electron app, and `asar` is disabled so the Python files remain regular files under `Contents/Resources/app`. Bring your `.env` along if the backend needs it at runtime. The bundled `.venv` must exist and contain all Python deps before building.
 
 ### Platform notes
 - **Windows:** ensure `PYTHON_EXE` points to your venv (`C:\path\to\venv\Scripts\python.exe`) if needed. `windowsHide` prevents an extra console window.
@@ -51,6 +51,19 @@ Outputs land in `electron/dist/`.
 - UI port is unused in desktop mode (`--skip-ui` is passed to `start.py`).
 - Python path: set `PYTHON_EXE` before running `npm run dev` or `npm run build*`.
 - Backend readiness timeout: set `BACKEND_READY_TIMEOUT_MS` (ms) if startup takes longer on your machine (default ~60s).
+- To run the desktop shell for configuration only (no local/Ollama backend), export `SKIP_OLLAMA=1` (or `DISABLE_LOCAL_BACKEND=1`) before launch. The UI will come up in a config-only mode with no providers available until you add OpenAI/Gemini credentials.
+- Embedding model cache: the app now defaults `HF_HOME`/`SENTENCE_TRANSFORMERS_HOME` to `cache/` in the repo. Pre-fetch the embedding model before packaging so the DMG can start offline:
+  ```bash
+  source .venv/bin/activate
+  python - <<'PY'
+from src.core.embeddings import get_embedder
+import logging, os
+logging.basicConfig(level=logging.INFO)
+get_embedder("Snowflake/arctic-embed-xs", False, logging.getLogger("prefetch"))
+print("Model cached under", os.environ.get("HF_HOME"))
+PY
+  ```
+  Make sure `cache/` is present before running `npm run build:mac` so it gets bundled.
 
 ## Troubleshooting
 - **“Backend did not become ready”**: increase the wait, e.g. `BACKEND_READY_TIMEOUT_MS=90000 npm run dev`, and verify `curl http://127.0.0.1:8001/api/health` returns 200. Make sure your `.venv` exists or set `PYTHON_EXE` to a valid Python with deps installed.

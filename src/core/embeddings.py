@@ -25,6 +25,22 @@ os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+# Prefer a local cache bundled with the app so offline installs work
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CACHE_ROOT = Path(os.getenv("RAG_CACHE_DIR", _REPO_ROOT / "cache")).expanduser()
+_HF_HOME = Path(os.getenv("HF_HOME", _CACHE_ROOT / "huggingface")).expanduser()
+_ST_HOME = Path(os.getenv("SENTENCE_TRANSFORMERS_HOME", _CACHE_ROOT / "sentence_transformers")).expanduser()
+
+for _p in (_CACHE_ROOT, _HF_HOME, _ST_HOME):
+    try:
+        _p.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+os.environ.setdefault("HF_HOME", str(_HF_HOME))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(_HF_HOME / "hub"))
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(_ST_HOME))
+
 _EMBEDDER: Optional[SentenceTransformer] = None  # pylint: disable=invalid-name
 _EMBEDDER_NAME: Optional[str] = None  # pylint: disable=invalid-name
 
