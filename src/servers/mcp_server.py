@@ -48,7 +48,7 @@ from src.core.rag_core import (
     resolve_input_path,
     OLLAMA_API_BASE
 )
-from src.core.extractors import _extract_text_from_file
+from src.core.extractors import extract_text_from_file
 
 from src.servers.mcp_app.logging_config import (
     configure_logging,
@@ -254,7 +254,7 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
                         "upserted": False
                     }
                 try:
-                    content = _extract_text_from_file(file_path)
+                    content = extract_text_from_file(file_path)
                     if not content:
                         return {
                             "error": f"No text extracted from {normalized_uri}",
@@ -372,7 +372,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
         indexed_uris = []
         for file_path in files:
             try:
-                content = _extract_text_from_file(file_path)
+                content = extract_text_from_file(file_path)
                 if not content:
                     logger.warning("No text extracted from %s, skipping", file_path)
                     continue
@@ -449,9 +449,9 @@ def index_url_tool(
         if not url:
             return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
 
-        # Treat URL as a pathlib.Path for _extract_text_from_file
+        # Treat URL as a pathlib.Path for extract_text_from_file
         url_path = Path(url)
-        content = _extract_text_from_file(url_path)
+        content = extract_text_from_file(url_path)
 
         if not content:
             logger.warning("No text extracted from URL %s", url)
@@ -622,10 +622,10 @@ async def vector_search_endpoint(request) -> Response:
         body = await request.json()
         query = body.get("query", "")
         k = int(body.get("k", 5))
-        
-        # Import rag_core to access _vector_search
+
+        # Import rag_core to access vector_search helper
         from src.core import rag_core
-        results = await anyio.to_thread.run_sync(rag_core._vector_search, query, k)
+        results = await anyio.to_thread.run_sync(rag_core.vector_search, query, k)
         
         return Response(
             content=json.dumps({"results": results}),

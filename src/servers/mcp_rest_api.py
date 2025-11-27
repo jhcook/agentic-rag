@@ -12,7 +12,7 @@ from src.core.rag_core import (
     index_path,
     search,
     save_store,
-    _rebuild_faiss_index,
+    rebuild_faiss_index,
     get_faiss_globals,
     DB_PATH,
     OLLAMA_API_BASE,
@@ -98,7 +98,7 @@ async def rest_documents_delete(req: Request):
                 del store.docs[uri]
                 deleted += 1
         save_store()
-        _rebuild_faiss_index()
+        rebuild_faiss_index()
         refresh_prometheus_metrics(OLLAMA_API_BASE)
         return JSONResponse({"deleted": deleted})
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -119,7 +119,7 @@ async def rest_flush_cache():
             except OSError:
                 removed = False
         save_store()
-        _rebuild_faiss_index()
+        rebuild_faiss_index()
         refresh_prometheus_metrics(OLLAMA_API_BASE)
         return JSONResponse({
             "status": "flushed",

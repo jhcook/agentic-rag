@@ -117,7 +117,7 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
             return ""
 
 
-def _extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
+def extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
     """Extract text from various file types (txt, pdf, docx, html) or URLs."""
     # Check if it's a URL and normalize single-slash URLs
     file_str = str(file_path)
@@ -143,3 +143,7 @@ def _extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to read file %s: %s", file_path, exc)
         return ""
+
+
+# Backwards compatibility for legacy imports. Remove once callers migrate.
+_extract_text_from_file = extract_text_from_file

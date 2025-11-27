@@ -415,13 +415,13 @@ class OpenAIAssistantsBackend:
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents."""
-        local_core._ensure_store_synced()
+        local_core.ensure_store_synced()
         store = local_core.get_store()
         return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
-        local_core._rebuild_faiss_index()
+        local_core.rebuild_faiss_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages."""

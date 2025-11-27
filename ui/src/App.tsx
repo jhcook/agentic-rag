@@ -72,6 +72,15 @@ type IndexJob = {
   status: string
   error?: string
   result?: Record<string, unknown>
+  error_type?: string
+  queued_at?: string
+  started_at?: string
+  finished_at?: string
+  last_update?: string
+  notification?: {
+    type: string
+    message: string
+  }
 }
 
 function App() {
@@ -117,6 +126,8 @@ function App() {
   const [searchMessage, setSearchMessage] = useState<string | null>(null)
   const [flushLoading, setFlushLoading] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>('Idle')
+  const reportedJobErrors = useRef<Set<string>>(new Set())
+  const stalledToastId = useRef<string | number | null>(null)
   const [vertexConfig, setVertexConfig] = useState({
     projectId: '',
     location: 'us-central1',
@@ -527,11 +538,79 @@ function App() {
         const jobs = data.jobs || []
         const total = jobs.length
         const completed = jobs.filter(j => j.status === 'completed').length
-        const failed = jobs.filter(j => j.status === 'failed').length
+        const failedJobs = jobs.filter(j => j.status === 'failed')
+        const failed = failedJobs.length
         const visible = total > 0 && (completed + failed) < total
+
+        // Surface newly failed jobs with toast notifications
+        failedJobs.forEach(job => {
+          if (!reportedJobErrors.current.has(job.id)) {
+            reportedJobErrors.current.add(job.id)
+            const notification = job.notification
+            const rawMessage = notification?.message || job.error || 'Indexing job failed.'
+            const errorMessage = rawMessage.length > 240 ? `${rawMessage.slice(0, 237)}…` : rawMessage
+            if (notification?.type === 'ssl_error' || job.error_type === 'ssl_error') {
+              toast.error('Indexing blocked by SSL certificate error. Check the logs and fix the trust store.', {
+                description: errorMessage,
+                duration: 10000
+              })
+            } else {
+              toast.error('Indexing job failed', {
+                description: errorMessage,
+                duration: 8000
+              })
+            }
+          }
+        })
+
+        const now = Date.now()
+        const staleJobs = jobs.filter(job => {
+          if (job.status === 'completed' || job.status === 'failed') return false
+          const referenceIso = job.last_update
+            || (job.status === 'queued' ? job.queued_at : undefined)
+            || job.started_at
+            || job.queued_at
+          if (!referenceIso) return false
+          const referenceMs = Date.parse(referenceIso)
+          if (Number.isNaN(referenceMs)) return false
+          const threshold = job.status === 'queued' ? 60_000 : 180_000
+          return now - referenceMs > threshold
+        })
+        if (staleJobs.length > 0) {
+          const queuedCount = staleJobs.filter(job => job.status === 'queued').length
+          const runningCount = staleJobs.length - queuedCount
+          const parts = [] as string[]
+          if (queuedCount) parts.push(`${queuedCount} queued`)
+          if (runningCount) parts.push(`${runningCount} running`)
+          const description = parts.length > 0
+            ? `${parts.join(' and ')} job${staleJobs.length === 1 ? '' : 's'} have not advanced.`
+            : `${staleJobs.length} job${staleJobs.length === 1 ? '' : 's'} have not advanced.`
+          if (!stalledToastId.current) {
+            stalledToastId.current = toast.warning('Indexing activity stalled. Please check the server logs.', {
+              description,
+              duration: 15000
+            })
+          }
+        } else if (stalledToastId.current) {
+          toast.dismiss(stalledToastId.current)
+          stalledToastId.current = null
+        }
+
+        const recentFailures = failedJobs.filter(job => {
+          if (!job.finished_at) return true
+          const finishedAtMs = Date.parse(job.finished_at)
+          if (Number.isNaN(finishedAtMs)) return true
+          return now - finishedAtMs <= 300_000
+        })
+
         setJobProgress({ total, completed, failed, visible })
-        if (visible) {
+        if (staleJobs.length > 0) {
+          setStatusMessage('Indexing stalled — check logs for details')
+        } else if (visible) {
           setStatusMessage(`Indexing ${total - completed - failed} job(s)`)
+        } else if (recentFailures.length > 0) {
+          const sslFailure = recentFailures.some(job => job.notification?.type === 'ssl_error' || job.error_type === 'ssl_error')
+          setStatusMessage(sslFailure ? 'Indexing blocked: SSL certificate error' : 'Indexing encountered errors')
         } else if (searching) {
           setStatusMessage('Searching...')
         } else {

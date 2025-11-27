@@ -7,7 +7,7 @@ import json
 import threading
 import queue
 import time
-from typing import Dict, Any, List
+from typing import Callable, Dict, Any, List, Optional
 
 import psutil
 import requests
@@ -16,7 +16,7 @@ from src.core.interfaces import RAGBackend
 
 # Initialize optional modules to None
 local_core = None  # pylint: disable=invalid-name
-_extract_text_from_file = None  # pylint: disable=invalid-name
+extract_text_from_file_fn: Optional[Callable[[pathlib.Path], str]] = None
 DB_PATH = None
 GoogleGeminiBackend = None  # pylint: disable=invalid-name
 OpenAIAssistantsBackend = None  # pylint: disable=invalid-name
@@ -25,8 +25,9 @@ OpenAIAssistantsBackend = None  # pylint: disable=invalid-name
 try:
     import src.core.rag_core as local_core
     from src.core.store import DB_PATH
-    from src.core.extractors import _extract_text_from_file
+    from src.core.extractors import extract_text_from_file
     HAS_LOCAL_CORE = True
+    extract_text_from_file_fn = extract_text_from_file
 except ImportError:
     HAS_LOCAL_CORE = False
 
@@ -97,8 +98,8 @@ class LocalBackend:
         indexed_uris = []
         for file_path in files:
             try:
-                if _extract_text_from_file:
-                    content = _extract_text_from_file(file_path)
+                if extract_text_from_file_fn:
+                    content = extract_text_from_file_fn(file_path)
                     if not content:
                         continue
                     local_core.upsert_document(str(file_path), content)
@@ -130,14 +131,14 @@ class LocalBackend:
         """List all documents with metadata."""
         self._check_core()
         # Ensure store is synced with disk before listing
-        local_core._ensure_store_synced()  # pylint: disable=protected-access
+        local_core.ensure_store_synced()
         store = local_core.get_store()
         return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
         self._check_core()
-        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
+        local_core.rebuild_faiss_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages by relevance."""
@@ -173,7 +174,7 @@ class LocalBackend:
                             deleted += 1
 
                     local_core.save_store()
-                    local_core._rebuild_faiss_index()  # pylint: disable=protected-access
+                    local_core.rebuild_faiss_index()
 
                     with self._deletion_lock:
                         self._deletion_status["processing"] = False
@@ -231,7 +232,7 @@ class LocalBackend:
             except OSError:
                 removed = False
         local_core.save_store()
-        local_core._rebuild_faiss_index()  # pylint: disable=protected-access
+        local_core.rebuild_faiss_index()
         return {"status": "flushed", "db_removed": removed, "documents": 0}
 
     def get_stats(self) -> Dict[str, Any]:

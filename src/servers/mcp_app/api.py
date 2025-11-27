@@ -10,13 +10,12 @@ import uuid
 
 from src.core.rag_core import (
     get_store,
-    _rebuild_faiss_index,
     get_faiss_globals,
     MAX_MEMORY_MB,
     save_store,
 )
 from src.core.indexer import index_path, upsert_document
-from src.core.extractors import _extract_text_from_file, extract_text_from_bytes
+from src.core.extractors import extract_text_from_file, extract_text_from_bytes
 from src.core.store import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
 from src.core.factory import get_rag_backend
@@ -184,9 +183,9 @@ async def rest_vector_search(request: Request):
     query = body.get("query", "")
     k = int(body.get("k", 5))
     try:
-        # Import rag_core to access _vector_search
+        # Import rag_core to access vector_search helper
         from src.core import rag_core
-        results = await anyio.to_thread.run_sync(rag_core._vector_search, query, k)
+        results = await anyio.to_thread.run_sync(rag_core.vector_search, query, k)
         return JSONResponse({"results": results})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

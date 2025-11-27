@@ -28,7 +28,7 @@ from src.core.faiss_index import (
     get_faiss_globals as _get_faiss_globals,
     get_rebuild_lock,
 )
-from src.core.extractors import _extract_text_from_file
+from src.core.extractors import extract_text_from_file
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -223,6 +223,11 @@ def _ensure_store_synced():
         logger.warning("Error checking store sync: %s", exc)
 
 
+def ensure_store_synced() -> None:
+    """Public wrapper to keep the in-memory store in sync with disk."""
+    _ensure_store_synced()
+
+
 def get_store() -> Store:
     """Return the global Store instance, creating it if necessary."""
     global _STORE  # pylint: disable=global-statement
@@ -336,6 +341,11 @@ def _should_skip_uri(uri: str) -> bool:
     return False
 
 
+def should_skip_uri(uri: str) -> bool:
+    """Public helper used by store/indexer modules to filter URIs."""
+    return _should_skip_uri(uri)
+
+
 def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
     """Rebuild the FAISS index from store documents."""
     with get_rebuild_lock():
@@ -398,6 +408,11 @@ def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
             logger.info("Added %d vectors to FAISS index", total_vectors)
         else:
             logger.warning("No FAISS index available")
+
+
+def rebuild_faiss_index() -> None:
+    """Public entry point for triggering a FAISS rebuild."""
+    _rebuild_faiss_index()
 
 
 def _process_batch_for_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -544,6 +559,16 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
     return {"upserted": True, "existed": existed}
 
 
+def process_file(
+    file_path: pathlib.Path,
+    index: Any,
+    index_to_meta: Dict,
+    embedder: Optional[SentenceTransformer],
+) -> str:
+    """Public wrapper for processing individual files via indexer module."""
+    return _process_file(file_path, index, index_to_meta, embedder)
+
+
 def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Path]:
     """Collect files from the given path matching the glob pattern."""
     resolved = resolve_input_path(path)
@@ -555,8 +580,12 @@ def _collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Pa
     return files, resolved
 
 
-# _extract_text_from_file is now imported from extractors module
-# Removed duplicate implementation (209 lines) - use extractors._extract_text_from_file instead
+def collect_files(path: str, glob: str) -> Tuple[List[pathlib.Path], pathlib.Path]:
+    """Public wrapper for collecting candidate files for indexing."""
+    return _collect_files(path, glob)
+
+
+# Text extraction helpers live in extractors module; import the public function.
 
 
 def _process_file(  # pylint: disable=too-many-locals
@@ -583,7 +612,7 @@ def _process_file(  # pylint: disable=too-many-locals
             return False
         return True
 
-    text = _extract_text_from_file(file_path)
+    text = extract_text_from_file(file_path)
     if not _is_meaningful_text(text):
         logger.warning("Skipping non-text or empty content from %s", file_path)
         return ""
@@ -645,7 +674,7 @@ def index_path(  # pylint: disable=too-many-locals
     embedder = get_embedder()
 
     try:
-        files, resolved = _collect_files(path, glob)
+        files, resolved = collect_files(path, glob)
     except FileNotFoundError as exc:
         logger.warning(str(exc))
         return {
@@ -676,7 +705,7 @@ def index_path(  # pylint: disable=too-many-locals
         if progress_callback:
             progress_callback(idx, total_files)
         try:
-            text = _process_file(file_path, index, index_to_meta, embedder)
+            text = process_file(file_path, index, index_to_meta, embedder)
             texts.append(text)
         except (OSError, ValueError) as exc:
             logger.warning("Failed to read %s: %s", file_path, exc)
@@ -769,6 +798,11 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  
             hits.append({"score": float(score), "uri": uri, "text": text})
 
     return hits
+
+
+def vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
+    """Public vector search helper for REST and MCP layers."""
+    return _vector_search(query, k)
 
 
 def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> Dict[str, Any]:

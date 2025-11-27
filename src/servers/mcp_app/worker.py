@@ -1,23 +1,49 @@
+from __future__ import annotations
+
 import base64
+import logging
 import multiprocessing
+import os
 import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
-import logging
-import os
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from src.core.extractors import _extract_text_from_file
+try:  # pragma: no cover - optional dependency guard
+    from requests.exceptions import SSLError as RequestsSSLError  # type: ignore
+except Exception:  # pragma: no cover
+    class RequestsSSLError(Exception):
+        """Fallback SSL error type when requests is unavailable."""
+
+        pass
+
+try:  # pragma: no cover - optional dependency guard
+    from urllib3.exceptions import SSLError as Urllib3SSLError  # type: ignore
+except Exception:  # pragma: no cover
+    class Urllib3SSLError(Exception):
+        """Fallback SSL error type when urllib3 is unavailable."""
+
+        pass
+
+from src.core.extractors import extract_text_from_file
 from src.core.indexer import index_path, upsert_document
 from src.core.store import load_store, save_store
-import src.core.rag_core as rag_core
+from src.core import rag_core
 
 logger = logging.getLogger(__name__)
 
-JOB_QUEUE: Optional[multiprocessing.Queue] = None
-RESULT_QUEUE: Optional[multiprocessing.Queue] = None
+if TYPE_CHECKING:
+    from multiprocessing import Queue as MPQueue
+else:  # pragma: no cover - runtime alias suffices
+    MPQueue = multiprocessing.Queue  # type: ignore[attr-defined]
+
+QueueMessage = Dict[str, Any]
+
+JOB_QUEUE: Optional["MPQueue[QueueMessage]"] = None
+RESULT_QUEUE: Optional["MPQueue[QueueMessage]"] = None
 JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 RESULT_THREAD: Optional[threading.Thread] = None
@@ -27,17 +53,24 @@ SEARCH_JOBS: Dict[str, Dict[str, Any]] = {}
 SEARCH_JOBS_LOCK = threading.Lock()
 
 
+def _iso_now() -> str:
+    """Return an ISO-8601 UTC timestamp string."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def start_worker(env: Optional[Dict[str, str]] = None):
     """Initialize queues, spawn worker process, and start result listener."""
     global JOB_QUEUE, RESULT_QUEUE, RESULT_THREAD, STARTED
     if STARTED:
         return
-    JOB_QUEUE = multiprocessing.Queue()
-    RESULT_QUEUE = multiprocessing.Queue()
+    JOB_QUEUE = MPQueue()
+    RESULT_QUEUE = MPQueue()
     env = env or {}
 
     proc = multiprocessing.Process(
-        target=_index_worker_loop, args=(JOB_QUEUE, RESULT_QUEUE, env), daemon=True
+        target=_index_worker_loop,
+        args=(JOB_QUEUE, RESULT_QUEUE, env),
+        daemon=True,
     )
     proc.start()
 
@@ -53,12 +86,29 @@ def start_worker(env: Optional[Dict[str, str]] = None):
             with JOBS_LOCK:
                 job = JOBS.get(job_id, {"id": job_id})
                 job.update(msg)
+                job["last_update"] = _iso_now()
+                if msg.get("status") == "failed":
+                    error_msg = msg.get("error") or "Indexing job failed"
+                    if msg.get("error_type") == "ssl_error":
+                        job["notification"] = {
+                            "type": "ssl_error",
+                            "message": (
+                                "Indexing stalled because the embedding model could not be "
+                                "downloaded due to an SSL certificate validation failure. "
+                                "Update your certificate trust store and retry the upload."
+                            ),
+                        }
+                    else:
+                        job["notification"] = {
+                            "type": "error",
+                            "message": error_msg,
+                        }
                 JOBS[job_id] = job
             try:
                 load_store()
-                rag_core._rebuild_faiss_index()
+                rag_core.rebuild_faiss_index()
                 # ensure any external changes are reflected in the current store
-                rag_core._ensure_store_synced()
+                rag_core.ensure_store_synced()
                 save_store()
             except Exception as exc:  # pragma: no cover
                 logger.error("Failed to refresh store after job %s: %s", job_id, exc, exc_info=True)
@@ -74,10 +124,20 @@ def enqueue_job(payload: Dict[str, Any], job_type: str = "upsert_document") -> s
         env_copy = {k: v for k, v in os.environ.items() if k.startswith(("RAG_", "EMBED_", "LLM_", "MCP_", "OLLAMA_"))}
         start_worker(env_copy)
     job_id = str(uuid.uuid4())
-    job = {"id": job_id, "type": job_type, **payload, "status": "queued"}
+    now_iso = _iso_now()
+    job = {
+        "id": job_id,
+        "type": job_type,
+        "status": "queued",
+        "queued_at": now_iso,
+        "last_update": now_iso,
+        **payload,
+    }
     with JOBS_LOCK:
         JOBS[job_id] = job
-    JOB_QUEUE.put(job)  # type: ignore
+    if JOB_QUEUE is None:
+        raise RuntimeError("Worker queue not initialized")
+    JOB_QUEUE.put(job)
     return job_id
 
 
@@ -90,11 +150,14 @@ def get_search_jobs():
     return SEARCH_JOBS, SEARCH_JOBS_LOCK
 
 
-def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiprocessing.Queue, env: Dict[str, str]):
+def _index_worker_loop(
+    job_queue: "MPQueue[QueueMessage]",
+    result_queue: "MPQueue[QueueMessage]",
+    env: Dict[str, str],
+) -> None:
     """Run indexing jobs in an isolated process to keep the main server responsive."""
-    for k, v in env.items():
-        import os
-        os.environ[k] = v
+    for key, value in env.items():
+        os.environ[key] = value
     from dotenv import load_dotenv as _ld
     _ld()
     from src.core.rag_core import (
@@ -102,7 +165,7 @@ def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiproc
         upsert_document as _worker_upsert,
         load_store as _worker_load_store,
         save_store as _worker_save_store,
-        _rebuild_faiss_index as _worker_rebuild,
+        rebuild_faiss_index as _worker_rebuild,
     )
     while True:
         job = job_queue.get()
@@ -113,6 +176,13 @@ def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiproc
         job_id = job.get("id")
         try:
             _worker_load_store()
+            started_at = _iso_now()
+            result_queue.put({
+                "id": job_id,
+                "status": "running",
+                "started_at": started_at,
+                "last_update": started_at,
+            })
             if job["type"] == "index_path":
                 res = _worker_index_path(job["path"], job.get("glob", "**/*.txt"))
             elif job["type"] == "upsert_document":
@@ -128,13 +198,21 @@ def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiproc
                         with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as tmp:
                             tmp.write(data)
                             tmp.flush()
-                            extracted = _extract_text_from_file(Path(tmp.name))
+                            extracted = extract_text_from_file(Path(tmp.name))
                             text = extracted or text
                     except Exception as exc:
                         logger.error("Failed to extract text from binary upload %s: %s", uri, exc)
                 if not text:
                     if binary_b64 and uri_suffix in binary_exts:
-                        result_queue.put({"id": job_id, "status": "failed", "error": "no text extracted", "uri": uri})
+                        finished_at = _iso_now()
+                        result_queue.put({
+                            "id": job_id,
+                            "status": "failed",
+                            "error": "no text extracted",
+                            "uri": uri,
+                            "last_update": finished_at,
+                            "finished_at": finished_at,
+                        })
                         continue
                     try:
                         if binary_b64:
@@ -143,13 +221,40 @@ def _index_worker_loop(job_queue: multiprocessing.Queue, result_queue: multiproc
                     except Exception:
                         pass
                 if not text:
-                    result_queue.put({"id": job_id, "status": "failed", "error": "empty or non-text content", "uri": uri})
+                    finished_at = _iso_now()
+                    result_queue.put({
+                        "id": job_id,
+                        "status": "failed",
+                        "error": "empty or non-text content",
+                        "uri": uri,
+                        "last_update": finished_at,
+                        "finished_at": finished_at,
+                    })
                     continue
                 res = _worker_upsert(uri, text)
             else:
                 res = {"error": f"unknown job type {job['type']}"}
             _worker_rebuild()
             _worker_save_store()
-            result_queue.put({"id": job_id, "status": "completed", "result": res})
+            finished_at = _iso_now()
+            result_queue.put({
+                "id": job_id,
+                "status": "completed",
+                "result": res,
+                "last_update": finished_at,
+                "finished_at": finished_at,
+            })
         except Exception as exc:
-            result_queue.put({"id": job_id, "status": "failed", "error": str(exc)})
+            error_msg = str(exc)
+            error_type = None
+            if isinstance(exc, (RequestsSSLError, Urllib3SSLError)) or "SSL" in error_msg or "CERTIFICATE_VERIFY_FAILED" in error_msg:
+                error_type = "ssl_error"
+            finished_at = _iso_now()
+            result_queue.put({
+                "id": job_id,
+                "status": "failed",
+                "error": error_msg,
+                "error_type": error_type,
+                "last_update": finished_at,
+                "finished_at": finished_at,
+            })

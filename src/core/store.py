@@ -9,7 +9,7 @@ save_store = rag_core.save_store
 load_store = rag_core.load_store
 resolve_input_path = rag_core.resolve_input_path
 DB_PATH = rag_core.DB_PATH
-_should_skip_uri = rag_core._should_skip_uri  # pylint: disable=protected-access
+should_skip_uri = rag_core.should_skip_uri
 
 __all__ = [
     "Store",
@@ -18,5 +18,5 @@ __all__ = [
     "load_store",
     "resolve_input_path",
     "DB_PATH",
-    "_should_skip_uri",
+    "should_skip_uri",
 ]
