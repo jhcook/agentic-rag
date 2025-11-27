@@ -1194,8 +1194,8 @@ class GoogleGeminiBackend(RAGBackend):
         """Get available grounding modes (only if properly authenticated)."""
         modes = []
         
-        # Only include google_gemini if we have valid credentials
-        if self.creds and self.gen_service:
+        # Allow google_gemini as soon as we have credentials; services may lazy-init later.
+        if self.creds:
             modes.append("google_gemini")
         
         # Only enable Vertex AI if dependencies AND configuration are present
