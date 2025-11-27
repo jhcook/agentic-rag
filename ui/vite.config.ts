@@ -15,6 +15,7 @@ export default defineConfig({
     // DO NOT REMOVE
     // createIconImportProxy() as PluginOption,
   ],
+  base: './',
   resolve: {
     alias: {
       '@': resolve(projectRoot, 'src')

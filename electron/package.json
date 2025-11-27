@@ -1,0 +1,46 @@
+{
+  "name": "lauren-ai-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build:win": "electron-builder -w",
+    "build:mac": "electron-builder -m",
+    "build:linux": "electron-builder -l",
+    "build": "electron-builder -mwl"
+  },
+  "devDependencies": {
+    "electron": "^39.2.4",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.lauranai.desktop",
+    "productName": "Lauren AI",
+    "directories": {
+      "buildResources": "build"
+    },
+    "files": [
+      "../ui/dist/**",
+      "main.js",
+      "preload.js",
+      "python-runner.js",
+      "build/**"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build"
+    }
+  }
+}
