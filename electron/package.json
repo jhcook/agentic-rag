@@ -17,15 +17,35 @@
   "build": {
     "appId": "com.lauranai.desktop",
     "productName": "Lauren AI",
+    "asar": false,
     "directories": {
       "buildResources": "build"
     },
     "files": [
       "../ui/dist/**",
+      "../start.py",
+      "../src/**",
+      "../config/**",
+      "../scripts/**",
+      "../requirements*.txt",
       "main.js",
       "preload.js",
       "python-runner.js",
       "build/**"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "app",
+        "filter": [
+          "start.py",
+          "src/**",
+          "config/**",
+          "scripts/**",
+          "requirements*.txt",
+          "ui/dist/**"
+        ]
+      }
     ],
     "npmRebuild": false,
     "mac": {

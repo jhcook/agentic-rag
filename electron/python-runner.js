@@ -3,10 +3,9 @@ const path = require('path')
 
 let child = null
 
-function pickPython() {
+function pickPython(repoRoot) {
   if (process.env.PYTHON_EXE) return process.env.PYTHON_EXE
   // Prefer repo venv if present
-  const repoRoot = path.join(__dirname, '..')
   const venvPy = process.platform === 'win32'
     ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
     : path.join(repoRoot, '.venv', 'bin', 'python3')
@@ -18,14 +17,24 @@ function pickPython() {
   return process.platform === 'win32' ? 'python' : 'python3'
 }
 
-function startBackend() {
+function startBackend(opts = {}) {
   if (child) return Promise.resolve(child)
 
-  const repoRoot = path.join(__dirname, '..')
-  const pythonExe = pickPython()
+  const repoRoot = opts.appRoot || path.join(__dirname, '..')
+  const pythonExe = pickPython(repoRoot)
+  const candidates = [
+    path.join(repoRoot, 'start.py'),
+    path.join(process.resourcesPath || '', 'app', 'start.py'),
+    path.join(process.resourcesPath || '', 'start.py')
+  ]
+  const startScript = candidates.find(p => p && require('fs').existsSync(p))
+
+  if (!startScript) {
+    return Promise.reject(new Error(`Backend entrypoint not found. Tried: ${candidates.join(', ')}`))
+  }
 
   return new Promise((resolve, reject) => {
-    child = spawn(pythonExe, ['start.py', '--skip-ui', '--no-browser'], {
+    child = spawn(pythonExe, [startScript, '--skip-ui', '--no-browser', '--skip-ollama'], {
       cwd: repoRoot,
       env: { ...process.env },
       stdio: 'inherit',

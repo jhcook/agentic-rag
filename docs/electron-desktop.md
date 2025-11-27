@@ -39,6 +39,7 @@ npm run build:linux  # Linux AppImage
 npm run build
 ```
 Outputs land in `electron/dist/`.
+- Packaging now copies the Python backend (`start.py`, `src/**`, `config/**`, `scripts/**`) beside the Electron app, and `asar` is disabled so the Python files remain regular files under `Contents/Resources/app`. Bring your `.env` along if the backend needs it at runtime.
 
 ### Platform notes
 - **Windows:** ensure `PYTHON_EXE` points to your venv (`C:\path\to\venv\Scripts\python.exe`) if needed. `windowsHide` prevents an extra console window.
