@@ -7,6 +7,8 @@ documents
 cache
 **/*.log
 secrets/
+electron/node_modules
+electron/dist
 
 # OS generated files
 .DS_Store

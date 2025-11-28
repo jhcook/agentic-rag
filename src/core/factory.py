@@ -613,7 +613,20 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         # Auto-switch to first available mode if current mode is not available
         if modes and effective_current not in modes:
             old_mode = self.current_mode
-            self.current_mode = modes[0]
+            target_mode = modes[0]
+
+            # If the target is a Google sub-mode, keep the primary key as "google"
+            if target_mode.startswith("google") and "google" in self.backends:
+                self.current_mode = "google"
+                try:
+                    # Best-effort set the specific google mode; ignore failures here
+                    if hasattr(self.backends["google"], "set_mode"):
+                        self.backends["google"].set_mode(target_mode)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+            else:
+                self.current_mode = target_mode
+
             logger.warning(
                 "HybridBackend: Current mode '%s' not available, auto-switched to '%s'",
                 old_mode, self.current_mode
@@ -631,6 +644,9 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def _backend(self) -> RAGBackend:
         """Get the current backend instance."""
         if self.current_mode not in self.backends:
+            # If we have a Google sub-mode selected, map to the google backend
+            if self.current_mode.startswith("google") and "google" in self.backends:
+                return self.backends["google"]
             if "none" in self.backends:
                 return self.backends["none"]
             raise RuntimeError(
