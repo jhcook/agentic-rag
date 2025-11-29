@@ -60,12 +60,16 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
     try {
       const url = new URL(`http://${host}:${port}/${base}/drive/files`)
       if (folderId) {
         url.searchParams.append('folder_id', folderId)
       }
-      const res = await fetch(url.toString())
+      const res = await fetch(url.toString(), { signal: controller.signal })
       if (res.ok) {
         const data = await res.json()
         setDriveFiles(data.files || [])
@@ -73,13 +77,16 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
         throw new Error(`HTTP ${res.status}`)
       }
     } catch (e: any) {
-      console.error("Failed to fetch drive files", e)
-      if (e.message.includes("401") || e.message.includes("403")) {
-         toast.error("Access denied. Please re-authenticate.")
-      } else {
-         toast.error("Failed to load Drive files")
+      if (e.name !== 'AbortError') {
+        console.error("Failed to fetch drive files", e)
+        if (e.message.includes("401") || e.message.includes("403")) {
+           toast.error("Access denied. Please re-authenticate.")
+        } else {
+           toast.error("Failed to load Drive files")
+        }
       }
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }
@@ -89,8 +96,12 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
     try {
-      const res = await fetch(`http://${host}:${port}/${base}/documents`)
+      const res = await fetch(`http://${host}:${port}/${base}/documents`, { signal: controller.signal })
       if (res.ok) {
         const data = await res.json()
         setLocalFiles(data.documents || [])
@@ -98,9 +109,12 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
         throw new Error(`HTTP ${res.status}`)
       }
     } catch (e: any) {
-      console.error("Failed to fetch local files", e)
-      toast.error("Failed to load indexed files")
+      if (e.name !== 'AbortError') {
+        console.error("Failed to fetch local files", e)
+        toast.error("Failed to load indexed files")
+      }
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }
@@ -657,7 +671,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                   variant="ghost" 
                   onClick={() => isLocalMode ? fetchLocalFiles() : fetchDriveFiles(currentFolderId)} 
                   disabled={loading}
-                  className="h-8 w-8 p-0"
+                  className="h-8 w-8 p-0 relative z-10 cursor-pointer"
                   title="Refresh file list"
                   aria-label="Refresh file list"
                 >
