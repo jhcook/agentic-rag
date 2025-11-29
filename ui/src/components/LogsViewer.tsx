@@ -49,6 +49,7 @@ type OllamaConfig = {
   ragHost: string
   ragPort: string
   ragPath: string
+  debugMode?: boolean
 }
 
 type LogStreamState = {

@@ -122,9 +122,146 @@ def build_ui(skip: bool = False) -> bool:
         return False
 
 
+def cleanup_mounted_dmgs():
+    """Unmount any DMG volumes from previous builds."""
+    print("  🧹 Cleaning up any mounted DMG volumes...")
+    try:
+        # Get list of mounted disk images using hdiutil
+        hdiutil_result = subprocess.run(
+            ["hdiutil", "info"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if hdiutil_result.returncode != 0:
+            print("    ℹ️  Could not query disk images")
+            return
+        
+        # Parse hdiutil output to find disk images and their mount points
+        lines = hdiutil_result.stdout.split('\n')
+        disk_images = []
+        current_image = None
+        
+        for i, line in enumerate(lines):
+            # Look for image file paths
+            if 'image-path' in line.lower() or 'image-alias' in line.lower():
+                # Extract the image path
+                parts = line.split(':')
+                if len(parts) > 1:
+                    image_path = parts[-1].strip()
+                    if 'Lauren AI' in image_path or 'lauren-ai' in image_path.lower():
+                        current_image = {'path': image_path, 'devices': [], 'volumes': []}
+                        disk_images.append(current_image)
+            
+            # Look for device identifiers (like /dev/disk4)
+            if current_image and ('/dev/disk' in line):
+                device = line.strip().split()[0] if line.strip().split() else None
+                if device and device.startswith('/dev/disk'):
+                    current_image['devices'].append(device)
+            
+            # Look for volume mount points
+            if current_image and '/Volumes/' in line:
+                volume_path = line.strip().split()[-1] if line.strip().split() else None
+                if volume_path and volume_path.startswith('/Volumes/'):
+                    current_image['volumes'].append(volume_path)
+        
+        # Also check /Volumes directly for any Lauren AI volumes
+        volumes_dir = Path("/Volumes")
+        if volumes_dir.exists():
+            for volume in volumes_dir.iterdir():
+                if 'Lauren AI' in volume.name or 'lauren-ai' in volume.name.lower():
+                    # Check if this volume is already in our list
+                    found = False
+                    for img in disk_images:
+                        if str(volume) in img['volumes']:
+                            found = True
+                            break
+                    if not found:
+                        # Add as standalone volume
+                        disk_images.append({
+                            'path': None,
+                            'devices': [],
+                            'volumes': [str(volume)]
+                        })
+        
+        # Unmount found volumes and detach devices
+        unmounted = False
+        for img in disk_images:
+            # First, try unmounting volumes
+            for volume in img['volumes']:
+                try:
+                    print(f"    Unmounting volume {volume}...")
+                    detach_result = subprocess.run(
+                        ["hdiutil", "detach", volume, "-quiet"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=10
+                    )
+                    if detach_result.returncode == 0:
+                        unmounted = True
+                        print(f"    ✅ Unmounted {volume}")
+                    else:
+                        # Try force unmount
+                        force_result = subprocess.run(
+                            ["hdiutil", "detach", volume, "-force", "-quiet"],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            timeout=10
+                        )
+                        if force_result.returncode == 0:
+                            unmounted = True
+                            print(f"    ✅ Force unmounted {volume}")
+                except (subprocess.TimeoutExpired, Exception) as e:
+                    print(f"    ⚠️  Error unmounting {volume}: {e}")
+            
+            # Then, try detaching devices directly (this is what electron-builder does)
+            for device in img['devices']:
+                try:
+                    print(f"    Detaching device {device}...")
+                    detach_result = subprocess.run(
+                        ["hdiutil", "detach", device, "-quiet"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=10
+                    )
+                    if detach_result.returncode == 0:
+                        unmounted = True
+                        print(f"    ✅ Detached {device}")
+                    else:
+                        # Try force detach
+                        force_result = subprocess.run(
+                            ["hdiutil", "detach", device, "-force", "-quiet"],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            timeout=10
+                        )
+                        if force_result.returncode == 0:
+                            unmounted = True
+                            print(f"    ✅ Force detached {device}")
+                        else:
+                            print(f"    ⚠️  Could not detach {device} (may be in use)")
+                except (subprocess.TimeoutExpired, Exception) as e:
+                    print(f"    ⚠️  Error detaching {device}: {e}")
+        
+        if not disk_images:
+            print("    ℹ️  No mounted DMG volumes found")
+    except Exception as e:
+        print(f"    ⚠️  Error during cleanup: {e}")
+
+
 def build_electron(platform: str = "all") -> bool:
     """Build the Electron application."""
     print(f"\n🚀 Building Electron app for platform: {platform}")
+    
+    # Clean up any mounted DMG volumes before building (macOS only)
+    if platform in ("mac", "all") and sys.platform == "darwin":
+        cleanup_mounted_dmgs()
+    
     platform_map = {
         "mac": "build:mac",
         "win": "build:win",
@@ -144,6 +281,12 @@ def build_electron(platform: str = "all") -> bool:
         )
         if result.returncode == 0:
             print(f"  ✅ Electron build completed for {platform}")
+            
+            # Clean up any DMG volumes created during the build (macOS only)
+            if platform in ("mac", "all") and sys.platform == "darwin":
+                print("  🧹 Cleaning up build artifacts...")
+                cleanup_mounted_dmgs()
+            
             dist_dir = ELECTRON_DIR / "dist"
             if dist_dir.exists():
                 print(f"  📦 Build artifacts in: {dist_dir}")

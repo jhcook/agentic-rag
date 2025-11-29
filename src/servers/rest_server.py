@@ -62,16 +62,30 @@ log_handlers = [
 ]
 for _h in log_handlers:
     _h.setFormatter(formatter)
+
+# Check for debug mode in config before setting log level
+CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+_initial_debug_mode = False
+if CONFIG_FILE.exists():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            initial_config = json.load(f)
+            _initial_debug_mode = bool(initial_config.get("debugMode", False))
+    except Exception:
+        pass
+
+_initial_log_level = logging.DEBUG if _initial_debug_mode else logging.INFO
+
 root_logger = logging.getLogger()
 for h in list(root_logger.handlers):
     root_logger.removeHandler(h)
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(_initial_log_level)
 for h in log_handlers:
     root_logger.addHandler(h)
 root_logger.propagate = False
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(_initial_log_level)
 # Let this module logger bubble up to root handlers configured above
 logger.handlers.clear()
 logger.propagate = True
@@ -115,8 +129,30 @@ uvicorn_error_logger.disabled = True
 sys.stdout.flush()
 sys.stderr.flush()
 
-# Load configuration from file if it exists
-CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+def update_logging_level(debug_mode: bool):
+    """Update logging levels for all loggers based on debug mode setting."""
+    log_level = logging.DEBUG if debug_mode else logging.INFO
+    
+    # Update root logger
+    root_logger.setLevel(log_level)
+    logger.setLevel(log_level)
+    access_logger.setLevel(log_level)
+    
+    # Update core loggers
+    logging.getLogger("src.core").setLevel(log_level)
+    logging.getLogger("src.core.rag_core").setLevel(log_level)
+    logging.getLogger("src.core.factory").setLevel(log_level)
+    logging.getLogger("src.core.faiss_index").setLevel(log_level)
+    
+    # Update server loggers
+    logging.getLogger("src.servers").setLevel(log_level)
+    logging.getLogger("src.servers.rest_server").setLevel(log_level)
+    
+    # Update environment variable for rag_core DEBUG_MODE
+    os.environ["RAG_DEBUG_MODE"] = "true" if debug_mode else "false"
+    
+    logger.info("Logging level updated to %s (debug_mode=%s)", 
+                logging.getLevelName(log_level), debug_mode)
 
 def load_app_config():
     """Load application configuration from settings.json."""
@@ -158,6 +194,10 @@ def load_app_config():
 
 app_config = load_app_config()
 
+# Apply debug mode from settings on startup
+if app_config and "debugMode" in app_config:
+    update_logging_level(bool(app_config["debugMode"]))
+
 # Get base path (normalize leading/trailing slashes)
 _pth_env = os.getenv("RAG_PATH", "api")
 pth = _pth_env.strip("/") or "api"
@@ -176,6 +216,15 @@ def _mcp_base() -> str:
     prefix = MCP_PATH.strip("/")
     base = f"http://{MCP_HOST}:{MCP_PORT}"
     return f"{base}/{prefix}" if prefix else base
+
+def _notify_mcp_logging_update(debug_mode: bool):
+    """Notify MCP server to update its logging level."""
+    try:
+        _proxy_to_mcp("POST", "/rest/config/logging", {"debug_mode": debug_mode})
+        logger.info("Notified MCP server to update logging level (debug_mode=%s)", debug_mode)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Don't fail config save if MCP notification fails
+        logger.debug("MCP logging notification failed (non-critical): %s", exc)
 
 def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     """
@@ -224,7 +273,7 @@ class ServerState:  # pylint: disable=too-many-instance-attributes
     search_jobs: Dict[str, Dict[str, Any]] = {}
     search_jobs_lock: threading.Lock = threading.Lock()
     search_job_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-
+    
     # Quality metrics
     total_searches: int = 0
     failed_searches: int = 0
@@ -483,6 +532,12 @@ class UpsertReq(BaseModel):
     uri: str
     text: Optional[str] = None
     binary_base64: Optional[str] = None
+
+
+class IndexUrlReq(BaseModel):
+    """Request model for indexing remote URLs."""
+    url: str
+    doc_id: Optional[str] = Field(default=None, alias="docId")
 
 class LoadStoreReq(BaseModel):
     """Request model for sending the store to an LLM."""
@@ -803,6 +858,22 @@ def api_upsert(req: UpsertReq):
         logger.error("Error upserting document %s: %s", req.uri, e)
         raise
 
+
+@app.post(f"/{pth}/index_url")
+def api_index_url(req: IndexUrlReq):
+    """Download and index a remote URL via MCP worker."""
+    logger.info("Index URL requested: %s", req.url)
+    if not req.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Only http and https URLs are supported")
+    try:
+        payload = {"url": req.url, "doc_id": req.doc_id}
+        return _proxy_to_mcp("POST", "/rest/index_url", payload)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Error indexing URL %s: %s", req.url, exc)
+        raise
+
 @app.post(f"/{pth}/index_path")
 def api_index_path(req: IndexPathReq):
     """Index a filesystem path into the retrieval store."""
@@ -908,14 +979,14 @@ def api_grounded_answer(req: GroundedAnswerReq):
         # Pass model if supported by backend
         kwargs = {"k": req.k or 3}
         if req.model:
-            kwargs["model"] = req.model
+             kwargs["model"] = req.model
         if req.temperature is not None:
             kwargs["temperature"] = req.temperature
         if req.max_tokens is not None:
             kwargs["max_tokens"] = req.max_tokens
         if req.config:
             kwargs.update(req.config)
-
+             
         answer = backend.grounded_answer(req.question, **kwargs)
         return answer
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -1242,17 +1313,17 @@ def auth_login(request: Request):
     # Construct callback URL based on the request's hos
     # This requires the Google Cloud Console to have this exact URI whitelisted
     redirect_uri = str(request.url_for('auth_callback'))
-
+    
     # Force localhost if 127.0.0.1 is used, as Google often requires localhost
     if "127.0.0.1" in redirect_uri:
         redirect_uri = redirect_uri.replace("127.0.0.1", "localhost")
-
-    # If running behind a proxy (like ngrok or in some container setups),
+    
+    # If running behind a proxy (like ngrok or in some container setups), 
     # you might need to force https or a specific host.
     # For now, we trust the request headers.
-
+    
     logger.info("Initiating auth flow with redirect_uri: %s", redirect_uri)
-
+    
     try:
         flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
         authorization_url, _oauth_state = flow.authorization_url(
@@ -1270,7 +1341,7 @@ def auth_login(request: Request):
         logger.error("Error initiating auth: %s", e)
         # If secrets/client_secrets.json is missing, redirect to setup page
         if "Client secrets file not found" in str(e) or "No such file" in str(e):
-            return RedirectResponse(url=request.url_for('auth_setup'))
+             return RedirectResponse(url=request.url_for('auth_setup'))
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/auth/setup", name="auth_setup")
@@ -1297,17 +1368,17 @@ def auth_setup(_request: Request):
                 <div class="card">
                     <h1>Connect Google Drive</h1>
                     <p>To enable "Premium" features like Drive search and Gemini integration, we need to connect to your Google Cloud project.</p>
-
+                    
                     <form action="./setup" method="post">
                         <label for="client_id">Client ID</label>
                         <input type="text" id="client_id" name="client_id" placeholder="e.g., 12345...apps.googleusercontent.com" required>
-
+                        
                         <label for="client_secret">Client Secret</label>
                         <input type="text" id="client_secret" name="client_secret" placeholder="e.g., GOCSPX-..." required>
-
+                        
                         <button type="submit">Save & Connect</button>
                     </form>
-
+                    
                     <div class="details">
                         <details>
                             <summary>How do I get these?</summary>
@@ -1330,11 +1401,11 @@ def auth_setup(_request: Request):
 @app.post(f"/{pth}/auth/setup")
 def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
     """Save the provided credentials to secrets/client_secrets.json."""
-
+    
     # Basic validation
     if not client_id or not client_secret:
         return HTMLResponse("Missing fields", status_code=400)
-
+        
     # Construct the JSON structure expected by google-auth-oauthlib
     secrets = {
         "web": {
@@ -1349,12 +1420,12 @@ def auth_setup_post(request: Request, client_id: str = Form(...), client_secret:
             ]
         }
     }
-
+    
     try:
         os.makedirs("secrets", exist_ok=True)
         with open("secrets/client_secrets.json", "w", encoding="utf-8") as f:
             json.dump(secrets, f, indent=2)
-
+            
         # Redirect back to login to start the flow
         return RedirectResponse(url=request.url_for('auth_login'), status_code=303)
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -1366,17 +1437,17 @@ def auth_callback(request: Request, code: str, _oauth_state: Optional[str] = Non
     """Handle Google OAuth2 callback."""
     redirect_uri = str(request.url_for('auth_callback'))
     logger.info("Handling auth callback with redirect_uri: %s", redirect_uri)
-
+    
     try:
         flow = auth_manager.flow_from_client_secrets(redirect_uri=redirect_uri)
         flow.fetch_token(code=code)
         creds = flow.credentials
         auth_manager.save_credentials(creds)
-
+        
         # Reload the backend's auth if necessary
         if hasattr(backend, 'reload_auth'):
             backend.reload_auth()
-
+        
         return HTMLResponse(content="""
             <html>
                 <head><title>Auth Success</title
@@ -1654,6 +1725,7 @@ class AppConfigReq(BaseModel):
     rag_host: str = Field(alias="ragHost")
     rag_port: str = Field(alias="ragPort")
     rag_path: str = Field(alias="ragPath")
+    debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -1678,6 +1750,16 @@ def api_save_app_config(req: AppConfigReq):
             logger.info("Reloaded rag_core configuration")
         except Exception as reload_err:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to reload rag_core: %s", reload_err)
+        
+        # Update logging level immediately based on debug mode
+        debug_mode = req.debug_mode if req.debug_mode is not None else False
+        update_logging_level(debug_mode)
+        
+        # Notify MCP server to update its logging level via proxy
+        try:
+            _notify_mcp_logging_update(debug_mode)
+        except Exception as notify_err:  # pylint: disable=broad-exception-caught
+            logger.warning("Failed to notify MCP server of logging change: %s", notify_err)
         
         return {"status": "saved"}
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -1710,10 +1792,10 @@ def api_save_vertex_config(req: VertexConfigReq):
     try:
         with open("vertex_config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
-
+        
         # Update current process env vars so it works immediately
         os.environ.update(config)
-
+        
         return {"status": "saved"}
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to save vertex config: %s", e)
@@ -1739,11 +1821,11 @@ def api_get_vertex_config():
 def api_get_logs(log_type: str, lines: int = 500):
     """
     Get log file contents.
-
+    
     Args:
         log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
         lines: Number of lines to return from the end of the file (default: 500)
-
+    
     Returns:
         JSON with log lines, total count, and file path
     """
@@ -1754,27 +1836,27 @@ def api_get_logs(log_type: str, lines: int = 500):
         'mcp_access': LOG_DIR / 'mcp_server_access.log',
         'ollama': LOG_DIR / 'ollama_server.log',
     }
-
+    
     if log_type not in log_files:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
-
+    
     log_path = log_files[log_type]
     if not log_path.exists():
         return {"lines": [], "total": 0, "file": str(log_path)}
-
+    
     try:
         # Read file efficiently, getting last N lines
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             # Read all lines for small files, or use efficient tail for large files
             all_lines = f.readlines()
-
+        
         total = len(all_lines)
         # Get last N lines
         start_idx = max(0, total - lines)
         selected_lines = all_lines[start_idx:] if total > 0 else []
-
+        
         return {
             "lines": [line.rstrip('\n\r') for line in selected_lines],
             "total": total,
@@ -1791,11 +1873,11 @@ def api_get_logs(log_type: str, lines: int = 500):
 async def api_stream_logs(log_type: str, request: Request):
     """
     Stream log file contents using Server-Sent Events (SSE).
-
+    
     Args:
         log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)
         request: FastAPI request object for client disconnect detection
-
+    
     Returns:
         StreamingResponse with SSE format
     """
@@ -1806,14 +1888,14 @@ async def api_stream_logs(log_type: str, request: Request):
         'mcp_access': LOG_DIR / 'mcp_server_access.log',
         'ollama': LOG_DIR / 'ollama_server.log',
     }
-
+    
     if log_type not in log_files:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid log type. Available: {', '.join(log_files.keys())}")
-
+    
     log_path = log_files[log_type]
-
+    
     async def generate_log_stream():
         """Generate SSE stream of log lines."""
         last_position = 0
@@ -1822,7 +1904,7 @@ async def api_stream_logs(log_type: str, request: Request):
             with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 f.seek(0, 2)  # Seek to end
                 last_position = f.tell()
-
+        
         # Send initial data
         if log_path.exists():
             try:
@@ -1836,14 +1918,14 @@ async def api_stream_logs(log_type: str, request: Request):
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error("Error reading initial log lines: %s", e)
                 yield f"data: [ERROR] Failed to read log file: {e}\n\n"
-
+        
         # Stream new lines
         while not await request.is_disconnected():
             try:
                 if log_path.exists():
                     with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                         current_size = f.seek(0, 2)  # Get file size
-
+                        
                         if current_size > last_position:
                             # New content available
                             f.seek(last_position)
@@ -1863,14 +1945,14 @@ async def api_stream_logs(log_type: str, request: Request):
                                     break
                                 yield f"data: {line.rstrip()}\n\n"
                             last_position = f.tell()
-
+                
                 # Wait before checking again
                 await asyncio.sleep(1)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.error("Error streaming logs: %s", e)
                 yield f"data: [ERROR] {e}\n\n"
                 await asyncio.sleep(2)
-
+    
     return StreamingResponse(
         generate_log_stream(),
         media_type="text/event-stream",
@@ -1886,7 +1968,7 @@ if __name__ == "__main__":
         # Configure app settings
         app.host = os.getenv("RAG_HOST", "127.0.0.1")
         app.port = int(os.getenv("RAG_PORT", "8001"))
-
+        
         logger.info("Starting REST server on %s:%s", app.host, app.port)
         logger.info("API base path: /%s", pth)
 

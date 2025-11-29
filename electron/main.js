@@ -4,6 +4,7 @@ const { startBackend, stopBackend, waitForBackend } = require('./python-runner')
 
 let mainWindow = null
 let shuttingDown = false
+let isCreatingWindow = false
 
 function getAppRoot() {
   // When packaged, app.getAppPath() points to the app.asar; in dev we want the repo root.
@@ -11,6 +12,12 @@ function getAppRoot() {
 }
 
 function createWindow(appRoot) {
+  // Prevent creating multiple windows
+  if (mainWindow !== null || isCreatingWindow) {
+    return
+  }
+  
+  isCreatingWindow = true
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -29,7 +36,10 @@ function createWindow(appRoot) {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    isCreatingWindow = false
   })
+  
+  isCreatingWindow = false
 }
 
 app.on('ready', async () => {
@@ -46,8 +56,11 @@ app.on('ready', async () => {
 })
 
 app.on('window-all-closed', async () => {
-  await stopBackend()
-  app.quit()
+  // On macOS, keep the app running even when all windows are closed
+  if (process.platform !== 'darwin') {
+    await stopBackend()
+    app.quit()
+  }
 })
 
 app.on('before-quit', async event => {
@@ -59,7 +72,14 @@ app.on('before-quit', async event => {
 })
 
 app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow(getAppRoot())
+  // On macOS, re-create window when dock icon is clicked and no windows are open
+  // Only create if we're not already creating one and mainWindow is null
+  if (mainWindow === null && !isCreatingWindow) {
+    const appRoot = getAppRoot()
+    // If backend is already started, just create window
+    // Otherwise, wait for ready event to handle startup
+    if (!shuttingDown) {
+      createWindow(appRoot)
+    }
   }
 })

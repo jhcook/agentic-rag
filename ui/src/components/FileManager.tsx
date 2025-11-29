@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server, CheckSquare, Square } from 'lucide-react'
+import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server, CheckSquare, Square, Link2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
@@ -29,10 +29,12 @@ type LocalFile = {
   size_bytes: number
 }
 
-export function FileManager({ config, activeMode }: { config: any, activeMode?: string }) {
+export function FileManager({ config, activeMode }: { config: any, activeMode?: string | null }) {
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([])
   const [localFiles, setLocalFiles] = useState<LocalFile[]>([])
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
+  const [urlToIndex, setUrlToIndex] = useState('')
+  const [urlLoading, setUrlLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
@@ -48,8 +50,10 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const directoryInputRef = useRef<HTMLInputElement>(null)
 
-  const mode = activeMode || 'local'
-  const isLocalMode = mode === 'local' || mode === 'openai_assistants'
+  const mode = activeMode || 'none'
+  // Show Google Drive ONLY for google modes or vertex_ai_search
+  // Show local file manager for everything else (local, openai_assistants, none, or when mode hasn't loaded)
+  const isLocalMode = !mode || (!mode.startsWith('google') && mode !== 'vertex_ai_search')
 
   const fetchDriveFiles = async (folderId: string | null = null) => {
     setLoading(true)
@@ -474,6 +478,39 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     }
   }
 
+  const handleIndexUrl = async () => {
+    const trimmed = urlToIndex.trim()
+    if (!trimmed) {
+      return
+    }
+
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const toastId = toast.loading('Indexing URL...')
+    setUrlLoading(true)
+
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/index_url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: trimmed })
+      })
+      const data = await res.json()
+      if (!res.ok || data?.error) {
+        throw new Error(data?.error || `HTTP ${res.status}`)
+      }
+      toast.success(`Indexed ${trimmed}`, { id: toastId })
+      setUrlToIndex('')
+      fetchLocalFiles()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to index URL'
+      toast.error(message, { id: toastId })
+    } finally {
+      setUrlLoading(false)
+    }
+  }
+
   const formatSize = (bytes?: string | number) => {
     if (!bytes) return 'N/A'
     const b = Number(bytes)
@@ -659,6 +696,26 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                   title={useRegex ? "Using regex mode" : "Using plain text search"}
                 >
                   .*
+                </Button>
+              </div>
+            )}
+
+            {isLocalMode && (
+              <div className="flex items-center gap-2">
+                <Input
+                  type="url"
+                  placeholder="https://example.com/resume.pdf"
+                  value={urlToIndex}
+                  onChange={(e) => setUrlToIndex(e.target.value)}
+                  className="h-8"
+                />
+                <Button
+                  size="sm"
+                  onClick={handleIndexUrl}
+                  disabled={!urlToIndex.trim() || urlLoading}
+                >
+                  <Link2 className="h-4 w-4 mr-2" />
+                  {urlLoading ? 'Indexing…' : 'Index URL'}
                 </Button>
               </div>
             )}

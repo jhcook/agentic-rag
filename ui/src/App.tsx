@@ -64,6 +64,7 @@ type OllamaConfig = {
   ragHost: string
   ragPort: string
   ragPath: string
+  debugMode?: boolean
 }
 
 type IndexJob = {
@@ -115,7 +116,8 @@ function App() {
     mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
     ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
     ragPort: import.meta.env.VITE_RAG_PORT || '8001',
-    ragPath: import.meta.env.VITE_RAG_PATH || 'api'
+    ragPath: import.meta.env.VITE_RAG_PATH || 'api',
+    debugMode: false,
   })
   const [queryText, setQueryText] = useState('')
   const [searching, setSearching] = useState(false)
@@ -150,7 +152,7 @@ function App() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [activeMode, setActiveMode] = useState<string>('local')
+  const [activeMode, setActiveMode] = useState<string | null>(null)
   const getApiBase = useCallback(() => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
@@ -253,7 +255,7 @@ function App() {
         const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
         if (res.ok) {
           const data = await res.json()
-          setActiveMode(data.mode || 'local')
+          setActiveMode(data.mode || 'none')
         }
       } catch (e) {
         console.error("Failed to fetch mode", e)
@@ -321,46 +323,46 @@ function App() {
 
   // Update active conversation when messages change
   useEffect(() => {
-    if (activeConversationId) {
-      // Update existing conversation
-      setConversations(prev => {
-        const existing = prev.find(c => c.id === activeConversationId)
-        if (existing) {
-          return prev.map(conv => {
-            if (conv.id === activeConversationId) {
-              return {
-                ...conv,
-                messages: chatMessages,
-                updatedAt: Date.now()
+      if (activeConversationId) {
+        // Update existing conversation
+        setConversations(prev => {
+          const existing = prev.find(c => c.id === activeConversationId)
+          if (existing) {
+            return prev.map(conv => {
+              if (conv.id === activeConversationId) {
+                return {
+                  ...conv,
+                  messages: chatMessages,
+                  updatedAt: Date.now()
+                }
               }
-            }
-            return conv
-          })
+              return conv
+            })
         } else if (chatMessages.length > 0) {
           // Create new conversation with existing ID if it doesn't exist but we have messages
-          const newConv: Conversation = {
-            id: activeConversationId,
-            title: 'New Conversation',
-            messages: chatMessages,
-            createdAt: Date.now(),
-            updatedAt: Date.now()
+            const newConv: Conversation = {
+              id: activeConversationId,
+              title: 'New Conversation',
+              messages: chatMessages,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            }
+            return [newConv, ...prev]
           }
-          return [newConv, ...prev]
-        }
         return prev
-      })
+        })
     } else if (chatMessages.length > 0) {
-      // No active conversation but messages exist - create one
-      const newId = crypto.randomUUID()
-      const newConv: Conversation = {
-        id: newId,
-        title: 'New Conversation',
-        messages: chatMessages,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      }
-      setConversations(prev => [newConv, ...prev])
-      setActiveConversationId(newId)
+        // No active conversation but messages exist - create one
+        const newId = crypto.randomUUID()
+        const newConv: Conversation = {
+          id: newId,
+          title: 'New Conversation',
+          messages: chatMessages,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+        setConversations(prev => [newConv, ...prev])
+        setActiveConversationId(newId)
     }
   }, [chatMessages, activeConversationId])
 
@@ -808,7 +810,7 @@ function App() {
     return `${size.toFixed(1)} ${units[unitIndex]}`
   }
 
-  const handleConfigChange = (field: keyof OllamaConfig, value: string) => {
+  const handleConfigChange = (field: keyof OllamaConfig, value: string | boolean) => {
     setOllamaConfig(current => {
       const currentConfig = current || {
         apiEndpoint: 'http://localhost:11434',
@@ -825,7 +827,8 @@ function App() {
         mcpPath: '/mcp',
         ragHost: '127.0.0.1',
         ragPort: '8001',
-        ragPath: 'api'
+        ragPath: 'api',
+        debugMode: false
       }
       return {
         ...currentConfig,
@@ -847,7 +850,7 @@ function App() {
       })
       
       if (res.ok) {
-        toast.success('Configuration saved', {
+    toast.success('Configuration saved', {
           description: 'Settings have been saved to server'
         })
       } else {

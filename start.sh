@@ -6,6 +6,15 @@
 
 set -euo pipefail
 
+# Deactivate inherited virtual environment to prevent conflicts during recreation
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    # Remove VIRTUAL_ENV/bin from PATH
+    # We use a simple substitution; strictness isn't critical here as we just want to prefer system python
+    PATH=${PATH//${VIRTUAL_ENV}\/bin:/}
+    PATH=${PATH//:${VIRTUAL_ENV}\/bin/}
+    unset VIRTUAL_ENV
+fi
+
 # Function to add timestamps to log output and strip color codes
 log_with_timestamp() {
     while IFS= read -r line; do
@@ -511,6 +520,31 @@ else
         echo "✓ Ollama skipped (--skip-ollama flag)"
     else
         echo "✓ Using remote Ollama (local installation not required)"
+    fi
+fi
+
+# Check for libomp on macOS (required for FAISS/Torch)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    if brew list libomp &>/dev/null; then
+        echo "✓ libomp: found (via brew)"
+    else
+        # Check standard locations if not in brew or brew missing
+        if [[ -f "/opt/homebrew/opt/libomp/lib/libomp.dylib" ]] || [[ -f "/usr/local/opt/libomp/lib/libomp.dylib" ]]; then
+             echo "✓ libomp: found (manual check)"
+        else
+            echo -e "${YELLOW}Warning: libomp not found. This is required for FAISS/Torch on macOS.${NC}"
+            echo -e "${YELLOW}Attempting to install via Homebrew...${NC}"
+            if command -v brew &>/dev/null; then
+                if brew install libomp; then
+                    echo -e "${GREEN}✓ libomp installed successfully${NC}"
+                else
+                    echo -e "${RED}Error: Failed to install libomp. Please install manually: brew install libomp${NC}"
+                    # We don't exit here strictly, as some setups might have it elsewhere, but it's risky
+                fi
+            else
+                echo -e "${RED}Error: Homebrew not found. Please install libomp manually.${NC}"
+            fi
+        fi
     fi
 fi
 

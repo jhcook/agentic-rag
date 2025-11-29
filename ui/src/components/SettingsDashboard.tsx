@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 
 export type OllamaConfig = {
   apiEndpoint: string
@@ -33,6 +34,7 @@ export type OllamaConfig = {
   ragHost: string
   ragPort: string
   ragPath: string
+  debugMode?: boolean
 }
 
 export type VertexConfig = {
@@ -49,7 +51,7 @@ export type OpenAIConfig = {
 
 interface SettingsDashboardProps {
   config: OllamaConfig
-  onConfigChange: (field: keyof OllamaConfig, value: string) => void
+  onConfigChange: (field: keyof OllamaConfig, value: string | boolean) => void
   onSaveConfig: () => void
   onTestConnection: () => void
   vertexConfig: VertexConfig
@@ -63,7 +65,7 @@ interface SettingsDashboardProps {
   onSaveOpenAIConfig: () => void
   onTestOpenAIConnection: () => void
   onSwitchBackend: (mode: string) => void
-  activeMode?: string
+  activeMode?: string | null
 }
 
 export function SettingsDashboard({
@@ -102,6 +104,32 @@ export function SettingsDashboard({
           <CardDescription>Connection details for the Lauren AI REST API</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex items-center justify-between p-4 rounded-lg border border-border bg-muted/20">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="debug-mode">Debug Mode</Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                        <Info className="h-4 w-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="max-w-xs">Enable debug logging for REST and MCP servers. Logs will show DEBUG level messages for troubleshooting.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <p className="text-sm text-muted-foreground">Enable verbose debug logging</p>
+            </div>
+            <Switch
+              id="debug-mode"
+              checked={config?.debugMode || false}
+              onCheckedChange={(checked) => onConfigChange('debugMode', checked)}
+            />
+          </div>
+
           <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
               <div className="flex items-center gap-2">

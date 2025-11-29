@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 try:
@@ -19,11 +20,29 @@ _index: Optional[Any] = None
 _index_to_meta: Optional[Dict[int, Tuple[str, str]]] = None
 _embed_dim: Optional[int] = None
 _REBUILD_LOCK = threading.Lock()
+_LAST_REBUILD_TIME: float = 0.0
+_REBUILD_DEBOUNCE_SECONDS = 5.0  # Minimum seconds between rebuilds
 
 
 def get_rebuild_lock() -> threading.Lock:
     """Return the global rebuild lock."""
     return _REBUILD_LOCK
+
+
+def should_skip_rebuild() -> bool:
+    """Check if rebuild should be skipped due to recent rebuild (debouncing)."""
+    # pylint: disable=global-statement
+    global _LAST_REBUILD_TIME
+    current_time = time.time()
+    time_since_last = current_time - _LAST_REBUILD_TIME
+    return time_since_last < _REBUILD_DEBOUNCE_SECONDS
+
+
+def mark_rebuild_complete() -> None:
+    """Mark that a rebuild has completed (for debouncing)."""
+    # pylint: disable=global-statement
+    global _LAST_REBUILD_TIME
+    _LAST_REBUILD_TIME = time.time()
 
 
 def get_faiss_globals(

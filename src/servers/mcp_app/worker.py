@@ -105,13 +105,17 @@ def start_worker(env: Optional[Dict[str, str]] = None):
                         }
                 JOBS[job_id] = job
             try:
-                load_store()
-                rag_core.rebuild_faiss_index()
-                # ensure any external changes are reflected in the current store
-                rag_core.ensure_store_synced()
-                save_store()
+                # Sync if external changes were detected (another process modified store)
+                # upsert_document already saves the store and adds to index incrementally.
+                # If store was reloaded from external changes, the index needs to be rebuilt
+                # to include the new documents that were added by another process.
+                store_reloaded = rag_core.ensure_store_synced()
+                # Only rebuild index if store was actually reloaded from external changes
+                if store_reloaded:
+                    logger.info("Store was reloaded from external changes, rebuilding index")
+                    rag_core.rebuild_faiss_index()
             except Exception as exc:  # pragma: no cover
-                logger.error("Failed to refresh store after job %s: %s", job_id, exc, exc_info=True)
+                logger.error("Failed to sync store after job %s: %s", job_id, exc, exc_info=True)
 
     RESULT_THREAD = threading.Thread(target=_result_listener, daemon=True)
     RESULT_THREAD.start()

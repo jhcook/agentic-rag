@@ -109,6 +109,12 @@ def load_app_config():
 
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
+            
+            # Apply debug mode if set
+            if "debugMode" in config:
+                debug_mode = bool(config["debugMode"])
+                from src.servers.mcp_app.logging_config import update_logging_level
+                update_logging_level(debug_mode)
 
             logger.info("Loaded configuration from %s", CONFIG_FILE)
             return config
@@ -133,8 +139,6 @@ store_load_thread: Optional[threading.Thread] = None
 # Memory management settings
 MEMORY_CHECK_INTERVAL = 30  # seconds
 MEMORY_LOG_STEP_MB = 256  # log memory usage whenever it crosses another 256MB bucket
-from src.servers.mcp_app.api import rest_api
-rest_api.add_middleware(AccessLogMiddleware, access_logger=access_logger)
 
 
 def _background_load_store():
@@ -449,9 +453,8 @@ def index_url_tool(
         if not url:
             return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
 
-        # Treat URL as a pathlib.Path for extract_text_from_file
-        url_path = Path(url)
-        content = extract_text_from_file(url_path)
+        # Pass URL directly as string to extract_text_from_file
+        content = extract_text_from_file(url)
 
         if not content:
             logger.warning("No text extracted from URL %s", url)
@@ -678,6 +681,10 @@ if __name__ == "__main__":
 
         # Set memory limits before doing anything else
         set_memory_limits()
+
+        # Add middleware to REST API (only when running as server)
+        from src.servers.mcp_app.api import rest_api
+        rest_api.add_middleware(AccessLogMiddleware, access_logger=access_logger)
 
         # Configure MCP
         mcp.settings.log_level = "DEBUG"

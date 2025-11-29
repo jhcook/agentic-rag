@@ -20,6 +20,7 @@ type OllamaConfig = {
   mcpHost: string
   mcpPort: string
   mcpPath: string
+  debugMode?: boolean
 }
 
 type HealthData = {

@@ -9,6 +9,7 @@ function instead of uploading files to OpenAI.
 import logging
 import json
 import os
+import re
 import time
 from typing import List, Dict, Any
 
@@ -236,8 +237,15 @@ class OpenAIAssistantsBackend:
         for tool_call in run.required_action.submit_tool_outputs.tool_calls:
             if tool_call.function.name == "search_documents":
                 try:
-                    # Parse arguments
-                    args = json.loads(tool_call.function.arguments)
+                    # Parse arguments - handle malformed JSON gracefully
+                    arguments_str = tool_call.function.arguments
+                    try:
+                        args = json.loads(arguments_str)
+                    except json.JSONDecodeError as json_err:
+                        logger.warning("Malformed JSON in function arguments: %s. Raw: %s", json_err, arguments_str)
+                        # Re-raise to be caught by outer exception handler
+                        raise
+                    
                     query = args.get("query", "")
                     top_k = args.get("top_k", 5)
 
@@ -297,20 +305,37 @@ class OpenAIAssistantsBackend:
 
     @staticmethod
     def _parse_sources_section(content: str) -> List[str]:
-        """Extract sources from assistant response content."""
+        """Extract sources from assistant response content, deduplicated while preserving order."""
         if "Sources:" not in content:
             return []
 
         sources: List[str] = []
-        sources_section = content.split("Sources:", maxsplit=1)[1].strip()
+        seen: set[str] = set()
+        sources_section = content.split("Sources:", maxsplit=1)[1]
+
+        # Primary parsing: handle inline or multiline [n] entries using regex
+        pattern = re.compile(r"\[\s*\d+\s*\]\s*([^\n\r]+)")
+        for match in pattern.finditer(sources_section):
+            uri_raw = match.group(1).strip()
+            normalized = uri_raw.rstrip(" .").strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                sources.append(uri_raw.rstrip(" .").strip())
+
+        if sources:
+            return sources
+
+        # Fallback to line-by-line parsing for non-standard formats
         for line in sources_section.splitlines():
             line = line.strip()
-            if not line or not line.startswith("["):
+            if not line or "[" not in line:
                 continue
             parts = line.split("]", 1)
             if len(parts) > 1:
-                uri = parts[1].strip()
-                if uri:
+                uri = parts[1].strip().rstrip(" .")
+                normalized = uri.lower()
+                if uri and normalized not in seen:
+                    seen.add(normalized)
                     sources.append(uri)
         return sources
 

@@ -25,14 +25,8 @@ rest_api = FastAPI(title="mcp-rest-shim")
 # Initialize backend
 backend = get_rag_backend()
 
-rest_api.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# Note: Middleware is handled by http_app.py since this app is mounted
+# Do not add middleware here as it conflicts with Starlette mounting
 
 @rest_api.post("/upsert_document")
 async def rest_upsert_document(request: Request):
@@ -273,3 +267,48 @@ async def rest_health():
 async def rest_jobs():
     jobs = worker_mod.get_jobs()
     return JSONResponse({"jobs": list(jobs.values())})
+
+
+@rest_api.post("/index_url")
+async def rest_index_url(request: Request):
+    """Index a remote URL by delegating to MCP server tool."""
+    try:
+        body = await request.json()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return JSONResponse({"error": f"Invalid JSON: {exc}"}, status_code=400)
+    
+    url = body.get("url")
+    doc_id = body.get("doc_id")
+    query = body.get("query")
+    if not url and not query:
+        return JSONResponse({"error": "url is required"}, status_code=422)
+    
+    try:
+        from src.servers.mcp_server import index_url_tool  # pylint: disable=import-outside-toplevel
+        result = await anyio.to_thread.run_sync(index_url_tool, url, doc_id, query)
+        return JSONResponse(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@rest_api.post("/config/logging")
+async def rest_update_logging(request: Request):
+    """Update logging level dynamically based on debug mode setting."""
+    try:
+        body = await request.json()
+        debug_mode = bool(body.get("debug_mode", False))
+        
+        from src.servers.mcp_app.logging_config import update_logging_level
+        update_logging_level(debug_mode)
+        
+        import logging
+        return JSONResponse({
+            "status": "updated", 
+            "debug_mode": debug_mode, 
+            "log_level": logging.getLevelName(logging.DEBUG if debug_mode else logging.INFO)
+        })
+    except Exception as exc:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error("Failed to update logging level: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)

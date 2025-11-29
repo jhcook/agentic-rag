@@ -207,9 +207,9 @@ def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any,
 
 
 def _ensure_store_synced():
-    """Check and reload store if modified on disk."""
+    """Check and reload store if modified on disk. Returns True if store was reloaded."""
     if not os.path.exists(DB_PATH):
-        return
+        return False
 
     try:
         file_mtime = os.path.getmtime(DB_PATH)
@@ -219,13 +219,23 @@ def _ensure_store_synced():
             logger.info("Detected external changes, reloading store from disk")
             load_store()
             store.last_loaded = time.time()
+            # After reloading store from external changes, we need to rebuild the index
+            # because the index in this process may not have vectors for documents added by another process
+            # However, we'll do this lazily in _build_rag_context when search finds no vectors
+            return True  # Store was reloaded
+        return False  # No reload needed
     except OSError as exc:
         logger.warning("Error checking store sync: %s", exc)
+        return False
 
 
-def ensure_store_synced() -> None:
-    """Public wrapper to keep the in-memory store in sync with disk."""
-    _ensure_store_synced()
+def ensure_store_synced() -> bool:
+    """Public wrapper to keep the in-memory store in sync with disk.
+    
+    Returns:
+        True if store was reloaded from disk (external changes detected), False otherwise.
+    """
+    return _ensure_store_synced()
 
 
 def get_store() -> Store:
@@ -348,10 +358,16 @@ def should_skip_uri(uri: str) -> bool:
 
 def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
     """Rebuild the FAISS index from store documents."""
+    from src.core.faiss_index import should_skip_rebuild, mark_rebuild_complete
     with get_rebuild_lock():
+        # Debounce: skip if rebuild happened recently
+        if should_skip_rebuild():
+            logger.debug("Skipping FAISS rebuild (debounced - recent rebuild)")
+            return
         logger.info("Beginning FAISS rebuild")
         if DEBUG_MODE:
             logger.debug("Debug mode: skipping FAISS index rebuild")
+            mark_rebuild_complete()  # Mark even if skipped
             return
 
         index, index_to_meta, _ = get_faiss_globals()
@@ -360,12 +376,15 @@ def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
         logger.info("Embedder ready")
 
         logger.info("Rebuilding FAISS index from store documents")
+        # Ensure store is synced before rebuilding
+        _ensure_store_synced()
         index_to_meta.clear()
         if index is not None:
             index.reset()  # type: ignore
 
         if _STORE is None:
             logger.warning("No store available to rebuild index from")
+            mark_rebuild_complete()  # Mark even if no store
             return
 
         logger.info("Processing %d documents for FAISS indexing", len(_STORE.docs))
@@ -408,6 +427,10 @@ def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
             logger.info("Added %d vectors to FAISS index", total_vectors)
         else:
             logger.warning("No FAISS index available")
+        
+        # Mark rebuild complete for debouncing
+        from src.core.faiss_index import mark_rebuild_complete
+        mark_rebuild_complete()
 
 
 def rebuild_faiss_index() -> None:
@@ -873,10 +896,11 @@ def _build_rag_context(
     candidates = _vector_search(query, k=top_k)
 
     if not candidates:
-        # If we have docs but no vectors, force a rebuild once
+        # If we have docs but no vectors, ensure store is synced and force a rebuild once
+        _ensure_store_synced()  # Sync store before checking
         store = get_store()
         if len(getattr(store, "docs", {})) > 0:
-            logger.info("No vector hits but store has docs; rebuilding index and retrying...")
+            logger.info("No vector hits but store has %d docs; rebuilding index and retrying...", len(store.docs))
             _rebuild_faiss_index()
             candidates = _vector_search(query, k=top_k)
         if not candidates:

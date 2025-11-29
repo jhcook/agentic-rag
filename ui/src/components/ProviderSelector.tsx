@@ -24,7 +24,7 @@ type ConfigMode = {
 
 export function ProviderSelector({ config }: { config: any }) {
   const [open, setOpen] = useState(false)
-  const [modeData, setModeData] = useState<ConfigMode>({ mode: 'local', available_modes: ['local'] })
+  const [modeData, setModeData] = useState<ConfigMode>({ mode: 'none', available_modes: [] })
   const [loading, setLoading] = useState(false)
 
   const fetchMode = async () => {
@@ -43,7 +43,11 @@ export function ProviderSelector({ config }: { config: any }) {
   }
 
   useEffect(() => {
+    // Fetch immediately on mount
     fetchMode()
+    // Poll for mode changes more frequently initially, then less frequently
+    const interval = setInterval(fetchMode, 2000) // Poll every 2 seconds
+    return () => clearInterval(interval)
   }, [config])
 
   const handleSelect = async (newMode: string) => {
@@ -81,7 +85,8 @@ export function ProviderSelector({ config }: { config: any }) {
     { value: 'vertex_ai_search', label: 'Vertex AI Agent', icon: Cloud },
   ]
 
-  const currentProvider = providers.find(p => p.value === modeData.mode) || { value: modeData.mode, label: modeData.mode, icon: Server }
+  const currentProvider = providers.find(p => p.value === modeData.mode) || 
+    { value: modeData.mode || 'none', label: modeData.mode === 'none' ? 'No Provider' : (modeData.mode || 'No Provider'), icon: Server }
 
   // Filter providers based on available modes from backend
   const availableProviders = providers.filter(p => modeData.available_modes.includes(p.value))
@@ -108,8 +113,8 @@ export function ProviderSelector({ config }: { config: any }) {
               !isCurrentModeAvailable && "text-destructive"
             )} />
             <span className={cn(!isCurrentModeAvailable && "text-destructive")}>
-              {currentProvider.label}
-              {!isCurrentModeAvailable && " (Unavailable)"}
+              {availableProviders.length === 0 ? "No Providers Available" : currentProvider.label}
+              {!isCurrentModeAvailable && availableProviders.length > 0 && " (Unavailable)"}
             </span>
           </div>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

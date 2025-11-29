@@ -435,10 +435,23 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 "store_file_bytes": 0,
             }
 
+        def list_documents(self) -> List[Dict[str, Any]]:
+            """List all documents with metadata (returns empty list for NullBackend)."""
+            return []
+
+        def save_store(self) -> bool:
+            """Save the document store (no-op for NullBackend)."""
+            return True
+
+        def load_store(self) -> bool:
+            """Load the document store (no-op for NullBackend)."""
+            return True
+
     def __init__(self, initial_mode: str = "local"):
         """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
-        self.current_mode = "local"
+        # Start in "none" mode if Ollama is disabled to prevent showing local initially
+        self.current_mode = "none" if DISABLE_OLLAMA else "local"
 
         # Initialize Local
         if HAS_LOCAL_CORE and not DISABLE_OLLAMA:
@@ -467,7 +480,16 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                     "HybridBackend: Failed to init OpenAIAssistantsBackend: %s", exc)
 
         # Default to what's available (prefer requested mode, otherwise any available)
-        if initial_mode in self.backends:
+        # But if DISABLE_OLLAMA is set, start in "none" mode unless another backend is explicitly requested
+        if DISABLE_OLLAMA and initial_mode == "local":
+            # When Ollama is disabled, don't try to use local mode
+            if self.backends:
+                self.current_mode = next(iter(self.backends.keys()))
+            else:
+                if "none" not in self.backends:
+                    self.backends["none"] = HybridBackend.NullBackend()
+                self.current_mode = "none"
+        elif initial_mode in self.backends:
             self.current_mode = initial_mode
         elif "local" in self.backends:
             self.current_mode = "local"
@@ -475,7 +497,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             self.current_mode = next(iter(self.backends.keys()))
         else:
             logger.warning("HybridBackend: No backends available! Running in config-only mode.")
-            self.backends["none"] = HybridBackend.NullBackend()
+            if "none" not in self.backends:
+                self.backends["none"] = HybridBackend.NullBackend()
             self.current_mode = "none"
 
     def set_mode(self, mode: str) -> bool:
@@ -576,8 +599,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         """Get list of available backend modes (only properly configured ones)."""
         modes = []
         
-        # Local backend - check if Ollama is reachable
-        if "local" in self.backends:
+        # Local backend - check if Ollama is reachable (only if not disabled)
+        if "local" in self.backends and not DISABLE_OLLAMA:
             try:
                 import requests
                 response = requests.get("http://127.0.0.1:11434/api/tags", timeout=2)
