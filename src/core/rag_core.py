@@ -13,6 +13,8 @@ import re
 import time
 import asyncio
 import gc
+import threading
+
 
 from typing import List, Dict, Any, Optional, Tuple, Callable, cast
 from dataclasses import dataclass, field
@@ -120,6 +122,7 @@ def get_llm_model_name() -> str:
 
 # Lazy-initialized global state
 _STORE: Optional['Store'] = None  # pylint: disable=invalid-name
+_STORE_LOCK = threading.RLock()
 
 # Embedding metrics (shared by servers)
 EMBEDDING_REQUESTS = Counter(
@@ -242,11 +245,16 @@ def get_store() -> Store:
     """Return the global Store instance, creating it if necessary."""
     global _STORE  # pylint: disable=global-statement
     if _STORE is None:
-        _STORE = Store()
-        try:
-            load_store()
-        except (OSError, ValueError) as exc:
-            logger.debug("No existing store to load: %s", exc)
+        with _STORE_LOCK:
+            if _STORE is None:
+                try:
+                    load_store()
+                except (OSError, ValueError) as exc:
+                    logger.debug("No existing store to load: %s", exc)
+                
+                # Ensure _STORE is initialized even if load failed
+                if _STORE is None:
+                    _STORE = Store()
     return _STORE
 
 
@@ -289,8 +297,13 @@ def save_store():
         store = get_store()
         logger.info("Saving store to %s", DB_PATH)
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        
+        # Snapshot docs under lock to avoid modification during iteration
+        with _STORE_LOCK:
+            docs_snapshot = list(store.docs.items())
+            
         with open(DB_PATH, "w", encoding="utf-8") as f:
-            for uri, text in store.docs.items():
+            for uri, text in docs_snapshot:
                 rec: Dict[str, Any] = {
                     "uri": uri,
                     "id": _hash_uri(uri),
@@ -298,8 +311,8 @@ def save_store():
                     "ts": int(time.time())
                 }
                 f.write(json.dumps(rec) + "\n")
-        logger.info("Successfully saved %d documents", len(get_store().docs))
-        get_store().last_loaded = time.time()
+        logger.info("Successfully saved %d documents", len(docs_snapshot))
+        store.last_loaded = time.time()
     except (OSError, ValueError) as exc:
         logger.error("Error saving store: %s", str(exc))
         raise
@@ -387,13 +400,15 @@ def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
             mark_rebuild_complete()  # Mark even if no store
             return
 
-        logger.info("Processing %d documents for FAISS indexing", len(_STORE.docs))
+        with _STORE_LOCK:
+            doc_items = list(_STORE.docs.items())
+            
+        logger.info("Processing %d documents for FAISS indexing", len(doc_items))
 
         total_vectors = 0
         batch_size = 8
 
         # Process each document separately to avoid accumulating all chunks in memory
-        doc_items = list(_STORE.docs.items())
         for uri, text in tqdm(iterable=doc_items, desc="Rebuilding FAISS index", unit="doc"):  # pylint: disable=no-value-for-parameter
             logger.info("Document %s: %d chars", uri, len(text))
             if not text or not text.strip():
@@ -498,14 +513,15 @@ def load_store():
                 except json.JSONDecodeError as exc:
                     logger.warning("load_store: %s", exc)
                     continue
-
-        if _STORE is None:
-            _STORE = Store()
-        _STORE.docs.clear()
-        _STORE.docs.update(new_store.docs)
+        
+        with _STORE_LOCK:
+            if _STORE is None:
+                _STORE = Store()
+            # Atomic-ish update of the dictionary reference
+            _STORE.docs = new_store.docs
+            _STORE.last_loaded = time.time()
+            
         logger.info("Successfully loaded %d documents", len(_STORE.docs))
-
-        _STORE.last_loaded = time.time()
 
     except (OSError, ValueError) as exc:
         logger.error("Error loading store: %s", str(exc))
@@ -530,11 +546,12 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
 
     _ensure_store_synced()
 
-    if _STORE is None:
-        _STORE = Store()
+    with _STORE_LOCK:
+        if _STORE is None:
+            _STORE = Store()
 
-    existed = uri in _STORE.docs
-    _STORE.add(uri, text)
+        existed = uri in _STORE.docs
+        _STORE.add(uri, text)
 
     if DEBUG_MODE:
         logger.debug("Debug mode: skipping embeddings for %s", uri)
@@ -641,7 +658,8 @@ def _process_file(  # pylint: disable=too-many-locals
         return ""
 
     store = get_store()
-    store.add(str(file_path), text)
+    with _STORE_LOCK:
+        store.add(str(file_path), text)
 
     if not DEBUG_MODE and embedder is not None and index is not None:
         base_index = index.ntotal  # type: ignore
