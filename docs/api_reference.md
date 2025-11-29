@@ -83,8 +83,8 @@ Index a local filesystem path.
 ```json
 {
   "path": "/Users/username/documents",
-  "glob": "**/*.md"
-}
+    "glob": "**/*.md"
+  }
 ```
 
 **Example:**
@@ -98,7 +98,31 @@ curl -X POST "http://localhost:8001/api/index_path" \
          }'
 ```
 
-### 4. Health Check
+### 4. Index URL
+
+Index content from a remote URL via the MCP worker.
+
+**Endpoint:** `POST /api/index_url`
+
+**Request:**
+
+```json
+{
+  "url": "https://example.com/article",
+  "doc_id": "optional-custom-id",
+  "query": "optional query for extraction"
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST "http://localhost:8001/api/index_url" \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://example.com"}'
+```
+
+### 5. Health Check
 
 Check the status of the server and get basic statistics.
 

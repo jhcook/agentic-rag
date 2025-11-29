@@ -39,7 +39,7 @@ agentic-rag/
 ├── tests/                       # Test suite
 ├── cache/                       # Vector store and cache files
 ├── log/                         # Log files
-└── scripts/                     # Startup and utility scripts
+└── scripts/                     # Startup, utility, and build (build_electron.py) scripts
 ```
 
 ## Features
@@ -51,6 +51,7 @@ agentic-rag/
 - **Hybrid Architecture**: Support for both Monolithic (Local) and Distributed (Remote) deployments
 - **Role-Based Startup**: flexible `start.sh` script to launch specific components (`monolith`, `server`, `client`)
 - **Document Indexing**: Index text documents for efficient retrieval using FAISS vector store
+- **URL Indexing**: Index content directly from remote URLs via the MCP worker
 - **Search Functionality**: Perform semantic searches on indexed documents using natural language queries
 - **Answer Synthesis**: Generate answers based on retrieved documents using LLM integration
 - **Automatic Citations**: Inline citations [1], [2] with source references
@@ -58,7 +59,7 @@ agentic-rag/
 - **MCP Server**: Model Context Protocol server for integration with AI assistants
 - **REST API**: RESTful API for document search and RAG operations
 - **Modern Web UI**: React-based interface for chat, file management, and settings
-- **Debug Mode**: Skip expensive embedding operations for testing (`RAG_DEBUG_MODE=true`)
+- **Debug Mode**: Toggle verbose logging via UI or env (`RAG_DEBUG_MODE=true`) to skip expensive operations
 - **Automated Startup**: Shell scripts for easy service management
 
 ## AI Backend Options
@@ -149,6 +150,7 @@ agentic-rag$ ./start.sh --role monolith
 
 - **Python 3.11+** (required)
 - **Ollama** (for local LLM inference)
+- **libomp** (macOS only, required for FAISS/Torch - installed automatically by start.sh)
 - **uv** (Python package installer, installed via requirements.txt)
 
 Install Ollama:
@@ -438,6 +440,13 @@ Index documents:
 curl -s http://127.0.0.1:8001/api/index_path \
   -H 'content-type: application/json' \
   -d '{"path":"documents","glob":"**/*.txt"}' | jq
+```
+
+Index a URL:
+```bash
+curl -s http://127.0.0.1:8001/api/index_url \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com"}' | jq
 ```
 
 ### Debug Mode

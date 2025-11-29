@@ -30,6 +30,23 @@ npm run dev
 - Uses `RAG_HOST`/`RAG_PORT`/`RAG_PATH` from the environment for health checks (defaults: `127.0.0.1`, `8001`, `api`).
 
 ## Build installers
+
+The recommended way to build is using the helper script, which handles prerequisite checks, venv cleanup, and platform-specific packaging:
+
+```bash
+# From repository root
+python scripts/build_electron.py
+```
+
+This script will:
+1. Check for `npm` and `uv`/`pip`.
+2. Build the frontend (`ui`).
+3. Install Electron dependencies.
+4. Clean up `src/` (pycache, etc.) before packaging.
+5. Run `npm run build:<platform>` for your current OS.
+
+Alternatively, you can run the manual steps:
+
 ```bash
 cd electron
 npm run build:win    # Windows NSIS installer (.exe)

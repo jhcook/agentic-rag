@@ -126,9 +126,10 @@ The system supports dynamic configuration updates. Settings stored in `config/se
 - Adjust temperature and generation parameters
 - Modify search settings (top-k, context window)
 - Update system prompts
+- Toggle **Debug Mode** (`debugMode: true`) for verbose logging
 
 **Managing Configuration:**
-- **Web UI**: Use the "Settings" dashboard to view and modify configuration.
+- **Web UI**: Use the "Settings" dashboard to view and modify configuration (including Debug toggle).
 - **API**: The REST API exposes endpoints (`/api/config`) to read and update settings.
 
 ## Embedding Model (`EMBED_MODEL_NAME`)
