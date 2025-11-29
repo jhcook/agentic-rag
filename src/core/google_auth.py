@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Scopes required for the application
 SCOPES = [
-    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/generative-language.retriever',
     'https://www.googleapis.com/auth/generative-language.tuning',
@@ -52,10 +52,24 @@ class GoogleAuthManager:
         # 1. Try to load existing token
         if os.path.exists(self.token_path):
             try:
-                self.creds = Credentials.from_authorized_user_file(
-                    self.token_path, SCOPES)
+                # Don't specify SCOPES here. Let it load whatever scopes are in the file.
+                # We will check scopes manually if needed, or let the API call fail.
+                # Actually, google.auth doesn't enforce scopes on load if not provided,
+                # but mismatch causes issues if provided.
+                self.creds = Credentials.from_authorized_user_file(self.token_path)
+                
+                # Check if loaded creds have all required scopes
+                # This is tricky because scopes can be partial.
+                # For now, rely on the refresh flow or explicit re-auth if API fails.
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning("Failed to load existing token: %s", exc)
+                # Delete invalid token file to prevent repeated errors
+                try:
+                    os.remove(self.token_path)
+                    logger.info("Deleted invalid token file.")
+                except OSError:
+                    pass
+                self.creds = None
                 # Delete invalid token file to prevent repeated errors
                 try:
                     os.remove(self.token_path)

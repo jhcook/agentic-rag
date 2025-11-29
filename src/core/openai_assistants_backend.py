@@ -505,3 +505,21 @@ class OpenAIAssistantsBackend:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to list OpenAI models: %s", exc)
             return []
+
+    def logout(self) -> None:
+        """Clear credentials and configuration."""
+        logger.info("Logging out from OpenAI Assistants backend...")
+        self.client = None
+        self.assistant = None
+        self.api_key = None
+        self.assistant_id = None
+        self.configured = False
+        
+        # Remove config file
+        secrets_path = "secrets/openai_config.json"
+        if os.path.exists(secrets_path):
+            try:
+                os.remove(secrets_path)
+                logger.info("Deleted OpenAI config file at %s", secrets_path)
+            except OSError as exc:
+                logger.error("Error deleting OpenAI config file: %s", exc)

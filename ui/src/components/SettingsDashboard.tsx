@@ -58,7 +58,7 @@ interface SettingsDashboardProps {
   onVertexConfigChange: (config: VertexConfig) => void
   onSaveVertexConfig: () => void
   onGoogleLogin: () => void
-  onGoogleLogout: () => void
+  onDisconnect: (provider?: 'google' | 'openai_assistants') => void
   openaiConfig: OpenAIConfig
   openaiModels: string[]
   onOpenaiConfigChange: (config: OpenAIConfig) => void
@@ -77,7 +77,7 @@ export function SettingsDashboard({
   onVertexConfigChange,
   onSaveVertexConfig,
   onGoogleLogin,
-  onGoogleLogout,
+  onDisconnect,
   openaiConfig,
   openaiModels,
   onOpenaiConfigChange,
@@ -684,11 +684,18 @@ export function SettingsDashboard({
                       Test Connection
                     </Button>
                   </div>
-                  {activeMode !== 'openai_assistants' && (
-                    <Button onClick={() => onSwitchBackend('openai_assistants')} className="w-full">
-                      Use this Backend
-                    </Button>
-                  )}
+                  <div className="flex gap-3">
+                    {activeMode !== 'openai_assistants' && (
+                      <Button onClick={() => onSwitchBackend('openai_assistants')} className="flex-1">
+                        Use this Backend
+                      </Button>
+                    )}
+                    {activeMode === 'openai_assistants' && (
+                      <Button onClick={() => onDisconnect('openai_assistants')} variant="outline" className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500">
+                        Disconnect
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </CollapsibleContent>
             </div>
@@ -727,7 +734,7 @@ export function SettingsDashboard({
                     <Button onClick={onGoogleLogin} className="flex-1">
                        Connect Google Account
                     </Button>
-                    <Button onClick={onGoogleLogout} variant="outline" className="flex-1">
+                    <Button onClick={() => onDisconnect('google')} variant="outline" className="flex-1">
                        Disconnect
                     </Button>
                   </div>

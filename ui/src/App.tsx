@@ -869,16 +869,35 @@ function App() {
     window.open(`http://${host}:${port}/${base}/auth/login?t=${Date.now()}`, '_blank', 'width=600,height=700')
   }
 
-  const handleGoogleLogout = async () => {
+  const handleDisconnect = async (provider?: 'google' | 'openai_assistants') => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    const url = `http://${host}:${port}/${base}/auth/logout`
+    let url = `http://${host}:${port}/${base}/auth/logout`
+    
+    if (provider) {
+        url += `?provider=${provider}`
+    }
     
     try {
       const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      toast.success('Disconnected from Google Account')
+      
+      if (provider === 'google') {
+        toast.success('Disconnected from Google Account')
+      } else if (provider === 'openai_assistants') {
+        toast.success('Disconnected from OpenAI Assistants')
+      } else {
+        toast.success('Disconnected from all providers')
+      }
+      
+      // Refresh active mode
+      const modeRes = await fetch(`http://${host}:${port}/${base}/config/mode`)
+      if (modeRes.ok) {
+          const data = await modeRes.json()
+          setActiveMode(data.mode)
+      }
+      
     } catch (error) {
       toast.error('Failed to disconnect')
     }
@@ -1562,7 +1581,7 @@ function App() {
               onVertexConfigChange={setVertexConfig}
               onSaveVertexConfig={handleSaveVertexConfig}
               onGoogleLogin={handleGoogleLogin}
-              onGoogleLogout={handleGoogleLogout}
+              onDisconnect={handleDisconnect}
               openaiConfig={openaiConfig}
               openaiModels={openaiModels}
               onOpenaiConfigChange={setOpenaiConfig}

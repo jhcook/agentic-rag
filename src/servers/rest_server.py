@@ -1370,15 +1370,35 @@ def auth_callback(request: Request, code: str, _oauth_state: Optional[str] = Non
         """, status_code=500)
 
 @app.get(f"/{pth}/auth/logout")
-def auth_logout(_request: Request):
-    """Log out by deleting the stored token."""
+def auth_logout(request: Request, provider: Optional[str] = None):
+    """
+    Log out by deleting the stored token.
+    
+    Args:
+        provider: Optional provider to logout (google, openai_assistants). 
+                  If omitted, logs out all.
+    """
     try:
-        logger.info("Logout requested. Checking for token file...")
-        auth_manager.logout()
+        logger.info("Logout requested (provider=%s)", provider)
+        
+        # Only logout auth_manager (Google) if provider is None or 'google'
+        if not provider or provider == 'google':
+            auth_manager.logout()
+            
         if hasattr(backend, 'logout'):
-            backend.logout()
+            # Check if backend.logout accepts provider argument
+            sig = inspect.signature(backend.logout)
+            if "provider" in sig.parameters:
+                backend.logout(provider=provider)
+            else:
+                # Fallback for backends that don't support granular logout
+                if not provider:
+                    backend.logout()
+                else:
+                    logger.warning("Backend does not support granular logout for provider: %s", provider)
+                    
         logger.info("Logout successful")
-        return JSONResponse({"status": "logged_out"})
+        return JSONResponse({"status": "logged_out", "provider": provider})
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error logging out: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e

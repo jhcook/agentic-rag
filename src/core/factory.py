@@ -412,6 +412,13 @@ class RemoteBackend:
         resp.raise_for_status()
         return resp.json()
 
+    def logout(self) -> None:
+        """Log out from the remote backend."""
+        try:
+            requests.get(f"{self.base_url}/auth/logout", timeout=self.timeout)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.warning("Remote logout failed: %s", e)
+
 class HybridBackend:  # pylint: disable=too-many-public-methods
     """
     A backend that wraps multiple implementations and allows switching between them.
@@ -806,6 +813,64 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         if hasattr(self._backend, "create_drive_folder"):
             return self._backend.create_drive_folder(name, parent_id)
         return {"error": "Folder creation not supported by current backend"}
+
+    def logout(self, provider: str = None) -> None:
+        """
+        Logout from backends.
+        
+        Args:
+            provider: Optional provider to logout from ("google", "openai_assistants").
+                      If None, logs out from all.
+        """
+        logger.info("HybridBackend: Logging out... (provider=%s)", provider)
+        
+        if provider:
+            # Targeted logout
+            if provider == "google" and "google" in self.backends:
+                try:
+                    self.backends["google"].logout()
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Error logging out Google backend: %s", exc)
+                
+                # If current mode was Google, fall back
+                if self.current_mode.startswith("google") or self.current_mode == "vertex_ai_search":
+                    if "local" in self.backends:
+                        self.current_mode = "local"
+                        logger.info("HybridBackend: Switched to local after Google logout")
+                    else:
+                        self.current_mode = "none"
+            
+            elif provider == "openai_assistants" and "openai_assistants" in self.backends:
+                try:
+                    self.backends["openai_assistants"].logout()
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Error logging out OpenAI backend: %s", exc)
+                
+                # If current mode was OpenAI, fall back
+                if self.current_mode == "openai_assistants":
+                    if "local" in self.backends:
+                        self.current_mode = "local"
+                        logger.info("HybridBackend: Switched to local after OpenAI logout")
+                    else:
+                        self.current_mode = "none"
+        else:
+            # Global logout (all backends)
+            for backend in self.backends.values():
+                if hasattr(backend, "logout"):
+                    try:
+                        backend.logout()
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        logger.error("Error logging out backend: %s", exc)
+
+            # Reset mode if we were in a Google mode
+            if self.current_mode.startswith("google") or self.current_mode == "vertex_ai_search" or self.current_mode == "openai_assistants":
+                # Try to fall back to local
+                if "local" in self.backends:
+                    self.current_mode = "local"
+                    logger.info("HybridBackend: Switched to local after global logout")
+                else:
+                    self.current_mode = "none"
+                    logger.info("HybridBackend: Switched to none after global logout")
 
     def reload_auth(self) -> None:
         """Reload authentication for the current backend if supported."""
