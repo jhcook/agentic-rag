@@ -268,6 +268,8 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
   }
 
   const fetchLogs = async (source: 'ollama' | 'mcp' | 'rest') => {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 15000)
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
@@ -283,7 +285,8 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     
     try {
       const url = `http://${host}:${port}/${base}/logs/${logType}?lines=500`
-      const res = await fetch(url, { cache: 'no-store' })
+      const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+      clearTimeout(timeoutId)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       
       const data = await res.json()

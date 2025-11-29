@@ -88,14 +88,16 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   const [restMetricsError, setRestMetricsError] = useState<string | null>(null)
 
   useEffect(() => {
-    const controller = new AbortController()
     const fetchRestMetrics = async () => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
       const url = `http://${host}:${port}/metrics`
 
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+        clearTimeout(timeoutId)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const body = await res.text()
         const metrics: RestMetrics = {
@@ -213,6 +215,8 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
     }
 
     const fetchHealth = async () => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
       const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
@@ -220,6 +224,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
 
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+        clearTimeout(timeoutId)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         setHealth({
@@ -242,7 +247,6 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
     const id = setInterval(fetchHealth, 15000)
     const mid = setInterval(fetchRestMetrics, 15000)
     return () => {
-      controller.abort()
       clearInterval(id)
       clearInterval(mid)
     }
@@ -255,14 +259,16 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
   }, [config?.mcpHost, config?.mcpPort, config?.mcpPath])
 
   useEffect(() => {
-    const controller = new AbortController()
     const fetchQuality = async () => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
       const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/${base}/metrics/quality`
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+        clearTimeout(timeoutId)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         setQualityMetrics({
@@ -283,20 +289,21 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
     fetchQuality()
     const id = setInterval(fetchQuality, 20000)
     return () => {
-      controller.abort()
       clearInterval(id)
     }
   }, [config?.ragHost, config?.ragPort, config?.ragPath])
 
   useEffect(() => {
-    const controller = new AbortController()
     const fetchToday = async () => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
       const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
       const url = `http://${host}:${port}/${base}/metrics/today`
       try {
         const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+        clearTimeout(timeoutId)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         setTodayMetrics({
@@ -313,7 +320,6 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
     fetchToday()
     const id = setInterval(fetchToday, 20000)
     return () => {
-      controller.abort()
       clearInterval(id)
     }
   }, [config?.ragHost, config?.ragPort, config?.ragPath])
@@ -479,7 +485,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
                   <Badge variant="secondary" className="text-xs">
                     {searchEmbedMetrics ? 'Active' : 'Unknown'}
                   </Badge>
-                </div>
+          </div>
               </CardContent>
             </Card>
 
@@ -586,7 +592,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
                   <Badge variant="secondary" className="text-xs">
                     {restInflight !== null ? 'Active' : 'Unknown'}
                   </Badge>
-                </div>
+          </div>
               </CardContent>
             </Card>
 

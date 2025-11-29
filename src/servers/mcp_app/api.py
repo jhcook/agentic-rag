@@ -19,6 +19,11 @@ from src.core.extractors import extract_text_from_file, extract_text_from_bytes
 from src.core.store import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
 from src.core.factory import get_rag_backend
+from src.core.models import (
+    UpsertReq, IndexPathReq, SearchReq, VectorSearchReq,
+    GroundedAnswerReq, RerankReq, VerifyReq, DeleteDocsReq,
+    IndexUrlReq, LoggingConfigReq
+)
 
 rest_api = FastAPI(title="mcp-rest-shim")
 
@@ -29,17 +34,13 @@ backend = get_rag_backend()
 # Do not add middleware here as it conflicts with Starlette mounting
 
 @rest_api.post("/upsert_document")
-async def rest_upsert_document(request: Request):
-    body = await request.json()
-    uri = body.get("uri", "")
-    text = body.get("text", "")
-    binary_b64 = body.get("binary_base64")
-    if not uri:
+async def rest_upsert_document(req: UpsertReq):
+    if not req.uri:
         return JSONResponse({"error": "uri is required"}, status_code=422)
-    if not text and not binary_b64:
+    if not req.text and not req.binary_base64:
         return JSONResponse({"error": "either text or binary_base64 is required"}, status_code=422)
     try:
-        job_payload = {"uri": uri, "text": text, "binary_base64": binary_b64}
+        job_payload = {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64}
         job_id = worker_mod.enqueue_job(job_payload, job_type="upsert_document")
         return JSONResponse({"job_id": job_id, "status": "queued"})
     except Exception as exc:
@@ -64,27 +65,20 @@ async def rest_extract(request: Request):
 
 
 @rest_api.post("/index_path")
-async def rest_index_path(request: Request):
-    body = await request.json()
-    path = body.get("path", "")
-    glob = body.get("glob", "**/*.txt")
+async def rest_index_path(req: IndexPathReq):
     try:
-        job_id = worker_mod.enqueue_job({"path": path, "glob": glob}, job_type="index_path")
+        job_id = worker_mod.enqueue_job({"path": req.path, "glob": req.glob}, job_type="index_path")
         return JSONResponse({"job_id": job_id, "status": "queued"})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @rest_api.post("/search")
-async def rest_search(request: Request):
-    body = await request.json()
-    query = body.get("query", "")
-    async_mode = body.get("async", False)
-    timeout_seconds = int(body.get("timeout_seconds", 300))
+async def rest_search(req: SearchReq):
     start = time.time()
     try:
         # Async mode: queue and return job id immediately with heartbeat messages
-        if async_mode:
+        if req.async_mode:
             job_id = str(uuid.uuid4())
             state = {"id": job_id, "status": "running", "message": "hold tight", "result": None, "error": None}
             JOBS, JOBS_LOCK = worker_mod.get_search_jobs()
@@ -98,7 +92,18 @@ async def rest_search(request: Request):
                     (60, "what a mission"),
                 ]
                 try:
-                    result_local = backend.search(query, top_k=5)
+                    # Build kwargs from request
+                    kwargs = {}
+                    if req.top_k is not None:
+                        kwargs['top_k'] = req.top_k
+                    if req.model is not None:
+                        kwargs['model'] = req.model
+                    if req.temperature is not None:
+                        kwargs['temperature'] = req.temperature
+                    if req.max_tokens is not None:
+                        kwargs['max_tokens'] = req.max_tokens
+                    
+                    result_local = backend.search(req.query, **kwargs)
                     # Normalize result
                     if hasattr(result_local, "model_dump"):
                         result_local = result_local.model_dump()
@@ -139,10 +144,11 @@ async def rest_search(request: Request):
                         with JOBS_LOCK:
                             if JOBS.get(job_id, {}).get("status") == "running":
                                 JOBS[job_id]["message"] = msg
-                    if elapsed >= timeout_seconds:
+                    if elapsed >= (req.timeout_seconds or 300):
                         # Timed out: return passages-only
                         try:
-                            passages = backend.search(query, top_k=5) #, max_context_chars=4000) - backend interface might not support max_context_chars
+                            # Fallback with same parameters but likely will fail or be partial
+                            passages = backend.search(req.query, top_k=req.top_k or 5)
                         except Exception as exc:
                             passages = {"error": str(exc)}
                         with JOBS_LOCK:
@@ -158,7 +164,18 @@ async def rest_search(request: Request):
             return JSONResponse({"job_id": job_id, "status": "queued"})
 
         # Sync path as before
-        result = await anyio.to_thread.run_sync(backend.search, query)
+        # Build kwargs
+        kwargs = {}
+        if req.top_k is not None:
+            kwargs['top_k'] = req.top_k
+        if req.model is not None:
+            kwargs['model'] = req.model
+        if req.temperature is not None:
+            kwargs['temperature'] = req.temperature
+        if req.max_tokens is not None:
+            kwargs['max_tokens'] = req.max_tokens
+
+        result = await anyio.to_thread.run_sync(lambda: backend.search(req.query, **kwargs))
         # Normalize possible ModelResponse/dicts to JSON-serializable payload
         if hasattr(result, "model_dump"):
             result = result.model_dump()
@@ -171,49 +188,47 @@ async def rest_search(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 @rest_api.post("/vector_search")
-async def rest_vector_search(request: Request):
+async def rest_vector_search(req: VectorSearchReq):
     """Vector search endpoint that returns raw search results without LLM synthesis."""
-    body = await request.json()
-    query = body.get("query", "")
-    k = int(body.get("k", 5))
     try:
         # Import rag_core to access vector_search helper
         from src.core import rag_core
-        results = await anyio.to_thread.run_sync(rag_core.vector_search, query, k)
+        results = await anyio.to_thread.run_sync(rag_core.vector_search, req.query, req.k)
         return JSONResponse({"results": results})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 @rest_api.post("/grounded_answer")
-async def rest_grounded_answer(request: Request):
-    body = await request.json()
-    question = body.get("question", "")
-    k = int(body.get("k", 3))
+async def rest_grounded_answer(req: GroundedAnswerReq):
     try:
-        result = await anyio.to_thread.run_sync(backend.grounded_answer, question, k)
+        # Pass all optional args
+        kwargs = {"k": req.k or 3}
+        if req.model:
+             kwargs["model"] = req.model
+        if req.temperature is not None:
+            kwargs["temperature"] = req.temperature
+        if req.max_tokens is not None:
+            kwargs["max_tokens"] = req.max_tokens
+        if req.config:
+            kwargs.update(req.config)
+
+        result = await anyio.to_thread.run_sync(lambda: backend.grounded_answer(req.question, **kwargs))
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 @rest_api.post("/rerank")
-async def rest_rerank(request: Request):
-    body = await request.json()
-    query = body.get("query", "")
-    passages = body.get("passages", [])
+async def rest_rerank(req: RerankReq):
     try:
-        result = await anyio.to_thread.run_sync(backend.rerank, query, passages)
+        result = await anyio.to_thread.run_sync(backend.rerank, req.query, req.passages)
         return JSONResponse({"results": result})
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 @rest_api.post("/verify_grounding")
-async def rest_verify_grounding(request: Request):
-    body = await request.json()
-    question = body.get("question", "")
-    draft_answer = body.get("draft_answer", "")
-    citations = body.get("citations", [])
+async def rest_verify_grounding(req: VerifyReq):
     try:
-        result = await anyio.to_thread.run_sync(backend.verify_grounding, question, draft_answer, citations)
+        result = await anyio.to_thread.run_sync(backend.verify_grounding, req.question, req.draft_answer, req.citations)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -235,11 +250,9 @@ async def rest_documents(_request: Request):
 
 
 @rest_api.post("/documents/delete")
-async def rest_documents_delete(request: Request):
+async def rest_documents_delete(req: DeleteDocsReq):
     try:
-        body = await request.json()
-        uris = body.get("uris", [])
-        result = await anyio.to_thread.run_sync(backend.delete_documents, uris)
+        result = await anyio.to_thread.run_sync(backend.delete_documents, req.uris)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -270,42 +283,31 @@ async def rest_jobs():
 
 
 @rest_api.post("/index_url")
-async def rest_index_url(request: Request):
+async def rest_index_url(req: IndexUrlReq):
     """Index a remote URL by delegating to MCP server tool."""
-    try:
-        body = await request.json()
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        return JSONResponse({"error": f"Invalid JSON: {exc}"}, status_code=400)
-    
-    url = body.get("url")
-    doc_id = body.get("doc_id")
-    query = body.get("query")
-    if not url and not query:
+    if not req.url and not req.query:
         return JSONResponse({"error": "url is required"}, status_code=422)
     
     try:
         from src.servers.mcp_server import index_url_tool  # pylint: disable=import-outside-toplevel
-        result = await anyio.to_thread.run_sync(index_url_tool, url, doc_id, query)
+        result = await anyio.to_thread.run_sync(index_url_tool, req.url, req.doc_id, req.query)
         return JSONResponse(result)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @rest_api.post("/config/logging")
-async def rest_update_logging(request: Request):
+async def rest_update_logging(req: LoggingConfigReq):
     """Update logging level dynamically based on debug mode setting."""
     try:
-        body = await request.json()
-        debug_mode = bool(body.get("debug_mode", False))
-        
         from src.servers.mcp_app.logging_config import update_logging_level
-        update_logging_level(debug_mode)
+        update_logging_level(req.debug_mode)
         
         import logging
         return JSONResponse({
             "status": "updated", 
-            "debug_mode": debug_mode, 
-            "log_level": logging.getLevelName(logging.DEBUG if debug_mode else logging.INFO)
+            "debug_mode": req.debug_mode, 
+            "log_level": logging.getLevelName(logging.DEBUG if req.debug_mode else logging.INFO)
         })
     except Exception as exc:
         import logging
