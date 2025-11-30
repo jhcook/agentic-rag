@@ -155,6 +155,7 @@ class AppConfigReq(BaseModel):
     rag_port: str = Field(alias="ragPort")
     rag_path: str = Field(alias="ragPath")
     debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
+    allow_local_backend: Optional[bool] = Field(default=True, alias="allowLocalBackend")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -171,4 +172,3 @@ class QualityMetricsResp(BaseModel):
 class LoadStoreReq(BaseModel):
     """Request model for sending the store to an LLM."""
     _ : Optional[bool] = True
-

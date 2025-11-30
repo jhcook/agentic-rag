@@ -294,6 +294,7 @@ PYTHON_CMD="python3.11"
 RECREATE_VENV=false
 SKIP_MODEL_PULL=false
 SKIP_OLLAMA=false
+ALLOW_LOCAL_BACKEND=true
 START_UI=true
 START_REST=true
 ROLE="monolith"
@@ -352,6 +353,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$SKIP_OLLAMA" == true ]]; then
+    ALLOW_LOCAL_BACKEND=false
+fi
+
 # Apply role-based configuration
 case $ROLE in
     monolith)
@@ -391,6 +396,9 @@ if [[ "$SKIP_OLLAMA" == true ]]; then
 fi
 
 ARCH_NAME=$(uname -m)
+
+# Export local backend flag so downstream scripts know the intention
+export ALLOW_LOCAL_BACKEND
 
 # Set default values if not in .env
 OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://127.0.0.1:11434}

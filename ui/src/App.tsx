@@ -65,6 +65,7 @@ type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
+  allowLocalBackend?: boolean
 }
 
 type IndexJob = {
@@ -118,6 +119,7 @@ function App() {
     ragPort: import.meta.env.VITE_RAG_PORT || '8001',
     ragPath: import.meta.env.VITE_RAG_PATH || 'api',
     debugMode: false,
+    allowLocalBackend: true,
   })
   const [queryText, setQueryText] = useState('')
   const [searching, setSearching] = useState(false)
@@ -828,7 +830,8 @@ function App() {
         ragHost: '127.0.0.1',
         ragPort: '8001',
         ragPath: 'api',
-        debugMode: false
+        debugMode: false,
+        allowLocalBackend: true,
       }
       return {
         ...currentConfig,

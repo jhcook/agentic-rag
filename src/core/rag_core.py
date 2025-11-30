@@ -100,6 +100,20 @@ def _get_config_value(json_key: str, env_key: str, default: str) -> str:
     """Get config value from settings.json or environment variable."""
     return _SETTINGS.get(json_key) or os.getenv(env_key, default)
 
+
+def is_local_backend_allowed() -> bool:
+    """Check whether the local (Ollama) backend is enabled."""
+    setting = _SETTINGS.get("allowLocalBackend")
+    if isinstance(setting, bool):
+        return setting
+    if setting is not None:
+        flag = str(setting).lower()
+        return flag not in {"0", "false", "no"}
+    env_val = os.getenv("ALLOW_LOCAL_BACKEND")
+    if env_val is not None:
+        return env_val.lower() not in {"0", "false", "no"}
+    return True
+
 EMBED_MODEL_NAME = _get_config_value(
     "embeddingModel",
     "EMBED_MODEL_NAME",

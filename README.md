@@ -202,6 +202,8 @@ Key configuration options in `.env`:
 
 Application settings like model selection, temperature, and search parameters can be modified at runtime without restarting the server. These settings are stored in `config/settings.json` and are **automatically reloaded** when saved via the **Settings Dashboard** in the web UI.
 
+- **Local backend toggle**: Save `"allowLocalBackend": false` in `config/settings.json` (or export `ALLOW_LOCAL_BACKEND=0`) to hide the Ollama/local option in the UI without disabling OpenAI/Google modes. Re-enable it later via the same flag or the UI toggle added to the Settings dashboard.
+
 Available runtime settings:
 - **Model Selection**: Switch between available Ollama models (auto-reloaded on save)
 - **Temperature**: Adjust generation creativity
@@ -210,6 +212,8 @@ Available runtime settings:
 - **Embedding Models**: Select sentence transformer models for embeddings
 
 **Note**: Changes to `config/settings.json` are picked up immediately for new requests - no server restart needed!
+
+You can hide or redisplay the local (Ollama) backend via the `allowLocalBackend` flag in `config/settings.json` or by toggling "Allow Local Backend" in the Settings dashboard. Even when you run `start.sh --skip-ollama`, you can re-enable the backend at runtime by setting `allowLocalBackend: true` and saving the config—the server honors that value even if the skip flag was used earlier.
 
 ## Quick Start
 
@@ -261,9 +265,9 @@ The `start.sh` script supports different roles for flexible deployment:
 - `--skip-ui`: Skip starting the UI (if applicable)
 - `--env FILE`: Use a custom environment file
 
-`start.py`/`start.sh` install `torch` up front: `x86_64` systems get `torch==2.2.2` from PyPI, while other architectures download the latest compatible wheel directly from `https://download.pytorch.org/whl/cpu`. You don't need to manage `torch` via `requirements.txt` —just run the launcher and the right build is pulled automatically before the remaining packages install.
+`start.py`/`start.sh` install `torch` up front: `x86_64` systems get `torch==2.2.2` from PyPI, while other architectures download the latest compatible wheel directly from `https://download.pytorch.org/whl/cpu`. You don't need to manage `torch` via `requirements.txt` — just run the launcher and the right build is pulled automatically before the remaining packages install.
 
-If you still see warnings about `_ARRAY_API`, the launcher already exports `PYTORCH_ENABLE_NUMPY_ARRAY_API=1` prior to importing torch, so as long as your virtualenv has `numpy>=1.26.4` (installed via `requirements.txt`), NumPy should initialize cleanly.
+If you still see warnings about `_ARRAY_API`, the launcher exports `PYTORCH_ENABLE_NUMPY_ARRAY_API=1` before torch loads so the NumPy array API initializes cleanly (with `numpy>=1.26.4` from `requirements.txt`).
 
 To stop all services:
 

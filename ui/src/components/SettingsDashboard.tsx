@@ -123,11 +123,36 @@ export function SettingsDashboard({
               </div>
               <p className="text-sm text-muted-foreground">Enable verbose debug logging</p>
             </div>
+          <Switch
+            id="debug-mode"
+            checked={config?.debugMode || false}
+            onCheckedChange={(checked) => onConfigChange('debugMode', checked)}
+          />
+          <div className="flex items-center justify-between p-4 rounded-lg border border-border bg-muted/20">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="allow-local-backend">Allow Local Backend</Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                        <Info className="h-4 w-4" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p className="max-w-xs">Toggle whether the Ollama/local backend appears in the provider selector.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <p className="text-sm text-muted-foreground">Disable local mode (e.g., when running with --skip-ollama)</p>
+            </div>
             <Switch
-              id="debug-mode"
-              checked={config?.debugMode || false}
-              onCheckedChange={(checked) => onConfigChange('debugMode', checked)}
+              id="allow-local-backend"
+              checked={config?.allowLocalBackend ?? true}
+              onCheckedChange={(checked) => onConfigChange('allowLocalBackend', checked)}
             />
+          </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">

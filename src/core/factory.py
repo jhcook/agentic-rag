@@ -13,10 +13,16 @@ import psutil
 import requests
 
 from src.core.interfaces import RAGBackend
+from src.core.rag_core import is_local_backend_allowed
 
 # Optional feature toggles
 DISABLE_LOCAL_BACKEND = os.getenv("DISABLE_LOCAL_BACKEND", "").lower() in {"1", "true", "yes"}
-DISABLE_OLLAMA = os.getenv("SKIP_OLLAMA", "").lower() in {"1", "true", "yes"} or DISABLE_LOCAL_BACKEND
+# Helper to determine whether local (Ollama) backend should be enabled.
+def _local_backend_enabled() -> bool:
+    """Return True if the local backend is permitted by settings or env."""
+    if is_local_backend_allowed():
+        return True
+    return not DISABLE_LOCAL_BACKEND
 
 # Initialize optional modules to None
 local_core = None  # pylint: disable=invalid-name
@@ -32,8 +38,10 @@ try:
     from src.core.extractors import extract_text_from_file
     HAS_LOCAL_CORE = True
     extract_text_from_file_fn = extract_text_from_file
+    rag_core_module = local_core
 except ImportError:
     HAS_LOCAL_CORE = False
+    rag_core_module = None
 
 # Import Google implementation
 try:
@@ -276,7 +284,6 @@ class LocalBackend:
     def list_models(self) -> List[str]:
         """List available Ollama models."""
         try:
-            import requests  # pylint: disable=import-outside-toplevel
             ollama_base = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
             response = requests.get(f"{ollama_base}/api/tags", timeout=5)
             if response.ok:
@@ -458,10 +465,10 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
         # Start in "none" mode if Ollama is disabled to prevent showing local initially
-        self.current_mode = "none" if DISABLE_OLLAMA else "local"
+        self.current_mode = "none" if not _local_backend_enabled() else "local"
 
         # Initialize Local
-        if HAS_LOCAL_CORE and not DISABLE_OLLAMA:
+        if HAS_LOCAL_CORE and _local_backend_enabled():
             try:
                 self.backends["local"] = LocalBackend()
                 logger.info("HybridBackend: LocalBackend initialized")
@@ -487,8 +494,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                     "HybridBackend: Failed to init OpenAIAssistantsBackend: %s", exc)
 
         # Default to what's available (prefer requested mode, otherwise any available)
-        # But if DISABLE_OLLAMA is set, start in "none" mode unless another backend is explicitly requested
-        if DISABLE_OLLAMA and initial_mode == "local":
+        # But if the local backend is disabled, start in "none" mode unless another backend is explicitly requested
+        if not _local_backend_enabled() and initial_mode == "local":
             # When Ollama is disabled, don't try to use local mode
             if self.backends:
                 self.current_mode = next(iter(self.backends.keys()))
@@ -498,7 +505,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 self.current_mode = "none"
         elif initial_mode in self.backends:
             self.current_mode = initial_mode
-        elif "local" in self.backends:
+        elif "local" in self.backends and _local_backend_enabled():
             self.current_mode = "local"
         elif self.backends:
             self.current_mode = next(iter(self.backends.keys()))
@@ -557,10 +564,10 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def reload_backend(self, backend_name: str) -> Dict[str, Any]:
         """
         Reload a specific backend to pick up configuration changes.
-        
+
         Args:
             backend_name: Name of backend to reload ("openai_assistants", "google", etc.)
-            
+
         Returns:
             Dict with status and message
         """
@@ -568,36 +575,32 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             if backend_name == "openai_assistants":
                 if not HAS_OPENAI_ASSISTANTS or not OpenAIAssistantsBackend:
                     return {"status": "error", "message": "OpenAI Assistants backend not available"}
-                
-                # Reinitialize the backend
-                old_backend = self.backends.get("openai_assistants")
+
                 self.backends["openai_assistants"] = OpenAIAssistantsBackend()
                 logger.info("HybridBackend: OpenAI Assistants backend reloaded")
-                
-                # If this was the current mode and reload failed, fall back to local
+
                 if self.current_mode == "openai_assistants":
                     if not self.backends["openai_assistants"].configured:
                         if "local" in self.backends:
                             self.current_mode = "local"
                             logger.warning("OpenAI backend not configured, falling back to local")
-                
+
                 return {
-                    "status": "success", 
+                    "status": "success",
                     "message": "OpenAI Assistants backend reloaded",
-                    "configured": self.backends["openai_assistants"].configured
+                    "configured": self.backends["openai_assistants"].configured,
                 }
-                
-            elif backend_name == "google":
+
+            if backend_name == "google":
                 if not HAS_GOOGLE_BACKEND or not GoogleGeminiBackend:
                     return {"status": "error", "message": "Google backend not available"}
-                
+
                 self.backends["google"] = GoogleGeminiBackend()
                 logger.info("HybridBackend: Google backend reloaded")
                 return {"status": "success", "message": "Google backend reloaded"}
-                
-            else:
-                return {"status": "error", "message": f"Backend '{backend_name}' cannot be reloaded"}
-                
+
+            return {"status": "error", "message": f"Backend '{backend_name}' cannot be reloaded"}
+
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to reload backend %s: %s", backend_name, exc)
             return {"status": "error", "message": str(exc)}
@@ -605,25 +608,27 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def get_available_modes(self) -> List[str]:
         """Get list of available backend modes (only properly configured ones)."""
         modes = []
-        
+
         # Local backend - check if Ollama is reachable (only if not disabled)
-        if "local" in self.backends and not DISABLE_OLLAMA:
+        if "local" in self.backends and _local_backend_enabled():
+            ollama_base = "http://127.0.0.1:11434"
+            if rag_core_module is not None:
+                ollama_base = getattr(rag_core_module, "OLLAMA_API_BASE", ollama_base)
             try:
-                import requests
-                response = requests.get("http://127.0.0.1:11434/api/tags", timeout=2)
+                response = requests.get(f"{ollama_base.rstrip('/')}/api/tags", timeout=2)
                 if response.ok:
                     data = response.json()
-                    if data.get("models") and len(data["models"]) > 0:
+                    if data.get("models"):
                         modes.append("local")
             except Exception:
                 pass  # Ollama not available
-        
+
         # OpenAI Assistants - check if configured
         if "openai_assistants" in self.backends:
             backend = self.backends["openai_assistants"]
             if hasattr(backend, "configured") and backend.configured:
                 modes.append("openai_assistants")
-        
+
         # Google backends - delegate to backend's own check
         if "google" in self.backends:
             if hasattr(self.backends["google"], "get_available_modes"):
@@ -667,7 +672,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             if "none" not in self.backends:
                 self.backends["none"] = HybridBackend.NullBackend()
             self.current_mode = "none"
-        
+
         return modes
 
     @property
@@ -817,13 +822,13 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
     def logout(self, provider: str = None) -> None:
         """
         Logout from backends.
-        
+
         Args:
             provider: Optional provider to logout from ("google", "openai_assistants").
                       If None, logs out from all.
         """
         logger.info("HybridBackend: Logging out... (provider=%s)", provider)
-        
+
         if provider:
             # Targeted logout
             if provider == "google" and "google" in self.backends:
@@ -831,7 +836,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                     self.backends["google"].logout()
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     logger.error("Error logging out Google backend: %s", exc)
-                
+
                 # If current mode was Google, fall back
                 if self.current_mode.startswith("google") or self.current_mode == "vertex_ai_search":
                     if "local" in self.backends:
@@ -839,13 +844,13 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                         logger.info("HybridBackend: Switched to local after Google logout")
                     else:
                         self.current_mode = "none"
-            
+
             elif provider == "openai_assistants" and "openai_assistants" in self.backends:
                 try:
                     self.backends["openai_assistants"].logout()
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     logger.error("Error logging out OpenAI backend: %s", exc)
-                
+
                 # If current mode was OpenAI, fall back
                 if self.current_mode == "openai_assistants":
                     if "local" in self.backends:
