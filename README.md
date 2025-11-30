@@ -261,6 +261,10 @@ The `start.sh` script supports different roles for flexible deployment:
 - `--skip-ui`: Skip starting the UI (if applicable)
 - `--env FILE`: Use a custom environment file
 
+`start.py`/`start.sh` install `torch` up front: `x86_64` systems get `torch==2.2.2` from PyPI, while other architectures download the latest compatible wheel directly from `https://download.pytorch.org/whl/cpu`. You don't need to manage `torch` via `requirements.txt` —just run the launcher and the right build is pulled automatically before the remaining packages install.
+
+If you still see warnings about `_ARRAY_API`, the launcher already exports `PYTORCH_ENABLE_NUMPY_ARRAY_API=1` prior to importing torch, so as long as your virtualenv has `numpy>=1.26.4` (installed via `requirements.txt`), NumPy should initialize cleanly.
+
 To stop all services:
 
 ```bash

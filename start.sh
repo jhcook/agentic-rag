@@ -691,12 +691,20 @@ find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true
 echo -e "${GREEN}Bytecode cache cleared${NC}"
 
-# Optional torch pinning based on platform (Intel/x86_64 uses a CPU-friendly default)
+# Ensure PyTorch enables the NumPy array API so the `_ARRAY_API` warning disappears when torch loads NumPy.
+export PYTORCH_ENABLE_NUMPY_ARRAY_API=1
+
+# Optional torch pinning based on platform
 TORCH_VERSION=${TORCH_VERSION:-}
-TORCH_INDEX_URL=${TORCH_INDEX_URL:-}
-if [[ -z "$TORCH_VERSION" && "$ARCH_NAME" == "x86_64" ]]; then
-    TORCH_VERSION="2.2.2"
-    echo "Detected x86_64; preferring torch==$TORCH_VERSION (override with TORCH_VERSION env var)"
+TORCH_INDEX_URL=${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+if [[ -z "$TORCH_VERSION" ]]; then
+    if [[ "$ARCH_NAME" == "x86_64" ]]; then
+        TORCH_VERSION="2.2.2"
+        echo "Detected x86_64; preferring torch==$TORCH_VERSION (override with TORCH_VERSION env var)"
+    else
+        TORCH_VERSION="2.5.1"
+        echo "Detected non-x86; installing torch==$TORCH_VERSION from PyTorch wheels"
+    fi
 fi
 
 if [[ -n "$TORCH_VERSION" ]]; then
