@@ -85,11 +85,18 @@ export function ProviderSelector({ config }: { config: any }) {
     { value: 'vertex_ai_search', label: 'Vertex AI Agent', icon: Cloud },
   ]
 
-  const currentProvider = providers.find(p => p.value === modeData.mode) || 
+  const currentProvider = providers.find(p => p.value === modeData.mode) ||
     { value: modeData.mode || 'none', label: modeData.mode === 'none' ? 'No Provider' : (modeData.mode || 'No Provider'), icon: Server }
 
-  // Filter providers based on available modes from backend
-  const availableProviders = providers.filter(p => modeData.available_modes.includes(p.value))
+  const localAllowed = config?.allowLocalBackend ?? true
+
+  // Filter providers based on available modes from backend and local toggle
+  const availableProviders = providers.filter(p => {
+    if (p.value === 'local' && !localAllowed) {
+      return false
+    }
+    return modeData.available_modes.includes(p.value)
+  })
   
   // Check if current mode is actually available
   const isCurrentModeAvailable = modeData.available_modes.includes(modeData.mode)

@@ -55,6 +55,30 @@ def reload_settings() -> None:
     _SETTINGS = _load_settings()
     logger.info("Reloaded settings from config/settings.json")
 
+
+def disable_local_backend() -> None:
+    """Disable the local backend in settings.json and reload."""
+    settings_path = pathlib.Path("config/settings.json")
+    current_settings = {}
+    if settings_path.exists():
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                current_settings = json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning("Failed to read settings for update: %s", e)
+    
+    current_settings["allowLocalBackend"] = False
+    
+    try:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(current_settings, f, indent=2)
+        logger.info("Disabled local backend in settings.json")
+        reload_settings()
+    except IOError as e:
+        logger.error("Failed to write settings.json: %s", e)
+
+
 # Optional dependencies
 try:
     from tqdm import tqdm
@@ -527,7 +551,7 @@ def load_store():
                 except json.JSONDecodeError as exc:
                     logger.warning("load_store: %s", exc)
                     continue
-        
+
         with _STORE_LOCK:
             if _STORE is None:
                 _STORE = Store()

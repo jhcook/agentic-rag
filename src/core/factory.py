@@ -853,11 +853,24 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
                 # If current mode was OpenAI, fall back
                 if self.current_mode == "openai_assistants":
-                    if "local" in self.backends:
+                    if "local" in self.backends and _local_backend_enabled():
                         self.current_mode = "local"
                         logger.info("HybridBackend: Switched to local after OpenAI logout")
                     else:
                         self.current_mode = "none"
+
+            elif (provider == "local" or provider == "ollama") and "local" in self.backends:
+                try:
+                    if HAS_LOCAL_CORE and rag_core_module:
+                        rag_core_module.disable_local_backend()
+                        logger.info("Local backend disabled by request")
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Error disabling local backend: %s", exc)
+                
+                # If current mode was local, fall back to none
+                if self.current_mode == "local":
+                    self.current_mode = "none"
+                    logger.info("HybridBackend: Switched to none after local logout")
         else:
             # Global logout (all backends)
             for backend in self.backends.values():

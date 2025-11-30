@@ -155,6 +155,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activeMode, setActiveMode] = useState<string | null>(null)
+  const [availableModes, setAvailableModes] = useState<string[]>([])
   const getApiBase = useCallback(() => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
@@ -247,27 +248,27 @@ function App() {
     fetchAppConfig()
   }, []) // Run once on mount, using initial env vars to find server
 
-  // Fetch active mode
-  useEffect(() => {
-    const fetchMode = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      try {
-        const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
-        if (res.ok) {
-          const data = await res.json()
-          setActiveMode(data.mode || 'none')
-        }
-      } catch (e) {
-        console.error("Failed to fetch mode", e)
+  const fetchMode = useCallback(async () => {
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
+      if (res.ok) {
+        const data = await res.json()
+        setActiveMode(data.mode || 'none')
+        setAvailableModes(Array.isArray(data.available_modes) ? data.available_modes : [])
       }
+    } catch (e) {
+      console.error("Failed to fetch mode", e)
     }
+  }, [ollamaConfig])
+
+  useEffect(() => {
     fetchMode()
-    // Poll for mode changes
     const interval = setInterval(fetchMode, 5000)
     return () => clearInterval(interval)
-  }, [ollamaConfig])
+  }, [fetchMode])
 
   // Load conversations from localStorage on mount
   useEffect(() => {
@@ -840,16 +841,17 @@ function App() {
     })
   }
 
-  const handleSaveConfig = async () => {
+  const handleSaveConfig = async (configToSave?: OllamaConfig) => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+    const payload = configToSave || ollamaConfig
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ollamaConfig)
+        body: JSON.stringify(payload)
       })
       
       if (res.ok) {
@@ -872,7 +874,7 @@ function App() {
     window.open(`http://${host}:${port}/${base}/auth/login?t=${Date.now()}`, '_blank', 'width=600,height=700')
   }
 
-  const handleDisconnect = async (provider?: 'google' | 'openai_assistants') => {
+  const handleDisconnect = async (provider?: 'google' | 'openai_assistants' | 'local') => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
@@ -890,16 +892,22 @@ function App() {
         toast.success('Disconnected from Google Account')
       } else if (provider === 'openai_assistants') {
         toast.success('Disconnected from OpenAI Assistants')
+        setOpenaiConfig({
+          apiKey: '',
+          model: 'gpt-4-turbo-preview',
+          assistantId: ''
+        })
+        setOpenaiModels([])
+      } else if (provider === 'local') {
+        toast.success('Disconnected from Local/Ollama Backend')
+        const updatedConfig = { ...ollamaConfig, allowLocalBackend: false }
+        setOllamaConfig(updatedConfig)
+        await handleSaveConfig(updatedConfig)
       } else {
         toast.success('Disconnected from all providers')
       }
       
-      // Refresh active mode
-      const modeRes = await fetch(`http://${host}:${port}/${base}/config/mode`)
-      if (modeRes.ok) {
-          const data = await modeRes.json()
-          setActiveMode(data.mode)
-      }
+      await fetchMode()
       
     } catch (error) {
       toast.error('Failed to disconnect')
@@ -1592,6 +1600,7 @@ function App() {
               onTestOpenAIConnection={handleTestOpenAIConnection}
               onSwitchBackend={handleSwitchBackend}
               activeMode={activeMode}
+              availableModes={availableModes}
             />
           </TabsContent>
         </Tabs>

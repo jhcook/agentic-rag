@@ -35,6 +35,7 @@ export type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
+  allowLocalBackend?: boolean
 }
 
 export type VertexConfig = {
@@ -58,7 +59,7 @@ interface SettingsDashboardProps {
   onVertexConfigChange: (config: VertexConfig) => void
   onSaveVertexConfig: () => void
   onGoogleLogin: () => void
-  onDisconnect: (provider?: 'google' | 'openai_assistants') => void
+  onDisconnect: (provider?: 'google' | 'openai_assistants' | 'local') => void
   openaiConfig: OpenAIConfig
   openaiModels: string[]
   onOpenaiConfigChange: (config: OpenAIConfig) => void
@@ -66,6 +67,7 @@ interface SettingsDashboardProps {
   onTestOpenAIConnection: () => void
   onSwitchBackend: (mode: string) => void
   activeMode?: string | null
+  availableModes: string[]
 }
 
 export function SettingsDashboard({
@@ -84,15 +86,25 @@ export function SettingsDashboard({
   onSaveOpenAIConfig,
   onTestOpenAIConnection,
   onSwitchBackend,
-  activeMode = 'local'
+  activeMode = 'local',
+  availableModes = []
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
   const [openaiExpanded, setOpenaiExpanded] = useState(false)
   const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
+  const localAvailable = availableModes.includes('local') && (config?.allowLocalBackend ?? true)
+  const openaiAvailable = availableModes.includes('openai_assistants')
+  const googleAvailable = availableModes.some((mode) => mode.startsWith('google') || mode === 'vertex_ai_search')
+
+  const handleSaveAll = () => {
+    onSaveConfig()
+    onSaveOpenAIConfig()
+    onSaveVertexConfig()
+  }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight mb-2">Settings</h2>
         <p className="text-muted-foreground">Configure AI providers and system preferences</p>
@@ -595,17 +607,25 @@ export function SettingsDashboard({
                   </div>
 
                   <div className="flex gap-3 pt-4 border-t border-border">
-                    <Button onClick={onTestConnection} variant="outline">
+                    <Button onClick={onTestConnection} variant="outline" className="flex-1">
                       <CheckCircle className="h-4 w-4 mr-2" />
                       Test Connection
                     </Button>
-                    <Button onClick={onSaveConfig} variant="outline">
-                      <GearSix className="h-4 w-4 mr-2" />
-                      Save Configuration
+                    <Button
+                      onClick={() => onSwitchBackend('local')}
+                      className="flex-1"
+                      disabled={!localAvailable || activeMode === 'local'}
+                    >
+                      Use this Backend
                     </Button>
-                    {activeMode !== 'local' && (
-                      <Button onClick={() => onSwitchBackend('local')}>
-                        Use this Backend
+                    {activeMode === 'local' && (
+                      <Button
+                        onClick={() => onDisconnect('local')}
+                        variant="outline"
+                        className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500"
+                        disabled={!localAvailable}
+                      >
+                        Disconnect
                       </Button>
                     )}
                   </div>
@@ -701,25 +721,26 @@ export function SettingsDashboard({
                   </div>
 
                   <div className="flex gap-3">
-                    <Button onClick={onSaveOpenAIConfig} className="flex-1" variant="outline">
-                      <CheckCircle className="mr-2 h-4 w-4" />
-                      Save Configuration
-                    </Button>
                     <Button onClick={onTestOpenAIConnection} variant="outline" className="flex-1">
                       Test Connection
                     </Button>
-                  </div>
-                  <div className="flex gap-3">
                     {activeMode !== 'openai_assistants' && (
-                      <Button onClick={() => onSwitchBackend('openai_assistants')} className="flex-1">
+                      <Button
+                        onClick={() => onSwitchBackend('openai_assistants')}
+                        className="flex-1"
+                        disabled={!openaiAvailable}
+                      >
                         Use this Backend
                       </Button>
                     )}
-                    {activeMode === 'openai_assistants' && (
-                      <Button onClick={() => onDisconnect('openai_assistants')} variant="outline" className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500">
-                        Disconnect
-                      </Button>
-                    )}
+                    <Button
+                      onClick={() => onDisconnect('openai_assistants')}
+                      variant="outline"
+                      className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500"
+                      disabled={!openaiAvailable}
+                    >
+                      Disconnect
+                    </Button>
                   </div>
                 </div>
               </CollapsibleContent>
@@ -759,7 +780,21 @@ export function SettingsDashboard({
                     <Button onClick={onGoogleLogin} className="flex-1">
                        Connect Google Account
                     </Button>
-                    <Button onClick={() => onDisconnect('google')} variant="outline" className="flex-1">
+                    {(activeMode !== 'google_gemini' && activeMode !== 'vertex_ai_search') && (
+                      <Button
+                        onClick={() => onSwitchBackend('google_gemini')}
+                        className="flex-1"
+                        disabled={!googleAvailable}
+                      >
+                        Use this Backend
+                      </Button>
+                    )}
+                    <Button
+                      onClick={() => onDisconnect('google')}
+                      variant="outline"
+                      className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500"
+                      disabled={!googleAvailable}
+                    >
                        Disconnect
                     </Button>
                   </div>
@@ -797,16 +832,6 @@ export function SettingsDashboard({
                         placeholder="my-datastore-id"
                       />
                     </div>
-                    
-                    <Button onClick={onSaveVertexConfig} size="sm" variant="secondary" className="w-full">
-                      Save Vertex Configuration
-                    </Button>
-                    
-                    {(activeMode !== 'google_gemini' && activeMode !== 'vertex_ai_search') && (
-                      <Button onClick={() => onSwitchBackend('google_gemini')} className="w-full">
-                        Use this Backend
-                      </Button>
-                    )}
                   </div>
                 </div>
               </CollapsibleContent>
@@ -814,6 +839,12 @@ export function SettingsDashboard({
           </Collapsible>
         </CardContent>
       </Card>
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-sm border-t border-border flex justify-center z-50">
+        <Button onClick={handleSaveAll} size="lg" className="shadow-lg">
+          <GearSix className="mr-2 h-5 w-5" />
+          Save All Configurations
+        </Button>
+      </div>
     </div>
   )
 }
