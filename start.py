@@ -443,7 +443,7 @@ def main():
     # Propagate skip flags to environment so downstream services pick them up
     if args.skip_ollama:
         os.environ["SKIP_OLLAMA"] = "1"
-        os.environ["DISABLE_LOCAL_BACKEND"] = "1"
+        os.environ["DISABLE_OLLAMA_BACKEND"] = "1"
     
     # Load environment
     env_file = ROOT_DIR / args.env

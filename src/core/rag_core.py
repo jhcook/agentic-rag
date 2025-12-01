@@ -49,34 +49,52 @@ def _load_settings() -> Dict[str, Any]:
 
 _SETTINGS = _load_settings()
 
+
+def _get_config_value(json_key: str, env_key: str, default: str) -> str:
+    """Get config value from settings.json or environment variable."""
+    return _SETTINGS.get(json_key) or os.getenv(env_key, default)
+
+
+def _apply_settings() -> None:
+    """Apply settings.json values to module-level configuration."""
+    global EMBED_MODEL_NAME  # pylint: disable=global-statement
+    global OLLAMA_API_BASE
+    global LLM_MODEL_NAME
+    global ASYNC_LLM_MODEL_NAME
+    global LLM_TEMPERATURE
+
+    EMBED_MODEL_NAME = _get_config_value(
+        "embeddingModel",
+        "EMBED_MODEL_NAME",
+        "sentence-transformers/paraphrase-MiniLM-L3-v2",
+    )
+    OLLAMA_API_BASE = _get_config_value(
+        "apiEndpoint",
+        "OLLAMA_API_BASE",
+        "http://127.0.0.1:11434",
+    )
+    LLM_MODEL_NAME = _get_config_value(
+        "model",
+        "LLM_MODEL_NAME",
+        "ollama/llama3.2:1b",
+    )
+    ASYNC_LLM_MODEL_NAME = os.getenv(
+        "ASYNC_LLM_MODEL_NAME",
+        LLM_MODEL_NAME.replace("ollama/", ""),
+    )
+    LLM_TEMPERATURE = float(
+        _get_config_value("temperature", "LLM_TEMPERATURE", "0.1")
+    )
+
+
+_apply_settings()
+
 def reload_settings() -> None:
     """Reload settings from config/settings.json."""
     global _SETTINGS  # pylint: disable=global-statement
     _SETTINGS = _load_settings()
+    _apply_settings()
     logger.info("Reloaded settings from config/settings.json")
-
-
-def disable_local_backend() -> None:
-    """Disable the local backend in settings.json and reload."""
-    settings_path = pathlib.Path("config/settings.json")
-    current_settings = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                current_settings = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning("Failed to read settings for update: %s", e)
-    
-    current_settings["allowLocalBackend"] = False
-    
-    try:
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, "w", encoding="utf-8") as f:
-            json.dump(current_settings, f, indent=2)
-        logger.info("Disabled local backend in settings.json")
-        reload_settings()
-    except IOError as e:
-        logger.error("Failed to write settings.json: %s", e)
 
 
 # Optional dependencies
@@ -120,34 +138,7 @@ if not logging.getLogger().handlers:
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
-def _get_config_value(json_key: str, env_key: str, default: str) -> str:
-    """Get config value from settings.json or environment variable."""
-    return _SETTINGS.get(json_key) or os.getenv(env_key, default)
-
-
-def is_local_backend_allowed() -> bool:
-    """Check whether the local (Ollama) backend is enabled."""
-    setting = _SETTINGS.get("allowLocalBackend")
-    if isinstance(setting, bool):
-        return setting
-    if setting is not None:
-        flag = str(setting).lower()
-        return flag not in {"0", "false", "no"}
-    env_val = os.getenv("ALLOW_LOCAL_BACKEND")
-    if env_val is not None:
-        return env_val.lower() not in {"0", "false", "no"}
-    return True
-
-EMBED_MODEL_NAME = _get_config_value(
-    "embeddingModel",
-    "EMBED_MODEL_NAME",
-    "sentence-transformers/paraphrase-MiniLM-L3-v2"
-)
 DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
-OLLAMA_API_BASE = _get_config_value("apiEndpoint", "OLLAMA_API_BASE", "http://127.0.0.1:11434")
-LLM_MODEL_NAME = _get_config_value("model", "LLM_MODEL_NAME", "ollama/llama3.2:1b")
-ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", LLM_MODEL_NAME.replace("ollama/", ""))
-LLM_TEMPERATURE = float(_get_config_value("temperature", "LLM_TEMPERATURE", "0.1"))
 DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))

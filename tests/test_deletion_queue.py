@@ -1,11 +1,11 @@
 """Test deletion queue functionality."""
 import time
-from src.core.factory import LocalBackend
+from src.core.factory import OllamaBackend
 
 
 def test_deletion_queue():
     """Test that deletions are queued and processed atomically."""
-    backend = LocalBackend()
+    backend = OllamaBackend()
     
     # Clear any existing documents to ensure clean test state
     backend.flush_cache()
@@ -52,7 +52,7 @@ def test_deletion_queue():
 
 def test_deletion_status_empty():
     """Test deletion status when queue is empty."""
-    backend = LocalBackend()
+    backend = OllamaBackend()
     status = backend.get_deletion_status()
     
     assert status["queue_size"] == 0

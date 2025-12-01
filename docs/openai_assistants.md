@@ -445,7 +445,7 @@ Switch between modes:
 
 ```python
 # Local for quick/private queries
-rag_backend.set_mode("local")
+rag_backend.set_mode("ollama")
 
 # OpenAI for complex reasoning
 rag_backend.set_mode("openai_assistants")

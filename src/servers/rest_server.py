@@ -52,6 +52,12 @@ from src.core.google_auth import GoogleAuthManager
 from src.core.extractors import extract_text_from_bytes
 from src.core import rag_core
 from src.core.rag_core import verify_grounding_simple
+from src.core.config_paths import (
+    CONFIG_DIR,
+    SETTINGS_PATH,
+    VERTEX_CONFIG_PATH,
+    LEGACY_VERTEX_CONFIG_PATH,
+)
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -71,7 +77,7 @@ for _h in log_handlers:
     _h.setFormatter(formatter)
 
 # Check for debug mode in config before setting log level
-CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "settings.json"
+CONFIG_FILE = SETTINGS_PATH
 _initial_debug_mode = False
 if CONFIG_FILE.exists():
     try:
@@ -1028,7 +1034,7 @@ def api_get_mode():
 
 @app.post(f"/{pth}/config/mode")
 def api_set_mode(req: ConfigModeReq):
-    """Set the backend mode (e.g., 'local', 'google')."""
+    """Set the backend mode (e.g., 'ollama', 'google')."""
     if hasattr(backend, "set_mode"):
         success = backend.set_mode(req.mode)
         if success:
@@ -1395,7 +1401,10 @@ def auth_logout(request: Request, provider: Optional[str] = None):
                 if not provider:
                     backend.logout()
                 else:
-                    logger.warning("Backend does not support granular logout for provider: %s", provider)
+                    logger.warning(
+                        "Backend does not support granular logout for provider: %s",
+                        provider,
+                    )
                     
         logger.info("Logout successful")
         return JSONResponse({"status": "logged_out", "provider": provider})
@@ -1603,16 +1612,32 @@ async def api_extract(file: UploadFile = File(...)):
 @app.post(f"/{pth}/config/app")
 def api_save_app_config(req: AppConfigReq):
     """Save application configuration."""
-    config_dir = Path("config")
+    config_dir = CONFIG_DIR
     config_dir.mkdir(exist_ok=True)
     config_path = config_dir / "settings.json"
 
     try:
+        payload = req.model_dump(by_alias=True)
+        required_fields = ("apiEndpoint", "model")
+
+        def _has_value(field_name: str) -> bool:
+            value = payload.get(field_name)
+            if isinstance(value, str):
+                return bool(value.strip())
+            return bool(value)
+
+        ollama_configured = all(_has_value(field) for field in required_fields)
+        payload["ollamaConfigured"] = ollama_configured
+        if ollama_configured:
+            payload["ragMode"] = payload.get("ragMode", "ollama")
+        else:
+            payload["ragMode"] = "none"
+
         with open(config_path, "w", encoding="utf-8") as f:
             # Dump using aliases to match frontend expectation when reading back,
             # or dump by name and let frontend handle it?
             # Frontend expects camelCase. Pydantic .model_dump(by_alias=True) does this.
-            json.dump(req.model_dump(by_alias=True), f, indent=2)
+            json.dump(payload, f, indent=2)
         
         # Reload configuration in rag_core
         try:
@@ -1631,6 +1656,11 @@ def api_save_app_config(req: AppConfigReq):
             _notify_mcp_logging_update(debug_mode)
         except Exception as notify_err:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to notify MCP server of logging change: %s", notify_err)
+
+        try:
+            backend.set_ollama_configured(ollama_configured)
+        except Exception as backend_err:  # pylint: disable=broad-exception-caught
+            logger.warning("Failed to update backend Ollama configuration state: %s", backend_err)
         
         return {"status": "saved"}
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -1640,7 +1670,7 @@ def api_save_app_config(req: AppConfigReq):
 @app.get(f"/{pth}/config/app")
 def api_get_app_config():
     """Get application configuration."""
-    config_path = Path("config") / "settings.json"
+    config_path = CONFIG_DIR / "settings.json"
     try:
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
@@ -1661,8 +1691,14 @@ def api_save_vertex_config(req: VertexConfigReq):
     }
     # Save to file
     try:
-        with open("vertex_config.json", "w", encoding="utf-8") as f:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
+        if LEGACY_VERTEX_CONFIG_PATH.exists():
+            try:
+                LEGACY_VERTEX_CONFIG_PATH.unlink()
+            except OSError as legacy_err:
+                logger.warning("Failed to remove legacy vertex config: %s", legacy_err)
         
         # Update current process env vars so it works immediately
         os.environ.update(config)
@@ -1676,9 +1712,19 @@ def api_save_vertex_config(req: VertexConfigReq):
 def api_get_vertex_config():
     """Get Vertex AI configuration."""
     try:
-        if os.path.exists("vertex_config.json"):
-            with open("vertex_config.json", "r", encoding="utf-8") as f:
+        if VERTEX_CONFIG_PATH.exists():
+            with open(VERTEX_CONFIG_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
+        if LEGACY_VERTEX_CONFIG_PATH.exists():
+            try:
+                with open(LEGACY_VERTEX_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    legacy_data = json.load(f)
+                with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(legacy_data, f, indent=2)
+                LEGACY_VERTEX_CONFIG_PATH.unlink(missing_ok=True)
+                return legacy_data
+            except Exception as legacy_err:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to migrate legacy vertex config: %s", legacy_err)
         return {
             "VERTEX_PROJECT_ID": os.getenv("VERTEX_PROJECT_ID", ""),
             "VERTEX_LOCATION": os.getenv("VERTEX_LOCATION", "us-central1"),

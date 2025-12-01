@@ -21,7 +21,7 @@ export function ModelSelector({ config, onModelSelect }: { config: any, onModelS
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState<string>("")
   const [loading, setLoading] = useState(false)
-  const [mode, setMode] = useState<string>("local")
+  const [mode, setMode] = useState<string>("ollama")
 
   // Fetch current mode to decide if we should show the selector
   useEffect(() => {

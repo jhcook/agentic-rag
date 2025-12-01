@@ -35,7 +35,6 @@ export type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
-  allowLocalBackend?: boolean
 }
 
 export type VertexConfig = {
@@ -59,7 +58,7 @@ interface SettingsDashboardProps {
   onVertexConfigChange: (config: VertexConfig) => void
   onSaveVertexConfig: () => void
   onGoogleLogin: () => void
-  onDisconnect: (provider?: 'google' | 'openai_assistants' | 'local') => void
+  onDisconnect: (provider?: 'google' | 'openai_assistants' | 'ollama') => void
   openaiConfig: OpenAIConfig
   openaiModels: string[]
   onOpenaiConfigChange: (config: OpenAIConfig) => void
@@ -86,14 +85,14 @@ export function SettingsDashboard({
   onSaveOpenAIConfig,
   onTestOpenAIConnection,
   onSwitchBackend,
-  activeMode = 'local',
+  activeMode = 'ollama',
   availableModes = []
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
   const [openaiExpanded, setOpenaiExpanded] = useState(false)
   const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
-  const localAvailable = availableModes.includes('local') && (config?.allowLocalBackend ?? true)
+  const ollamaAvailable = availableModes.includes('ollama')
   const openaiAvailable = availableModes.includes('openai_assistants')
   const googleAvailable = availableModes.some((mode) => mode.startsWith('google') || mode === 'vertex_ai_search')
 
@@ -140,31 +139,6 @@ export function SettingsDashboard({
             checked={config?.debugMode || false}
             onCheckedChange={(checked) => onConfigChange('debugMode', checked)}
           />
-          <div className="flex items-center justify-between p-4 rounded-lg border border-border bg-muted/20">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="allow-local-backend">Allow Local Backend</Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                        <Info className="h-4 w-4" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p className="max-w-xs">Toggle whether the Ollama/local backend appears in the provider selector.</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <p className="text-sm text-muted-foreground">Disable local mode (e.g., when running with --skip-ollama)</p>
-            </div>
-            <Switch
-              id="allow-local-backend"
-              checked={config?.allowLocalBackend ?? true}
-              onCheckedChange={(checked) => onConfigChange('allowLocalBackend', checked)}
-            />
-          </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
@@ -258,12 +232,12 @@ export function SettingsDashboard({
                       <Lightning className="h-5 w-5 text-primary" />
                     </div>
                     <div className="text-left">
-                      <p className="font-semibold">Ollama (Local)</p>
+                      <p className="font-semibold">Ollama</p>
                       <p className="text-sm text-muted-foreground">Run AI models locally</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {activeMode === 'local' && <Badge>Active</Badge>}
+                    {activeMode === 'ollama' && <Badge>Active</Badge>}
                     {ollamaExpanded ? (
                       <CaretUp className="h-5 w-5 text-muted-foreground" />
                     ) : (
@@ -612,18 +586,18 @@ export function SettingsDashboard({
                       Test Connection
                     </Button>
                     <Button
-                      onClick={() => onSwitchBackend('local')}
+                      onClick={() => onSwitchBackend('ollama')}
                       className="flex-1"
-                      disabled={!localAvailable || activeMode === 'local'}
+                      disabled={!ollamaAvailable || activeMode === 'ollama'}
                     >
                       Use this Backend
                     </Button>
-                    {activeMode === 'local' && (
+                    {activeMode === 'ollama' && (
                       <Button
-                        onClick={() => onDisconnect('local')}
+                        onClick={() => onDisconnect('ollama')}
                         variant="outline"
                         className="flex-1 bg-red-500/10 hover:bg-red-500/20 hover:text-red-500 border-red-500/20 text-red-500"
-                        disabled={!localAvailable}
+                        disabled={!ollamaAvailable}
                       >
                         Disconnect
                       </Button>

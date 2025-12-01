@@ -21,7 +21,7 @@ Everything runs on the same machine. The MCP server accesses the document store 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   AI Assistant  │────│   MCP Host      │────│   MCP Server    │
-│   (Copilot)     │    │   (MCPHost)     │    │   (LocalBackend)│
+│   (Copilot)     │    │   (MCPHost)     │    │  (OllamaBackend)│
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                               │
                               ▼

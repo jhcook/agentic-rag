@@ -13,7 +13,7 @@ The REST API supports specifying the LLM model and generation parameters on a pe
                         ↓
 ┌─────────────────────────────────────────────────────┐
 │ HybridBackend (Provider Switcher)                  │
-│  ├─ LocalBackend (Ollama) ← supports model param  │
+│  ├─ OllamaBackend ← supports model param         │
 │  ├─ OpenAIAssistantsBackend (fixed GPT-4)         │
 │  └─ GoogleGeminiBackend (fixed Gemini)            │
 └─────────────────────────────────────────────────────┘
@@ -30,7 +30,7 @@ The REST API supports specifying the LLM model and generation parameters on a pe
 
 Lists available models for the current backend.
 
-**For Ollama (local backend):**
+**For the Ollama backend:**
 ```bash
 curl http://localhost:8001/api/config/models
 ```

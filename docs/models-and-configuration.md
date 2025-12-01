@@ -16,7 +16,7 @@ The system supports multiple backend providers that can be switched at runtime *
 
 ### Available Backends
 
-1. **`local`** - Ollama with local models (default)
+1. **`ollama`** - Ollama with local models (default)
    - Supports per-query model selection
    - Fast, private, runs offline
    - Models: qwen2.5:3b, llama3.2:3b, mistral:7b, etc.
@@ -46,8 +46,8 @@ curl http://localhost:8001/api/config/mode
 Response:
 ```json
 {
-  "mode": "local",
-  "available_modes": ["local", "openai_assistants", "google_gemini", "vertex_ai_search"]
+  "mode": "ollama",
+  "available_modes": ["ollama", "openai_assistants", "google_gemini", "vertex_ai_search"]
 }
 ```
 
@@ -76,20 +76,20 @@ python src/clients/cli_agent.py --list-backends
 python src/clients/cli_agent.py --show-backend
 
 # Switch backends
-python src/clients/cli_agent.py --set-backend local
+python src/clients/cli_agent.py --set-backend ollama
 python src/clients/cli_agent.py --set-backend openai_assistants
 python src/clients/cli_agent.py --set-backend google_gemini
 python src/clients/cli_agent.py --set-backend vertex_ai_search
 
 # Query with backend switch
-python src/clients/cli_agent.py "My question" --set-backend local
+python src/clients/cli_agent.py "My question" --set-backend ollama
 ```
 
 ### Backend Configuration Files
 
 Each backend can be configured via its own config file:
 
-- **Ollama (local)**: `config/settings.json` → `LLM_MODEL_NAME`, `LLM_TEMPERATURE`
+- **Ollama**: `config/settings.json` → `LLM_MODEL_NAME`, `LLM_TEMPERATURE`
 - **OpenAI**: `secrets/openai_config.json` → `api_key`, `model`, `assistant_id`
 - **Google Gemini**: `.env` → `GOOGLE_GROUNDING_MODE=google_gemini`, `client_secrets.json`
 - **Vertex AI**: `.env` → `GCP_PROJECT_ID`, `GCP_SEARCH_ENGINE_ID`
@@ -114,7 +114,7 @@ ASYNC_LLM_MODEL_NAME=qwen2.5:3b
 OLLAMA_API_BASE=http://127.0.0.1:11434
 OLLAMA_KEEP_ALIVE=-1
 LLM_TEMPERATURE=0.1
-RAG_BACKEND_TYPE=local  # or 'remote'
+RAG_BACKEND_TYPE=ollama  # or 'remote'
 GOOGLE_GROUNDING_MODE=google_gemini  # or 'vertex_ai_search'
 ```
 
@@ -127,6 +127,10 @@ The system supports dynamic configuration updates. Settings stored in `config/se
 - Modify search settings (top-k, context window)
 - Update system prompts
 - Toggle **Debug Mode** (`debugMode: true`) for verbose logging
+
+Disconnecting a provider from the **Settings → AI Provider** panel also updates this file.
+Choosing **Disconnect** on the Ollama card clears the stored Ollama parameters, sets `ollamaConfigured: false`,
+and hides Ollama from `available_modes` until you save a new configuration—matching how the OpenAI and Google disconnect flows behave.
 
 **Managing Configuration:**
 - **Web UI**: Use the "Settings" dashboard to view and modify configuration (including Debug toggle).

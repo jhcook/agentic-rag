@@ -1,8 +1,8 @@
 {
-  "apiEndpoint": "http://localhost:11434",
+  "apiEndpoint": "http://127.0.0.1:11434",
   "model": "ollama/qwen2.5:0.5b",
   "embeddingModel": "Snowflake/arctic-embed-xs",
-  "temperature": "0.7",
+  "temperature": "0.1",
   "topP": "0.9",
   "topK": "40",
   "repeatPenalty": "1.1",
@@ -15,5 +15,6 @@
   "ragPort": "8001",
   "ragPath": "api",
   "debugMode": false,
-  "allowLocalBackend": true
+  "ollamaConfigured": true,
+  "ragMode": "ollama"
 }

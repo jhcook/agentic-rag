@@ -44,6 +44,11 @@ except ImportError:
     HAS_DOCX = False
 
 from src.core.interfaces import RAGBackend
+from src.core.config_paths import (
+    CONFIG_DIR,
+    VERTEX_CONFIG_PATH,
+    LEGACY_VERTEX_CONFIG_PATH,
+)
 try:
     from src.core.google_auth import GoogleAuthManager
 except ImportError:
@@ -74,13 +79,9 @@ class GoogleGeminiBackend(RAGBackend):
             )
 
         # Load Vertex Config if exists
-        if os.path.exists("vertex_config.json"):
-            try:
-                with open("vertex_config.json", "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    os.environ.update(config)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.error("Failed to load vertex_config.json: %s", e)
+        vertex_config = self._load_vertex_config()
+        if vertex_config:
+            os.environ.update(vertex_config)
 
         # Initialize Auth Manager
         self.auth_manager = GoogleAuthManager()
@@ -173,6 +174,27 @@ class GoogleGeminiBackend(RAGBackend):
             logger.info("Vertex AI initialized for project %s", project_id)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Failed to initialize Vertex AI: %s", e)
+
+    def _load_vertex_config(self) -> Optional[Dict[str, str]]:
+        """Load Vertex config from config directory, migrating legacy files if present."""
+        try:
+            if VERTEX_CONFIG_PATH.exists():
+                with open(VERTEX_CONFIG_PATH, "r", encoding="utf-8") as handle:
+                    return json.load(handle)
+            if LEGACY_VERTEX_CONFIG_PATH.exists():
+                with open(LEGACY_VERTEX_CONFIG_PATH, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle, indent=2)
+                try:
+                    LEGACY_VERTEX_CONFIG_PATH.unlink()
+                except OSError as exc:
+                    logger.warning("Failed to remove legacy vertex config: %s", exc)
+                return data
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to load vertex config: %s", exc)
+        return None
 
     def reload_auth(self):
         """Reload credentials and re-initialize services."""

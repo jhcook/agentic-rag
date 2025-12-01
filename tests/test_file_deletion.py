@@ -3,7 +3,7 @@ import os
 import pathlib
 import tempfile
 
-from src.core.factory import LocalBackend
+from src.core.factory import OllamaBackend
 
 def test_file_deletion_and_reindexing():
     """Verify that deleted files are not re-indexed on restart."""
@@ -17,8 +17,8 @@ def test_file_deletion_and_reindexing():
         # Reset the global store to ensure clean state
         rag_core._STORE = None
         
-        # 1. Setup a dummy file and a LocalBackend
-        backend = LocalBackend()
+        # 1. Setup a dummy file and an OllamaBackend
+        backend = OllamaBackend()
         backend._check_core()
 
         # 2. Create and index a dummy file
@@ -40,8 +40,8 @@ def test_file_deletion_and_reindexing():
         docs = backend.list_documents()
         assert len(docs) == 0
         
-        # 6. Simulate a restart by creating a new LocalBackend instance
-        backend2 = LocalBackend()
+        # 6. Simulate a restart by creating a new OllamaBackend instance
+        backend2 = OllamaBackend()
         from src.core import rag_core as rag_core2
         rag_core2.DB_PATH = str(db_path)
         backend2.load_store() # This will load from the persisted file

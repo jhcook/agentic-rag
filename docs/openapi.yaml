@@ -269,7 +269,7 @@ paths:
               schema: {}
     post:
       summary: Api Set Mode
-      description: Set the backend mode (e.g., 'local', 'google').
+      description: Set the backend mode (e.g., 'ollama', 'google').
       operationId: api_set_mode_api_config_mode_post
       requestBody:
         content:

@@ -65,7 +65,6 @@ type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
-  allowLocalBackend?: boolean
 }
 
 type IndexJob = {
@@ -85,6 +84,25 @@ type IndexJob = {
   }
 }
 
+const createDefaultOllamaConfig = (): OllamaConfig => ({
+    apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
+    model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
+    embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
+    temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
+    topP: '0.9',
+    topK: '40',
+    repeatPenalty: '1.1',
+    seed: '-1',
+    numCtx: '2048',
+    mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
+    mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
+    mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
+    ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
+    ragPort: import.meta.env.VITE_RAG_PORT || '8001',
+  ragPath: import.meta.env.VITE_RAG_PATH || 'api',
+  debugMode: false,
+})
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [systemStatus, setSystemStatus] = useState<'running' | 'stopped' | 'error' | 'warning'>('stopped')
@@ -102,25 +120,7 @@ function App() {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
   const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
-  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>({
-    apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
-    model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
-    embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
-    temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
-    topP: '0.9',
-    topK: '40',
-    repeatPenalty: '1.1',
-    seed: '-1',
-    numCtx: '2048',
-    mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
-    mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
-    mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
-    ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
-    ragPort: import.meta.env.VITE_RAG_PORT || '8001',
-    ragPath: import.meta.env.VITE_RAG_PATH || 'api',
-    debugMode: false,
-    allowLocalBackend: true,
-  })
+  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(createDefaultOllamaConfig())
   const [queryText, setQueryText] = useState('')
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
@@ -249,19 +249,19 @@ function App() {
   }, []) // Run once on mount, using initial env vars to find server
 
   const fetchMode = useCallback(async () => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    try {
-      const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
-      if (res.ok) {
-        const data = await res.json()
+      const host = ollamaConfig?.ragHost || '127.0.0.1'
+      const port = ollamaConfig?.ragPort || '8001'
+      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+      try {
+        const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
+        if (res.ok) {
+          const data = await res.json()
         setActiveMode(data.mode || 'none')
         setAvailableModes(Array.isArray(data.available_modes) ? data.available_modes : [])
+        }
+      } catch (e) {
+        console.error("Failed to fetch mode", e)
       }
-    } catch (e) {
-      console.error("Failed to fetch mode", e)
-    }
   }, [ollamaConfig])
 
   useEffect(() => {
@@ -815,25 +815,7 @@ function App() {
 
   const handleConfigChange = (field: keyof OllamaConfig, value: string | boolean) => {
     setOllamaConfig(current => {
-      const currentConfig = current || {
-        apiEndpoint: 'http://localhost:11434',
-        model: 'llama3.2',
-        embeddingModel: 'nomic-embed-text',
-        temperature: '0.7',
-        topP: '0.9',
-        topK: '40',
-        repeatPenalty: '1.1',
-        seed: '-1',
-        numCtx: '2048',
-        mcpHost: '127.0.0.1',
-        mcpPort: '8000',
-        mcpPath: '/mcp',
-        ragHost: '127.0.0.1',
-        ragPort: '8001',
-        ragPath: 'api',
-        debugMode: false,
-        allowLocalBackend: true,
-      }
+      const currentConfig = current || createDefaultOllamaConfig()
       return {
         ...currentConfig,
         [field]: value
@@ -847,6 +829,11 @@ function App() {
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
     const payload = configToSave || ollamaConfig
 
+    if (!payload?.apiEndpoint?.trim() || !payload?.model?.trim()) {
+      toast.error('API endpoint and model are required')
+      return
+    }
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
         method: 'POST',
@@ -854,13 +841,13 @@ function App() {
         body: JSON.stringify(payload)
       })
       
-      if (res.ok) {
-    toast.success('Configuration saved', {
-          description: 'Settings have been saved to server'
-        })
-      } else {
+      if (!res.ok) {
         throw new Error('Failed to save')
       }
+      toast.success('Configuration saved', {
+        description: 'Settings have been saved to server'
+      })
+      await fetchMode()
     } catch (e) {
       console.error("Failed to save config", e)
       toast.error('Failed to save configuration')
@@ -874,7 +861,7 @@ function App() {
     window.open(`http://${host}:${port}/${base}/auth/login?t=${Date.now()}`, '_blank', 'width=600,height=700')
   }
 
-  const handleDisconnect = async (provider?: 'google' | 'openai_assistants' | 'local') => {
+  const handleDisconnect = async (provider?: 'google' | 'openai_assistants' | 'ollama') => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
@@ -889,7 +876,7 @@ function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       
       if (provider === 'google') {
-        toast.success('Disconnected from Google Account')
+      toast.success('Disconnected from Google Account')
       } else if (provider === 'openai_assistants') {
         toast.success('Disconnected from OpenAI Assistants')
         setOpenaiConfig({
@@ -898,11 +885,25 @@ function App() {
           assistantId: ''
         })
         setOpenaiModels([])
-      } else if (provider === 'local') {
-        toast.success('Disconnected from Local/Ollama Backend')
-        const updatedConfig = { ...ollamaConfig, allowLocalBackend: false }
-        setOllamaConfig(updatedConfig)
-        await handleSaveConfig(updatedConfig)
+      } else if (provider === 'ollama') {
+        toast.success('Disconnected from Ollama backend')
+        let updatedConfig = false
+        try {
+          const configRes = await fetch(`http://${host}:${port}/${base}/config/app`)
+          if (configRes.ok) {
+            const configData = await configRes.json()
+            if (configData && typeof configData === 'object') {
+              const merged = { ...createDefaultOllamaConfig(), ...configData }
+              setOllamaConfig(merged)
+              updatedConfig = true
+            }
+          }
+        } catch (err) {
+          console.error('Failed to reload app config after Ollama disconnect', err)
+        }
+        if (!updatedConfig) {
+          setOllamaConfig(createDefaultOllamaConfig())
+        }
       } else {
         toast.success('Disconnected from all providers')
       }
@@ -965,6 +966,7 @@ function App() {
       
       // Refresh available modes to update UI
       await refreshServiceStatuses()
+      await fetchMode()
       
     } catch (err) {
       toast.dismiss('openai-reload')
@@ -1068,7 +1070,7 @@ function App() {
       setActiveMode(result.mode)
       
       const modeNames: Record<string, string> = {
-        'local': 'Ollama (Local)',
+        'ollama': 'Ollama',
         'openai_assistants': 'OpenAI Assistants',
         'google_gemini': 'Google Gemini + Drive',
         'vertex_ai_search': 'Google Vertex AI'

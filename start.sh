@@ -392,7 +392,7 @@ fi
 # Respect skip-Ollama toggles for downstream processes
 if [[ "$SKIP_OLLAMA" == true ]]; then
     export SKIP_OLLAMA=1
-    export DISABLE_LOCAL_BACKEND=1
+    export DISABLE_OLLAMA_BACKEND=1
 fi
 
 ARCH_NAME=$(uname -m)

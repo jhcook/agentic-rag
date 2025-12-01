@@ -28,7 +28,7 @@ python stop.sh
 
 ## Configuration & Docs
 
-- Runtime settings (`config/settings.json`) override `.env`; change the `allowLocalBackend` flag to hide or show the Ollama provider and save via the UI.
+- Runtime settings (`config/settings.json`) override `.env`; edit them via the Settings UI to update Ollama endpoint, model, or logging behavior.
 - Server-side details (MCP, REST, CLI) live in `docs/models-and-configuration.md`, `docs/openai_assistants.md`, and `docs/google_integration.md`.
 - Desktop packaging notes are in `docs/electron-desktop.md`; API references are under `docs/api_reference.md` and `docs/api_model_selection.md`.
 - Torch/NumPy handling, service logs, and advanced diagnostics belong in the same docs folder—refer there before editing the startup scripts.

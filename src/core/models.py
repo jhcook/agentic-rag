@@ -120,7 +120,7 @@ class ChatReq(BaseModel):
 
 class ConfigModeReq(BaseModel):
     """Request model for setting the backend mode."""
-    mode: str = Field(description="Backend mode: 'local' (Ollama), 'openai_assistants', 'google_gemini', or 'vertex_ai_search'")
+    mode: str = Field(description="Backend mode: 'ollama', 'openai_assistants', 'google_gemini', or 'vertex_ai_search'")
 
 class OpenAIConfigModel(BaseModel):
     """OpenAI configuration model."""
@@ -155,7 +155,6 @@ class AppConfigReq(BaseModel):
     rag_port: str = Field(alias="ragPort")
     rag_path: str = Field(alias="ragPath")
     debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
-    allow_local_backend: Optional[bool] = Field(default=True, alias="allowLocalBackend")
 
     model_config = ConfigDict(populate_by_name=True)
 

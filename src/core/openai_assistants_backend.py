@@ -416,9 +416,9 @@ class OpenAIAssistantsBackend:
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
         """Index a directory path."""
-        # Use LocalBackend implementation
-        from src.core.factory import LocalBackend  # pylint: disable=import-outside-toplevel
-        backend = LocalBackend()
+        # Use Ollama backend implementation
+        from src.core.factory import OllamaBackend  # pylint: disable=import-outside-toplevel
+        backend = OllamaBackend()
         return backend.index_path(path, glob)
 
     def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
@@ -458,20 +458,20 @@ class OpenAIAssistantsBackend:
 
     def delete_documents(self, uris: List[str]) -> Dict[str, Any]:
         """Delete documents."""
-        from src.core.factory import LocalBackend  # pylint: disable=import-outside-toplevel
-        backend = LocalBackend()
+        from src.core.factory import OllamaBackend  # pylint: disable=import-outside-toplevel
+        backend = OllamaBackend()
         return backend.delete_documents(uris)
 
     def flush_cache(self) -> Dict[str, Any]:
         """Flush cache."""
-        from src.core.factory import LocalBackend  # pylint: disable=import-outside-toplevel
-        backend = LocalBackend()
+        from src.core.factory import OllamaBackend  # pylint: disable=import-outside-toplevel
+        backend = OllamaBackend()
         return backend.flush_cache()
 
     def get_stats(self) -> Dict[str, Any]:
         """Get statistics."""
-        from src.core.factory import LocalBackend  # pylint: disable=import-outside-toplevel
-        backend = LocalBackend()
+        from src.core.factory import OllamaBackend  # pylint: disable=import-outside-toplevel
+        backend = OllamaBackend()
         stats = backend.get_stats()
         stats["backend"] = "openai_assistants"
         stats["assistant_id"] = self.assistant_id

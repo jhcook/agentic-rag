@@ -79,7 +79,7 @@ export function ProviderSelector({ config }: { config: any }) {
   }
 
   const providers = [
-    { value: 'local', label: 'Ollama (Local)', icon: Server },
+    { value: 'ollama', label: 'Ollama', icon: Server },
     { value: 'openai_assistants', label: 'OpenAI Assistants', icon: Cloud },
     { value: 'google_gemini', label: 'Gemini + Drive', icon: Cloud },
     { value: 'vertex_ai_search', label: 'Vertex AI Agent', icon: Cloud },
@@ -88,15 +88,8 @@ export function ProviderSelector({ config }: { config: any }) {
   const currentProvider = providers.find(p => p.value === modeData.mode) ||
     { value: modeData.mode || 'none', label: modeData.mode === 'none' ? 'No Provider' : (modeData.mode || 'No Provider'), icon: Server }
 
-  const localAllowed = config?.allowLocalBackend ?? true
-
-  // Filter providers based on available modes from backend and local toggle
-  const availableProviders = providers.filter(p => {
-    if (p.value === 'local' && !localAllowed) {
-      return false
-    }
-    return modeData.available_modes.includes(p.value)
-  })
+  // Filter providers based on available modes from backend
+  const availableProviders = providers.filter(p => modeData.available_modes.includes(p.value))
   
   // Check if current mode is actually available
   const isCurrentModeAvailable = modeData.available_modes.includes(modeData.mode)

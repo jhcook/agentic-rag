@@ -68,7 +68,7 @@ Outputs land in `electron/dist/`.
 - UI port is unused in desktop mode (`--skip-ui` is passed to `start.py`).
 - Python path: set `PYTHON_EXE` before running `npm run dev` or `npm run build*`.
 - Backend readiness timeout: set `BACKEND_READY_TIMEOUT_MS` (ms) if startup takes longer on your machine (default ~60s).
-- To run the desktop shell for configuration only (no local/Ollama backend), export `SKIP_OLLAMA=1` (or `DISABLE_LOCAL_BACKEND=1`) before launch. The UI will come up in a config-only mode with no providers available until you add OpenAI/Gemini credentials.
+- To run the desktop shell for configuration only (no Ollama backend), export `SKIP_OLLAMA=1` (or `DISABLE_OLLAMA_BACKEND=1`) before launch. The UI will come up in a config-only mode with no providers available until you add OpenAI/Gemini credentials.
 - Embedding model cache: the app now defaults `HF_HOME`/`SENTENCE_TRANSFORMERS_HOME` to `cache/` in the repo. Pre-fetch the embedding model before packaging so the DMG can start offline:
   ```bash
   source .venv/bin/activate

@@ -13,34 +13,31 @@ import psutil
 import requests
 
 from src.core.interfaces import RAGBackend
-from src.core.rag_core import is_local_backend_allowed
 
 # Optional feature toggles
-DISABLE_LOCAL_BACKEND = os.getenv("DISABLE_LOCAL_BACKEND", "").lower() in {"1", "true", "yes"}
-# Helper to determine whether local (Ollama) backend should be enabled.
-def _local_backend_enabled() -> bool:
-    """Return True if the local backend is permitted by settings or env."""
-    if is_local_backend_allowed():
-        return True
-    return not DISABLE_LOCAL_BACKEND
+DISABLE_OLLAMA_BACKEND = os.getenv("DISABLE_OLLAMA_BACKEND", "").lower() in {"1", "true", "yes"}
+
+def _ollama_backend_enabled() -> bool:
+    """Return True if the Ollama backend is permitted by configuration."""
+    return not DISABLE_OLLAMA_BACKEND
 
 # Initialize optional modules to None
-local_core = None  # pylint: disable=invalid-name
+ollama_core = None  # pylint: disable=invalid-name
 extract_text_from_file_fn: Optional[Callable[[pathlib.Path], str]] = None
 DB_PATH = None
 GoogleGeminiBackend = None  # pylint: disable=invalid-name
 OpenAIAssistantsBackend = None  # pylint: disable=invalid-name
 
-# Import local implementation
+# Import Ollama implementation
 try:
-    import src.core.rag_core as local_core
+    import src.core.rag_core as ollama_core
     from src.core.store import DB_PATH
     from src.core.extractors import extract_text_from_file
-    HAS_LOCAL_CORE = True
+    HAS_OLLAMA_CORE = True
     extract_text_from_file_fn = extract_text_from_file
-    rag_core_module = local_core
+    rag_core_module = ollama_core
 except ImportError:
-    HAS_LOCAL_CORE = False
+    HAS_OLLAMA_CORE = False
     rag_core_module = None
 
 # Import Google implementation
@@ -59,7 +56,55 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-class LocalBackend:
+BASE_DIR = pathlib.Path(__file__).resolve().parent.parent.parent
+CONFIG_DIR = BASE_DIR / "config"
+SETTINGS_PATH = CONFIG_DIR / "settings.json"
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+OLLAMA_PROVIDER_FIELDS = [
+    "apiEndpoint",
+    "model",
+    "embeddingModel",
+    "temperature",
+    "topP",
+    "topK",
+    "repeatPenalty",
+    "seed",
+    "numCtx",
+]
+
+DEFAULT_CONNECTION_FIELDS = {
+    "ragHost": "127.0.0.1",
+    "ragPort": "8001",
+    "ragPath": "api",
+    "mcpHost": "127.0.0.1",
+    "mcpPort": "8000",
+    "mcpPath": "/mcp",
+}
+
+
+def _read_settings_file() -> Dict[str, Any]:
+    """Read the shared settings.json file."""
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("Failed to read settings.json: %s", exc)
+        return {}
+
+
+def _write_settings_file(data: Dict[str, Any]) -> None:
+    """Persist the shared settings.json file."""
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to write settings.json: %s", exc)
+        raise
+
+class OllamaBackend:
     """Direct calls to rag_core functions."""
 
     def __init__(self):
@@ -75,25 +120,25 @@ class LocalBackend:
         }
 
     def _check_core(self):
-        """Check if local core is available."""
-        if local_core is None:
-            raise RuntimeError("Local core dependencies not available")
+        """Check if the Ollama core is available."""
+        if ollama_core is None:
+            raise RuntimeError("Ollama core dependencies not available")
 
     def search(self, query: str, top_k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Search for documents."""
         self._check_core()
-        return local_core.search(query, top_k=top_k, **kwargs)
+        return ollama_core.search(query, top_k=top_k, **kwargs)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""
         self._check_core()
-        return local_core.upsert_document(uri, text)
+        return ollama_core.upsert_document(uri, text)
 
     def index_path(self, path: str, glob: str = "**/*") -> Dict[str, Any]:
         """Index a directory path."""
         self._check_core()
         try:
-            base = local_core.resolve_input_path(path)
+            base = ollama_core.resolve_input_path(path)
         except FileNotFoundError as exc:
             return {"error": str(exc), "indexed": 0, "uris": []}
 
@@ -114,7 +159,7 @@ class LocalBackend:
                     content = extract_text_from_file_fn(file_path)
                     if not content:
                         continue
-                    local_core.upsert_document(str(file_path), content)
+                    ollama_core.upsert_document(str(file_path), content)
                     indexed += 1
                     indexed_uris.append(str(file_path))
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -125,42 +170,42 @@ class LocalBackend:
     def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Generate a grounded answer."""
         self._check_core()
-        return local_core.grounded_answer(question, k=k, **kwargs)
+        return ollama_core.grounded_answer(question, k=k, **kwargs)
 
     def load_store(self) -> bool:
         """Load the document store."""
         self._check_core()
-        local_core.load_store()
+        ollama_core.load_store()
         return True
 
     def save_store(self) -> bool:
         """Save the document store."""
         self._check_core()
-        local_core.save_store()
+        ollama_core.save_store()
         return True
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents with metadata."""
         self._check_core()
         # Ensure store is synced with disk before listing
-        local_core.ensure_store_synced()
-        store = local_core.get_store()
+        ollama_core.ensure_store_synced()
+        store = ollama_core.get_store()
         return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
         self._check_core()
-        local_core.rebuild_faiss_index()
+        ollama_core.rebuild_faiss_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages by relevance."""
         self._check_core()
-        return local_core.rerank(query, passages)
+        return ollama_core.rerank(query, passages)
 
     def verify_grounding(self, question: str, answer: str, citations: List[str]) -> Dict[str, Any]:
         """Verify answer grounding."""
         self._check_core()
-        return local_core.verify_grounding(question, answer, citations)
+        return ollama_core.verify_grounding(question, answer, citations)
 
     def _start_deletion_worker(self):
         """Start the background deletion worker thread."""
@@ -178,15 +223,15 @@ class LocalBackend:
                         self._deletion_status["processing"] = True
 
                     # Perform deletion
-                    store = local_core.get_store()
+                    store = ollama_core.get_store()
                     deleted = 0
                     for uri in uris:
                         if uri in store.docs:
                             del store.docs[uri]
                             deleted += 1
 
-                    local_core.save_store()
-                    local_core.rebuild_faiss_index()
+                    ollama_core.save_store()
+                    ollama_core.rebuild_faiss_index()
 
                     with self._deletion_lock:
                         self._deletion_status["processing"] = False
@@ -234,7 +279,7 @@ class LocalBackend:
     def flush_cache(self) -> Dict[str, Any]:
         """Clear the document cache."""
         self._check_core()
-        store = local_core.get_store()
+        store = ollama_core.get_store()
         store.docs.clear()
         removed = False
         if DB_PATH and pathlib.Path(DB_PATH).exists():
@@ -243,15 +288,15 @@ class LocalBackend:
                 removed = True
             except OSError:
                 removed = False
-        local_core.save_store()
-        local_core.rebuild_faiss_index()
+        ollama_core.save_store()
+        ollama_core.rebuild_faiss_index()
         return {"status": "flushed", "db_removed": removed, "documents": 0}
 
     def get_stats(self) -> Dict[str, Any]:
         """Get system statistics."""
         self._check_core()
-        store = local_core.get_store()
-        index, _, _ = local_core.get_faiss_globals()
+        store = ollama_core.get_store()
+        index, _, _ = ollama_core.get_faiss_globals()
         docs = len(getattr(store, "docs", {}))
         vectors = index.ntotal if index is not None else 0
 
@@ -260,9 +305,9 @@ class LocalBackend:
 
         # Get store file size
         store_file_bytes = 0
-        if local_core.DB_PATH and os.path.exists(local_core.DB_PATH):
+        if ollama_core.DB_PATH and os.path.exists(ollama_core.DB_PATH):
             try:
-                store_file_bytes = os.path.getsize(local_core.DB_PATH)
+                store_file_bytes = os.path.getsize(ollama_core.DB_PATH)
             except OSError:
                 pass
 
@@ -271,7 +316,7 @@ class LocalBackend:
             "documents": docs,
             "vectors": vectors,
             "memory_mb": psutil.Process().memory_info().rss / 1024 / 1024,
-            "memory_limit_mb": local_core.MAX_MEMORY_MB,
+            "memory_limit_mb": ollama_core.MAX_MEMORY_MB,
             "total_size_bytes": total_size_bytes,
             "store_file_bytes": store_file_bytes,
         }
@@ -279,7 +324,7 @@ class LocalBackend:
     def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         """Chat with the backend."""
         self._check_core()
-        return local_core.chat(messages, **kwargs)
+        return ollama_core.chat(messages, **kwargs)
 
     def list_models(self) -> List[str]:
         """List available Ollama models."""
@@ -461,19 +506,19 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             """Load the document store (no-op for NullBackend)."""
             return True
 
-    def __init__(self, initial_mode: str = "local"):
+    def __init__(self, initial_mode: str = "ollama"):
         """Initialize hybrid backend with available backends."""
         self.backends: Dict[str, RAGBackend] = {}
-        # Start in "none" mode if Ollama is disabled to prevent showing local initially
-        self.current_mode = "none" if not _local_backend_enabled() else "local"
+        # Start in "none" mode if Ollama is disabled to prevent showing it initially
+        self.current_mode = "none" if not _ollama_backend_enabled() else "ollama"
 
-        # Initialize Local
-        if HAS_LOCAL_CORE and _local_backend_enabled():
+        # Initialize Ollama
+        if HAS_OLLAMA_CORE and _ollama_backend_enabled():
             try:
-                self.backends["local"] = LocalBackend()
-                logger.info("HybridBackend: LocalBackend initialized")
+                self.backends["ollama"] = OllamaBackend()
+                logger.info("HybridBackend: OllamaBackend initialized")
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.error("HybridBackend: Failed to init LocalBackend: %s", exc)
+                logger.error("HybridBackend: Failed to init OllamaBackend: %s", exc)
 
         # Initialize Google
         if HAS_GOOGLE_BACKEND and GoogleGeminiBackend:
@@ -494,9 +539,9 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                     "HybridBackend: Failed to init OpenAIAssistantsBackend: %s", exc)
 
         # Default to what's available (prefer requested mode, otherwise any available)
-        # But if the local backend is disabled, start in "none" mode unless another backend is explicitly requested
-        if not _local_backend_enabled() and initial_mode == "local":
-            # When Ollama is disabled, don't try to use local mode
+        # But if the Ollama backend is disabled, start in "none" mode unless another backend is explicitly requested
+        if not _ollama_backend_enabled() and initial_mode == "ollama":
+            # When Ollama is disabled, don't try to use that mode
             if self.backends:
                 self.current_mode = next(iter(self.backends.keys()))
             else:
@@ -505,8 +550,8 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 self.current_mode = "none"
         elif initial_mode in self.backends:
             self.current_mode = initial_mode
-        elif "local" in self.backends and _local_backend_enabled():
-            self.current_mode = "local"
+        elif "ollama" in self.backends and _ollama_backend_enabled():
+            self.current_mode = "ollama"
         elif self.backends:
             self.current_mode = next(iter(self.backends.keys()))
         else:
@@ -515,13 +560,23 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 self.backends["none"] = HybridBackend.NullBackend()
             self.current_mode = "none"
 
+        self.ollama_configured = self._load_ollama_configured_flag()
+        if not self.ollama_configured and self.current_mode == "ollama":
+            logger.info("HybridBackend: Ollama marked as disconnected, starting in 'none' mode")
+            if "none" not in self.backends:
+                self.backends["none"] = HybridBackend.NullBackend()
+            self.current_mode = "none"
+
     def set_mode(self, mode: str) -> bool:
         """Set the active backend mode."""
         # Handle top-level switching
-        if mode == "local":
-            if "local" in self.backends:
-                self.current_mode = "local"
-                logger.info("HybridBackend: Switched to local")
+        if mode == "ollama":
+            if not self.ollama_configured:
+                logger.warning("HybridBackend: Cannot switch to ollama - configuration not available")
+                return False
+            if "ollama" in self.backends:
+                self.current_mode = "ollama"
+                logger.info("HybridBackend: Switched to ollama")
                 return True
             return False
 
@@ -581,9 +636,9 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
                 if self.current_mode == "openai_assistants":
                     if not self.backends["openai_assistants"].configured:
-                        if "local" in self.backends:
-                            self.current_mode = "local"
-                            logger.warning("OpenAI backend not configured, falling back to local")
+                        if "ollama" in self.backends:
+                            self.current_mode = "ollama"
+                            logger.warning("OpenAI backend not configured, falling back to ollama")
 
                 return {
                     "status": "success",
@@ -610,7 +665,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         modes = []
 
         # Local backend - check if Ollama is reachable (only if not disabled)
-        if "local" in self.backends and _local_backend_enabled():
+        if "ollama" in self.backends and _ollama_backend_enabled() and self.ollama_configured:
             ollama_base = "http://127.0.0.1:11434"
             if rag_core_module is not None:
                 ollama_base = getattr(rag_core_module, "OLLAMA_API_BASE", ollama_base)
@@ -619,7 +674,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
                 if response.ok:
                     data = response.json()
                     if data.get("models"):
-                        modes.append("local")
+                        modes.append("ollama")
             except Exception:
                 pass  # Ollama not available
 
@@ -636,7 +691,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             else:
                 modes.append("google")
 
-        # Resolve google alias so we don't drop back to local while authenticated
+        # Resolve google alias so we don't drop back to ollama while authenticated
         effective_current = self.current_mode
         if self.current_mode == "google" and "google" in self.backends:
             if hasattr(self.backends["google"], "get_mode"):
@@ -839,9 +894,9 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
                 # If current mode was Google, fall back
                 if self.current_mode.startswith("google") or self.current_mode == "vertex_ai_search":
-                    if "local" in self.backends:
-                        self.current_mode = "local"
-                        logger.info("HybridBackend: Switched to local after Google logout")
+                    if "ollama" in self.backends:
+                        self.current_mode = "ollama"
+                        logger.info("HybridBackend: Switched to ollama after Google logout")
                     else:
                         self.current_mode = "none"
 
@@ -853,24 +908,16 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
                 # If current mode was OpenAI, fall back
                 if self.current_mode == "openai_assistants":
-                    if "local" in self.backends and _local_backend_enabled():
-                        self.current_mode = "local"
-                        logger.info("HybridBackend: Switched to local after OpenAI logout")
+                    if "ollama" in self.backends and _ollama_backend_enabled():
+                        self.current_mode = "ollama"
+                        logger.info("HybridBackend: Switched to ollama after OpenAI logout")
                     else:
                         self.current_mode = "none"
 
-            elif (provider == "local" or provider == "ollama") and "local" in self.backends:
-                try:
-                    if HAS_LOCAL_CORE and rag_core_module:
-                        rag_core_module.disable_local_backend()
-                        logger.info("Local backend disabled by request")
-                except Exception as exc:  # pylint: disable=broad-exception-caught
-                    logger.error("Error disabling local backend: %s", exc)
-                
-                # If current mode was local, fall back to none
-                if self.current_mode == "local":
-                    self.current_mode = "none"
-                    logger.info("HybridBackend: Switched to none after local logout")
+            elif provider == "ollama" and "ollama" in self.backends:
+                logger.info("HybridBackend: Disconnecting Ollama backend and clearing configuration")
+                self._clear_ollama_configuration()
+                self.set_ollama_configured(False)
         else:
             # Global logout (all backends)
             for backend in self.backends.values():
@@ -882,10 +929,10 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
 
             # Reset mode if we were in a Google mode
             if self.current_mode.startswith("google") or self.current_mode == "vertex_ai_search" or self.current_mode == "openai_assistants":
-                # Try to fall back to local
-                if "local" in self.backends:
-                    self.current_mode = "local"
-                    logger.info("HybridBackend: Switched to local after global logout")
+                # Try to fall back to ollama
+                if "ollama" in self.backends:
+                    self.current_mode = "ollama"
+                    logger.info("HybridBackend: Switched to ollama after global logout")
                 else:
                     self.current_mode = "none"
                     logger.info("HybridBackend: Switched to none after global logout")
@@ -898,6 +945,42 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         for backend in self.backends.values():
             if hasattr(backend, "reload_auth"):
                 backend.reload_auth()
+
+    def set_ollama_configured(self, configured: bool = True) -> None:
+        """
+        Update the in-memory Ollama configuration flag and refresh available modes.
+
+        Args:
+            configured: Whether Ollama is currently configured.
+        """
+        self.ollama_configured = configured
+        # Refresh available modes so UI immediately reflects the change
+        self.get_available_modes()
+
+    def _load_ollama_configured_flag(self) -> bool:
+        """Check whether Ollama is marked as configured in settings."""
+        data = _read_settings_file()
+        # Default to True (configured) if no explicit flag is stored to preserve legacy behavior
+        return data.get("ollamaConfigured", True)
+
+    def _clear_ollama_configuration(self) -> None:
+        """Erase stored Ollama configuration values and mark provider as disconnected."""
+        config_data = _read_settings_file()
+
+        # Preserve connection details so the UI can still talk to the REST server
+        for key, value in DEFAULT_CONNECTION_FIELDS.items():
+            config_data.setdefault(key, value)
+
+        for field in OLLAMA_PROVIDER_FIELDS:
+            config_data[field] = ""
+
+        config_data["ollamaConfigured"] = False
+        config_data["ragMode"] = "none"
+
+        try:
+            _write_settings_file(config_data)
+        except Exception:
+            logger.error("HybridBackend: Failed to persist Ollama disconnect state")
 
 
 def get_rag_backend() -> RAGBackend:
@@ -916,10 +999,10 @@ def get_rag_backend() -> RAGBackend:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to read settings.json: %s", exc)
 
-    # Default to local if still not set
-    # Default to local if still not set
+    # Default to Ollama if still not set
+    # Default to Ollama if still not set
     if not mode:
-        mode = "local"
+        mode = "ollama"
 
     if mode == "remote":
         url = os.getenv("RAG_REMOTE_URL", "http://127.0.0.1:8001/api")
