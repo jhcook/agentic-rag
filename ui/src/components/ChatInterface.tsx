@@ -205,29 +205,44 @@ export function ChatInterface({
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0]
+      const files = Array.from(e.target.files)
       const host = config?.ragHost || '127.0.0.1'
       const port = config?.ragPort || '8001'
       const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
 
-      const formData = new FormData()
-      formData.append('file', file)
+      // Process all selected files
+      const filePromises = files.map(async (file) => {
+        const formData = new FormData()
+        formData.append('file', file)
 
-      const toastId = toast.loading(`Extracting text from ${file.name}...`)
+        const toastId = toast.loading(`Extracting text from ${file.name}...`)
 
-      try {
-        const res = await fetch(`http://${host}:${port}/${base}/extract`, {
-          method: 'POST',
-          body: formData
-        })
+        try {
+          const res = await fetch(`http://${host}:${port}/${base}/extract`, {
+            method: 'POST',
+            body: formData
+          })
 
-        if (!res.ok) throw new Error('Extraction failed')
+          if (!res.ok) throw new Error('Extraction failed')
 
-        const data = await res.json()
-        setAttachments(prev => [...prev, { name: file.name, content: data.text }])
-        toast.success(`Attached ${file.name}`, { id: toastId })
-      } catch (e) {
-        toast.error(`Failed to attach ${file.name}`, { id: toastId })
+          const data = await res.json()
+          toast.success(`Attached ${file.name}`, { id: toastId })
+          return { name: file.name, content: data.text }
+        } catch (e) {
+          toast.error(`Failed to attach ${file.name}`, { id: toastId })
+          return null
+        }
+      })
+
+      // Wait for all files to be processed
+      const results = await Promise.all(filePromises)
+      const successfulAttachments = results.filter((r): r is {name: string, content: string} => r !== null)
+      
+      if (successfulAttachments.length > 0) {
+        setAttachments(prev => [...prev, ...successfulAttachments])
+        if (successfulAttachments.length > 1) {
+          toast.success(`Attached ${successfulAttachments.length} files`)
+        }
       }
       
       // Reset input
@@ -371,7 +386,8 @@ export function ChatInterface({
             type="file" 
             ref={fileInputRef} 
             className="hidden" 
-            onChange={handleUpload} 
+            onChange={handleUpload}
+            multiple
           />
           <Button variant="outline" size="icon" onClick={() => fileInputRef.current?.click()} disabled={loading}>
             <Paperclip className="h-4 w-4" />
