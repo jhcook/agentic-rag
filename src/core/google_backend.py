@@ -59,6 +59,16 @@ logger = logging.getLogger(__name__)
 # 5 minutes timeout for large context operations
 TIMEOUT_SECONDS = 300
 
+# Gemini API supported image MIME types
+# Note: TIFF (image/tiff) is NOT supported by Gemini API
+GEMINI_SUPPORTED_IMAGE_TYPES = {
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'image/webp'
+}
+
 
 # pylint: disable=too-many-instance-attributes,too-many-public-methods
 class GoogleGeminiBackend(RAGBackend):
@@ -793,8 +803,8 @@ class GoogleGeminiBackend(RAGBackend):
                             if att['size'] < 10 * 1024 * 1024:
                                 # PDF and Images (Gemini Native)
                                 is_pdf = att['mimeType'] == 'application/pdf'
-                                is_image = att['mimeType'].startswith('image/')
-                                if is_pdf or is_image:
+                                is_supported_image = att['mimeType'] in GEMINI_SUPPORTED_IMAGE_TYPES
+                                if is_pdf or is_supported_image:
                                     data = self._download_attachment(e['id'], att['id'])
                                     if data:
                                         # Add as inlineData
@@ -804,6 +814,16 @@ class GoogleGeminiBackend(RAGBackend):
                                                 "data": base64.b64encode(data).decode('utf-8')
                                             }
                                         })
+                                elif att['mimeType'].startswith('image/'):
+                                    # Unsupported image type (e.g., TIFF)
+                                    logger.warning(
+                                        "Skipping unsupported image type %s for attachment %s",
+                                        att['mimeType'], att['filename']
+                                    )
+                                    attachments_text += (
+                                        f"  [Note: {att['filename']} is in unsupported format "
+                                        f"({att['mimeType']}) and was not included]\n"
+                                    )
                                 # Text Files
                                 elif att['mimeType'] == 'text/plain':
                                     data = self._download_attachment(e['id'], att['id'])
