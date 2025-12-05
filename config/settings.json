@@ -1,6 +1,6 @@
 {
   "apiEndpoint": "http://127.0.0.1:11434",
-  "model": "ollama/qwen2.5:0.5b"",
+  "model": "ollama/qwen2.5:0.5b",
   "embeddingModel": "Snowflake/arctic-embed-xs",
   "temperature": "0.1",
   "topP": "0.9",
