@@ -8,6 +8,7 @@ import {
   ChevronUp as CaretUp, 
   Zap as Lightning 
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +36,11 @@ export type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
+  ollamaMode?: 'local' | 'cloud' | 'auto'
+  ollamaCloudApiKey?: string
+  ollamaCloudEndpoint?: string
+   ollamaCloudProxy?: string
+   ollamaCloudCABundle?: string
 }
 
 export type VertexConfig = {
@@ -67,6 +73,16 @@ interface SettingsDashboardProps {
   onSwitchBackend: (mode: string) => void
   activeMode?: string | null
   availableModes: string[]
+  onSetOllamaMode?: (mode: 'local' | 'cloud' | 'auto') => Promise<void>
+  onTestOllamaCloudConnection?: (apiKey: string, endpoint?: string) => Promise<{ success: boolean; message: string }>
+  ollamaStatus?: {
+    mode: string
+    endpoint: string
+    cloud_available: boolean
+    local_available: boolean
+    cloud_status: string | null
+    local_status: string | null
+  } | null
 }
 
 export function SettingsDashboard({
@@ -86,7 +102,10 @@ export function SettingsDashboard({
   onTestOpenAIConnection,
   onSwitchBackend,
   activeMode = 'ollama',
-  availableModes = []
+  availableModes = [],
+  onSetOllamaMode,
+  onTestOllamaCloudConnection,
+  ollamaStatus
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
   const [openaiExpanded, setOpenaiExpanded] = useState(false)
@@ -272,6 +291,199 @@ export function SettingsDashboard({
                         onChange={(e) => onConfigChange('apiEndpoint', e.target.value)}
                         placeholder="http://localhost:11434"
                       />
+                    </div>
+
+                    <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
+                      <h4 className="font-semibold text-sm">Ollama Mode Configuration</h4>
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="ollama-mode">Mode</Label>
+                          <Select
+                            value={config?.ollamaMode || 'local'}
+                            onValueChange={(value) => {
+                              onConfigChange('ollamaMode', value)
+                              if (onSetOllamaMode) {
+                                onSetOllamaMode(value as 'local' | 'cloud' | 'auto').catch(console.error)
+                              }
+                            }}
+                          >
+                            <SelectTrigger id="ollama-mode">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="local">Local</SelectItem>
+                              <SelectItem value="cloud">Cloud</SelectItem>
+                              <SelectItem value="auto">Auto (Cloud with Local Fallback)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            {config?.ollamaMode === 'local' && 'Use local Ollama instance only'}
+                            {config?.ollamaMode === 'cloud' && 'Use Ollama Cloud service only'}
+                            {config?.ollamaMode === 'auto' && 'Try Ollama Cloud first, fallback to local on failure'}
+                          </p>
+                        </div>
+
+                        {(config?.ollamaMode === 'cloud' || config?.ollamaMode === 'auto') && (
+                          <div className="space-y-4 pt-2 border-t border-border">
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Label htmlFor="ollama-cloud-api-key">Ollama Cloud API Key</Label>
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                                        <Info className="h-4 w-4" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-xs">Your Ollama Cloud API key. Get it from your Ollama Cloud account settings.</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </div>
+                            <Input
+                              id="ollama-cloud-api-key"
+                              type="password"
+                              value={config?.ollamaCloudApiKey || ''}
+                              onChange={(e) => onConfigChange('ollamaCloudApiKey', e.target.value)}
+                                placeholder="Enter your API key"
+                                className="font-mono text-sm"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Label htmlFor="ollama-cloud-endpoint">Ollama Cloud Endpoint</Label>
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                                        <Info className="h-4 w-4" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-xs">Ollama Cloud endpoint URL. Default is https://ollama.com</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </div>
+                            <Input
+                              id="ollama-cloud-endpoint"
+                              value={config?.ollamaCloudEndpoint || ''}
+                              onChange={(e) => onConfigChange('ollamaCloudEndpoint', e.target.value)}
+                              placeholder="https://ollama.com"
+                            />
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Label htmlFor="ollama-cloud-proxy">HTTPS Proxy</Label>
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                                        <Info className="h-4 w-4" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-xs">Optional HTTPS proxy URL used for Ollama Cloud requests. Stored in config/settings.json.</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </div>
+                              <Input
+                                id="ollama-cloud-proxy"
+                                value={config?.ollamaCloudProxy || ''}
+                                onChange={(e) => onConfigChange('ollamaCloudProxy', e.target.value)}
+                                placeholder="https://proxy.example.com:3128"
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <Label htmlFor="ollama-cloud-ca-bundle">CA Bundle (PEM)</Label>
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                                        <Info className="h-4 w-4" />
+                                      </button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p className="max-w-xs">Path to a PEM CA bundle for TLS verification. Stored securely in secrets/ollama_cloud_config.json.</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </div>
+                              <Input
+                                id="ollama-cloud-ca-bundle"
+                                value={config?.ollamaCloudCABundle || ''}
+                                onChange={(e) => onConfigChange('ollamaCloudCABundle', e.target.value)}
+                                placeholder="/path/to/corp-root.pem"
+                              />
+                            </div>
+                            </div>
+
+                            {onTestOllamaCloudConnection && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                  const apiKey = config?.ollamaCloudApiKey || ''
+                                  const endpoint = config?.ollamaCloudEndpoint
+                                  if (!apiKey) {
+                                    toast.error('Please enter an API key first')
+                                    return
+                                  }
+                                  try {
+                                    const result = await onTestOllamaCloudConnection(apiKey, endpoint)
+                                    if (result.success) {
+                                      toast.success('Connection successful', {
+                                        description: result.message
+                                      })
+                                    } else {
+                                      toast.error('Connection failed', {
+                                        description: result.message
+                                      })
+                                    }
+                                  } catch (error) {
+                                    toast.error('Connection test failed', {
+                                      description: error instanceof Error ? error.message : 'Unknown error'
+                                    })
+                                  }
+                                }}
+                                className="w-full"
+                              >
+                                <CheckCircle className="h-4 w-4 mr-2" />
+                                Test Cloud Connection
+                              </Button>
+                            )}
+                          </div>
+                        )}
+
+                        {ollamaStatus && (
+                          <div className="space-y-2 pt-2 border-t border-border">
+                            <Label className="text-sm font-semibold">Connection Status</Label>
+                            <div className="grid gap-2 md:grid-cols-2">
+                              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
+                                <span className="text-sm">Local</span>
+                                <Badge variant={ollamaStatus.local_status === 'connected' ? 'default' : 'secondary'}>
+                                  {ollamaStatus.local_status || 'unknown'}
+                                </Badge>
+                              </div>
+                              {(config?.ollamaMode === 'cloud' || config?.ollamaMode === 'auto') && (
+                                <div className="flex items-center justify-between p-2 rounded bg-muted/50">
+                                  <span className="text-sm">Cloud</span>
+                                  <Badge variant={ollamaStatus.cloud_status === 'connected' ? 'default' : 'secondary'}>
+                                    {ollamaStatus.cloud_status || 'unknown'}
+                                  </Badge>
+                                </div>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Current endpoint: {ollamaStatus.endpoint}
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">

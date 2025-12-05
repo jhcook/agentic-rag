@@ -68,11 +68,19 @@ def _apply_settings() -> None:
         "EMBED_MODEL_NAME",
         "sentence-transformers/paraphrase-MiniLM-L3-v2",
     )
-    OLLAMA_API_BASE = _get_config_value(
-        "apiEndpoint",
-        "OLLAMA_API_BASE",
-        "http://127.0.0.1:11434",
-    )
+    
+    # Use new ollama_config module for endpoint resolution
+    try:
+        from src.core.ollama_config import get_ollama_endpoint
+        OLLAMA_API_BASE = get_ollama_endpoint()
+    except ImportError:
+        # Fallback to old method if module not available
+        OLLAMA_API_BASE = _get_config_value(
+            "apiEndpoint",
+            "OLLAMA_API_BASE",
+            "http://127.0.0.1:11434",
+        )
+    
     LLM_MODEL_NAME = _get_config_value(
         "model",
         "LLM_MODEL_NAME",
@@ -108,11 +116,12 @@ except ImportError:
 
 try:
     from litellm import completion  # type: ignore
-    from litellm.exceptions import APIConnectionError  # type: ignore
+    from litellm.exceptions import APIConnectionError, Timeout  # type: ignore
     from litellm.llms.ollama.common_utils import OllamaError  # type: ignore
 except ImportError:
     completion = None
     APIConnectionError = Exception
+    Timeout = Exception
     OllamaError = Exception
 
 # Enable debug logging if available
@@ -789,7 +798,16 @@ def index_path(  # pylint: disable=too-many-locals
 
 async def send_to_llm(query: List[str]) -> Any:
     """Send the query to the LLM and return the response."""
-    client = AsyncClient(host=OLLAMA_API_BASE)
+    # Get endpoint and headers from ollama_config
+    try:
+        from src.core.ollama_config import get_ollama_endpoint, get_ollama_client_headers
+        endpoint = get_ollama_endpoint()
+        headers = get_ollama_client_headers()
+    except ImportError:
+        endpoint = OLLAMA_API_BASE
+        headers = {}
+    
+    client = AsyncClient(host=endpoint, headers=headers if headers else None)
     messages = [{"content": str(text), "role": "user"} for text in query]
     try:
         resp = await client.chat(  # type: ignore
@@ -1007,11 +1025,30 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
             return {"error": "LiteLLM not available"}
 
         # Build completion kwargs
-        # Normalize model name: add "ollama/" prefix if not present and not already prefixed
+        # Normalize model name: add "ollama/" prefix if not present and not already prefixed.
+        # Also normalize cloud/local suffix handling based on mode to avoid "model not found" when falling back.
         effective_model = model or get_llm_model_name()
         if effective_model and not effective_model.startswith(('ollama/', 'openai/', 'anthropic/', 'huggingface/')):
-            # If it looks like an Ollama model (no provider prefix), add ollama/ prefix
             effective_model = f"ollama/{effective_model}"
+        if effective_model and effective_model.startswith("ollama/"):
+            raw_model = effective_model[len("ollama/") :]
+            try:
+                from src.core.ollama_config import get_ollama_mode, normalize_ollama_model_name
+                mode = get_ollama_mode()
+                normalized = normalize_ollama_model_name(raw_model, mode)
+                effective_model = f"ollama/{normalized}"
+            except Exception:  # pylint: disable=broad-exception-caught
+                # If normalization fails, continue with the original value
+                pass
+        
+        # Get endpoint and headers from ollama_config with fallback support
+        try:
+            from src.core.ollama_config import get_ollama_endpoint_with_fallback
+            api_base, headers, fallback_endpoint = get_ollama_endpoint_with_fallback()
+        except ImportError:
+            api_base = OLLAMA_API_BASE
+            headers = {}
+            fallback_endpoint = None
         
         completion_kwargs = {
             "model": effective_model,
@@ -1019,17 +1056,49 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ],
-            "api_base": OLLAMA_API_BASE,
+            "api_base": api_base,
             "temperature": temperature if temperature is not None else LLM_TEMPERATURE,
             "stream": False,
             "timeout": 300,
         }
         
+        # Add headers if available (for cloud authentication)
+        if headers:
+            completion_kwargs["extra_headers"] = headers
+        
         if max_tokens is not None:
             completion_kwargs["max_tokens"] = max_tokens
 
-        resp = completion(**completion_kwargs)  # type: ignore
-        return _normalize_llm_response(resp, sources)
+        # Try primary endpoint (cloud for auto mode)
+        try:
+            resp = completion(**completion_kwargs)  # type: ignore
+            return _normalize_llm_response(resp, sources)
+        except (APIConnectionError, Timeout) as exc:  # type: ignore
+            # Connection/timeout errors - try fallback if available
+            if fallback_endpoint:
+                logger.warning(
+                    "Cloud endpoint failed (%s), falling back to local endpoint",
+                    type(exc).__name__
+                )
+                # Retry with local endpoint (no headers) and normalize model for local to drop any -cloud suffix
+                if effective_model.startswith("ollama/"):
+                    raw_model = effective_model[len("ollama/") :]
+                    try:
+                        from src.core.ollama_config import normalize_ollama_model_name
+                        local_model = normalize_ollama_model_name(raw_model, "local")
+                        completion_kwargs["model"] = f"ollama/{local_model}"
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        pass
+                # Retry with local endpoint
+                completion_kwargs["api_base"] = fallback_endpoint
+                completion_kwargs.pop("extra_headers", None)  # Remove headers for local
+                try:
+                    resp = completion(**completion_kwargs)  # type: ignore
+                    return _normalize_llm_response(resp, sources)
+                except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Fallback to local endpoint also failed: %s", fallback_exc)
+                    raise exc  # Raise original exception
+            raise
     except (ValueError, OllamaError, APIConnectionError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)
     except (OSError, RuntimeError) as exc:  # type: ignore
@@ -1210,17 +1279,45 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         except (ValueError, TypeError):
             num_ctx = None
 
+    # Get endpoint and headers from ollama_config with fallback support
     try:
-        resp = completion(  # type: ignore
-            model=model_name,
-            messages=[{"role": "system", "content": system_msg},
+        from src.core.ollama_config import get_ollama_endpoint_with_fallback
+        api_base, headers, fallback_endpoint = get_ollama_endpoint_with_fallback()
+    except ImportError:
+        api_base = OLLAMA_API_BASE
+        headers = {}
+        fallback_endpoint = None
+    
+    try:
+        completion_kwargs = {
+            "model": model_name,
+            "messages": [{"role": "system", "content": system_msg},
                       {"role": "user", "content": user_msg}],
-            api_base=OLLAMA_API_BASE,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            stream=False,
-            timeout=90,
-        )
+            "api_base": api_base,
+            "temperature": temperature,
+            "num_ctx": num_ctx,
+            "stream": False,
+            "timeout": 90,
+        }
+        # Add headers if available (for cloud authentication)
+        if headers:
+            completion_kwargs["extra_headers"] = headers
+        
+        # Try primary endpoint
+        try:
+            resp = completion(**completion_kwargs)  # type: ignore
+        except (APIConnectionError, Timeout) as exc:  # type: ignore
+            # Connection/timeout errors - try fallback if available
+            if fallback_endpoint:
+                logger.warning(
+                    "Cloud endpoint failed (%s), falling back to local endpoint",
+                    type(exc).__name__
+                )
+                completion_kwargs["api_base"] = fallback_endpoint
+                completion_kwargs.pop("extra_headers", None)
+                resp = completion(**completion_kwargs)  # type: ignore
+            else:
+                raise
         return _normalize_llm_response(resp, sources)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer completion failed: %s", exc)
@@ -1439,16 +1536,44 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         except (ValueError, TypeError):
             num_ctx = None
 
+    # Get endpoint and headers from ollama_config with fallback support
     try:
-        resp = completion(
-            model=model_name,
-            messages=final_messages,
-            api_base=OLLAMA_API_BASE,
-            temperature=temperature,
-            num_ctx=num_ctx,
-            stream=False,
-            timeout=300,
-        )
+        from src.core.ollama_config import get_ollama_endpoint_with_fallback
+        api_base, headers, fallback_endpoint = get_ollama_endpoint_with_fallback()
+    except ImportError:
+        api_base = OLLAMA_API_BASE
+        headers = {}
+        fallback_endpoint = None
+    
+    try:
+        completion_kwargs = {
+            "model": model_name,
+            "messages": final_messages,
+            "api_base": api_base,
+            "temperature": temperature,
+            "num_ctx": num_ctx,
+            "stream": False,
+            "timeout": 300,
+        }
+        # Add headers if available (for cloud authentication)
+        if headers:
+            completion_kwargs["extra_headers"] = headers
+        
+        # Try primary endpoint
+        try:
+            resp = completion(**completion_kwargs)
+        except (APIConnectionError, Timeout) as exc:  # type: ignore
+            # Connection/timeout errors - try fallback if available
+            if fallback_endpoint:
+                logger.warning(
+                    "Cloud endpoint failed (%s), falling back to local endpoint",
+                    type(exc).__name__
+                )
+                completion_kwargs["api_base"] = fallback_endpoint
+                completion_kwargs.pop("extra_headers", None)
+                resp = completion(**completion_kwargs)
+            else:
+                raise
 
         # Normalize response to extract conten
         normalized = _normalize_llm_response(resp, sources)

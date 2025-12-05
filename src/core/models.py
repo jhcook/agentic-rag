@@ -137,6 +137,31 @@ class VertexConfigReq(BaseModel):
     location: str
     data_store_id: str
 
+class OllamaModeReq(BaseModel):
+    """Request model for setting Ollama mode."""
+    mode: str = Field(description="Ollama mode: 'local', 'cloud', or 'auto'")
+
+class OllamaTestConnectionReq(BaseModel):
+    """Request model for testing Ollama Cloud connection."""
+    api_key: Optional[str] = Field(default=None, description="API key to test (optional, uses configured key if not provided)")
+    endpoint: Optional[str] = Field(default=None, description="Endpoint to test (optional, uses configured endpoint if not provided)")
+    proxy: Optional[str] = Field(default=None, description="HTTPS proxy to use when testing (optional)")
+    ca_bundle: Optional[str] = Field(default=None, description="Path to CA bundle PEM file (optional)")
+
+class OllamaStatusResp(BaseModel):
+    """Response model for Ollama connection status."""
+    mode: str
+    endpoint: str
+    cloud_available: bool
+    local_available: bool
+    cloud_status: Optional[str] = None  # "connected", "disconnected", "error", None
+    local_status: Optional[str] = None  # "connected", "disconnected", "error", None
+
+class OllamaTestConnectionResp(BaseModel):
+    """Response model for Ollama Cloud connection test."""
+    success: bool
+    message: str
+
 class AppConfigReq(BaseModel):
     """Request model for application configuration."""
     api_endpoint: str = Field(alias="apiEndpoint")
@@ -155,6 +180,7 @@ class AppConfigReq(BaseModel):
     rag_port: str = Field(alias="ragPort")
     rag_path: str = Field(alias="ragPath")
     debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
+    ollama_cloud_proxy: Optional[str] = Field(default=None, alias="ollamaCloudProxy")
 
     model_config = ConfigDict(populate_by_name=True)
 

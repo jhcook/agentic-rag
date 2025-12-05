@@ -16,10 +16,13 @@ The system supports multiple backend providers that can be switched at runtime *
 
 ### Available Backends
 
-1. **`ollama`** - Ollama with local models (default)
+1. **`ollama`** - Ollama with local and cloud models (default)
    - Supports per-query model selection
-   - Fast, private, runs offline
-   - Models: qwen2.5:3b, llama3.2:3b, mistral:7b, etc.
+   - **Local mode**: Fast, private, runs offline
+   - **Cloud mode**: Use Ollama Cloud hosted models with API key authentication
+   - **Auto mode**: Try cloud first, automatically fallback to local on failure
+   - Models: qwen2.5:3b, llama3.2:3b, mistral:7b, etc. (local) or cloud variants
+   - See [Ollama Cloud Architecture](ollama-cloud-architecture.md) for details
 
 2. **`openai_assistants`** - OpenAI Assistants API
    - Uses GPT-4 Turbo with file search
@@ -89,7 +92,10 @@ python src/clients/cli_agent.py "My question" --set-backend ollama
 
 Each backend can be configured via its own config file:
 
-- **Ollama**: `config/settings.json` → `LLM_MODEL_NAME`, `LLM_TEMPERATURE`
+- **Ollama**: 
+  - `config/settings.json` → `ollamaMode`, `LLM_MODEL_NAME`, `LLM_TEMPERATURE`, `ollamaCloudEndpoint`
+  - `secrets/ollama_cloud_config.json` → `api_key` (for cloud mode)
+  - See [Ollama Cloud Architecture](ollama-cloud-architecture.md) for details
 - **OpenAI**: `secrets/openai_config.json` → `api_key`, `model`, `assistant_id`
 - **Google Gemini**: `.env` → `GOOGLE_GROUNDING_MODE=google_gemini`, `client_secrets.json`
 - **Vertex AI**: `.env` → `GCP_PROJECT_ID`, `GCP_SEARCH_ENGINE_ID`
@@ -112,6 +118,9 @@ EMBED_MODEL_NAME=Snowflake/arctic-embed-xs
 LLM_MODEL_NAME=ollama/qwen2.5:3b
 ASYNC_LLM_MODEL_NAME=qwen2.5:3b
 OLLAMA_API_BASE=http://127.0.0.1:11434
+OLLAMA_MODE=local  # local | cloud | auto
+OLLAMA_CLOUD_API_KEY=your_api_key_here  # Optional, for cloud mode
+OLLAMA_CLOUD_ENDPOINT=https://ollama.com  # Optional, defaults to https://ollama.com
 OLLAMA_KEEP_ALIVE=-1
 LLM_TEMPERATURE=0.1
 RAG_BACKEND_TYPE=ollama  # or 'remote'
@@ -252,13 +261,22 @@ def send_store_to_llm() -> str:
 
 ## Ollama Integration
 
+Ollama supports three operational modes:
+- **Local mode**: Uses local Ollama instance (default)
+- **Cloud mode**: Uses Ollama Cloud hosted models
+- **Auto mode**: Tries cloud first, falls back to local on failure
+
+See [Ollama Cloud Architecture](ollama-cloud-architecture.md) for detailed documentation.
+
 ### API Base URL (`OLLAMA_API_BASE`)
 
 **Purpose**: Specifies the endpoint where the Ollama service is running.
 
-**Current Configuration**: `http://127.0.0.1:11434` (default Ollama port)
+**Local Mode Configuration**: `http://127.0.0.1:11434` (default Ollama port)
 
-**Usage**: Used by both LiteLLM and Ollama's AsyncClient for API communication.
+**Cloud Mode Configuration**: `https://ollama.com` (or custom endpoint)
+
+**Usage**: Used by both LiteLLM and Ollama's AsyncClient for API communication. The endpoint is automatically selected based on the `ollamaMode` setting in `config/settings.json`.
 
 ### Keep Alive (`OLLAMA_KEEP_ALIVE`)
 

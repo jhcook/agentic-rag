@@ -4,6 +4,7 @@ Agentic RAG (Retrieval-Augmented Generation) combines a document store, FAISS in
 
 ## Features
 - Local Ollama server + REST/MCP APIs for hybrid deployments
+- **Ollama Cloud support** - Use cloud-hosted models with automatic local fallback
 - Role-based startup (`monolith`, `server`, `client`) so you can choose which components to run
 - Automatic grounding, citations, reranking, and verification powered by FAISS + Litellm
 - React UI with file manager, logs, metrics, and backend switching
@@ -29,6 +30,7 @@ python stop.sh
 ## Configuration & Docs
 
 - Runtime settings (`config/settings.json`) override `.env`; edit them via the Settings UI to update Ollama endpoint, model, or logging behavior.
+- **Ollama Cloud**: Configure cloud mode, API keys, and endpoints via Settings UI. See `docs/ollama-cloud-architecture.md` for details.
 - Server-side details (MCP, REST, CLI) live in `docs/models-and-configuration.md`, `docs/openai_assistants.md`, and `docs/google_integration.md`.
 - Desktop packaging notes are in `docs/electron-desktop.md`; API references are under `docs/api_reference.md` and `docs/api_model_selection.md`.
 - Torch/NumPy handling, service logs, and advanced diagnostics belong in the same docs folder—refer there before editing the startup scripts.

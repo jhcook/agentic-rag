@@ -65,6 +65,10 @@ type OllamaConfig = {
   ragPort: string
   ragPath: string
   debugMode?: boolean
+  ollamaCloudApiKey?: string
+  ollamaCloudEndpoint?: string
+  ollamaCloudProxy?: string
+  ollamaCloudCABundle?: string
 }
 
 type IndexJob = {
@@ -94,13 +98,17 @@ const createDefaultOllamaConfig = (): OllamaConfig => ({
     repeatPenalty: '1.1',
     seed: '-1',
     numCtx: '2048',
-    mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
-    mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
-    mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
-    ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
-    ragPort: import.meta.env.VITE_RAG_PORT || '8001',
+  mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
+  mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
+  mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
+  ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
+  ragPort: import.meta.env.VITE_RAG_PORT || '8001',
   ragPath: import.meta.env.VITE_RAG_PATH || 'api',
   debugMode: false,
+  ollamaCloudApiKey: '',
+  ollamaCloudEndpoint: '',
+  ollamaCloudProxy: '',
+  ollamaCloudCABundle: '',
 })
 
 function App() {
@@ -156,6 +164,14 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activeMode, setActiveMode] = useState<string | null>(null)
   const [availableModes, setAvailableModes] = useState<string[]>([])
+  const [ollamaStatus, setOllamaStatus] = useState<{
+    mode: string
+    endpoint: string
+    cloud_available: boolean
+    local_available: boolean
+    cloud_status: string | null
+    local_status: string | null
+  } | null>(null)
   const getApiBase = useCallback(() => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
@@ -241,6 +257,18 @@ function App() {
             }))
           }
         }
+        
+        // Also fetch Ollama mode
+        const modeRes = await fetch(`http://${host}:${port}/${base}/ollama/mode`)
+        if (modeRes.ok) {
+          const modeData = await modeRes.json()
+          if (modeData.mode) {
+            setOllamaConfig(prev => ({
+              ...prev,
+              ollamaMode: modeData.mode
+            }))
+          }
+        }
       } catch (e) {
         console.error("Failed to fetch app config", e)
       }
@@ -264,11 +292,30 @@ function App() {
       }
   }, [ollamaConfig])
 
+  const fetchOllamaStatus = useCallback(async () => {
+    try {
+      const { host, port, base } = getApiBase()
+      const response = await fetch(`http://${host}:${port}/${base}/ollama/status`)
+      if (response.ok) {
+        const data = await response.json()
+        setOllamaStatus(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch Ollama status', err)
+    }
+  }, [getApiBase])
+
   useEffect(() => {
     fetchMode()
     const interval = setInterval(fetchMode, 5000)
     return () => clearInterval(interval)
   }, [fetchMode])
+
+  useEffect(() => {
+    fetchOllamaStatus()
+    const interval = setInterval(fetchOllamaStatus, 5000)
+    return () => clearInterval(interval)
+  }, [fetchOllamaStatus])
 
   // Load conversations from localStorage on mount
   useEffect(() => {
@@ -834,11 +881,15 @@ function App() {
       return
     }
 
+    // Do not persist secrets (API key, CA bundle) via app config
+    // Proxy is safe to store in settings.json.
+    const { ollamaCloudApiKey: _omitKey, ollamaCloudCABundle: _omitCABundle, ...safePayload } = payload
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(safePayload)
       })
       
       if (!res.ok) {
@@ -1083,6 +1134,108 @@ function App() {
       toast.error('Failed to switch backend', {
         description: err instanceof Error ? err.message : 'Unknown error'
       })
+    }
+  }
+
+  const handleSetOllamaMode = async (mode: 'local' | 'cloud' | 'auto') => {
+    try {
+      const { host, port, base } = getApiBase()
+      const response = await fetch(`http://${host}:${port}/${base}/ollama/mode`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ mode })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || `HTTP ${response.status}`)
+      }
+      
+      const result = await response.json()
+      
+      // Update local config
+      setOllamaConfig(prev => ({
+        ...prev,
+        ollamaMode: mode
+      }))
+      
+      // Refresh status
+      await fetchOllamaStatus()
+      
+      toast.success(`Ollama mode set to ${mode}`, {
+        description: 'Configuration updated'
+      })
+    } catch (err) {
+      toast.error('Failed to set Ollama mode', {
+        description: err instanceof Error ? err.message : 'Unknown error'
+      })
+      throw err
+    }
+  }
+
+  const handleTestOllamaCloudConnection = async (apiKey: string, endpoint?: string) => {
+    try {
+      const { host, port, base } = getApiBase()
+      const response = await fetch(`http://${host}:${port}/${base}/ollama/test-connection`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          api_key: apiKey,
+          endpoint: endpoint,
+          proxy: ollamaConfig?.ollamaCloudProxy,
+          ca_bundle: ollamaConfig?.ollamaCloudCABundle
+        })
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || `HTTP ${response.status}`)
+      }
+      
+      const result = await response.json()
+      
+      // If successful, update local config with saved API key
+      if (result.success) {
+        setOllamaConfig(prev => ({
+          ...prev,
+          ollamaCloudApiKey: apiKey,
+          ollamaCloudEndpoint: endpoint || prev.ollamaCloudEndpoint,
+          ollamaMode: 'cloud'
+        }))
+        // Optimistically update cloud status without waiting for the next poll
+        setOllamaStatus(prev => ({
+          mode: 'cloud',
+          endpoint: endpoint || prev?.endpoint || '',
+          cloud_available: true,
+          local_available: prev?.local_available ?? false,
+          cloud_status: 'connected',
+          local_status: prev?.local_status ?? null
+        }))
+        // Persist mode switch if not already cloud to keep status stable
+        if (ollamaConfig?.ollamaMode !== 'cloud') {
+          try {
+            await handleSetOllamaMode('cloud')
+          } catch (modeErr) {
+            console.error('Failed to set Ollama mode to cloud after test', modeErr)
+          }
+        }
+        // Refresh status
+        await fetchOllamaStatus()
+      }
+      
+      return {
+        success: result.success,
+        message: result.message || (result.success ? 'Connection successful' : 'Connection failed')
+      }
+    } catch (err) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : 'Unknown error'
+      }
     }
   }
 
@@ -1603,6 +1756,9 @@ function App() {
               onSwitchBackend={handleSwitchBackend}
               activeMode={activeMode}
               availableModes={availableModes}
+              onSetOllamaMode={handleSetOllamaMode}
+              onTestOllamaCloudConnection={handleTestOllamaCloudConnection}
+              ollamaStatus={ollamaStatus}
             />
           </TabsContent>
         </Tabs>

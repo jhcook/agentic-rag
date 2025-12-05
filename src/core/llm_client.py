@@ -10,6 +10,12 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from ollama import AsyncClient  # type: ignore
 
+# Import Ollama configuration
+from src.core.ollama_config import (
+    get_ollama_endpoint,
+    get_ollama_client_headers,
+)
+
 # Load .env early
 load_dotenv()
 
@@ -33,7 +39,12 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
-OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
+# Use dynamic endpoint resolution from ollama_config
+def _get_ollama_api_base() -> str:
+    """Get Ollama API base URL based on current mode."""
+    return get_ollama_endpoint()
+
+OLLAMA_API_BASE = _get_ollama_api_base()  # For backward compatibility
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
 ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
@@ -47,7 +58,7 @@ _SYNC_LLM_SEMAPHORE = threading.Semaphore(LLM_MAX_CONCURRENCY)
 def get_llm_config() -> Dict[str, Any]:
     """Return current LLM configuration."""
     return {
-        "api_base": OLLAMA_API_BASE,
+        "api_base": _get_ollama_api_base(),
         "model": LLM_MODEL_NAME,
         "async_model": ASYNC_LLM_MODEL_NAME,
         "temperature": LLM_TEMPERATURE,
@@ -78,10 +89,16 @@ async def safe_completion(
     model = kwargs.pop("model", LLM_MODEL_NAME)
 
     # Handle other overrides or defaults
-    api_base = kwargs.pop("api_base", OLLAMA_API_BASE)
+    api_base = kwargs.pop("api_base", _get_ollama_api_base())
     temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
     timeout = kwargs.pop("timeout", LLM_TIMEOUT)
     stream = kwargs.pop("stream", False)
+    
+    # Get headers for cloud authentication
+    headers = get_ollama_client_headers()
+    extra_headers = kwargs.pop("extra_headers", {})
+    if headers:
+        extra_headers.update(headers)
 
     async with _LLM_SEMAPHORE:
         try:
@@ -96,6 +113,7 @@ async def safe_completion(
                     temperature=temperature,
                     timeout=timeout,
                     stream=stream,
+                    extra_headers=extra_headers if extra_headers else None,
                     **kwargs
                 )
 
@@ -119,7 +137,9 @@ async def safe_chat(
     Supports either raw 'query' list (converted to user messages) or structured 'messages'.
     """
     async with _LLM_SEMAPHORE:
-        client = AsyncClient(host=OLLAMA_API_BASE)
+        endpoint = _get_ollama_api_base()
+        headers = get_ollama_client_headers()
+        client = AsyncClient(host=endpoint, headers=headers if headers else None)
 
         if messages is None:
             if query is None:
@@ -159,10 +179,16 @@ def sync_completion(
     model = kwargs.pop("model", LLM_MODEL_NAME)
 
     # Handle other overrides or defaults
-    api_base = kwargs.pop("api_base", OLLAMA_API_BASE)
+    api_base = kwargs.pop("api_base", _get_ollama_api_base())
     temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
     timeout = kwargs.pop("timeout", LLM_TIMEOUT)
     stream = kwargs.pop("stream", False)
+    
+    # Get headers for cloud authentication
+    headers = get_ollama_client_headers()
+    extra_headers = kwargs.pop("extra_headers", {})
+    if headers:
+        extra_headers.update(headers)
 
     # Use threading semaphore for sync calls
     with _SYNC_LLM_SEMAPHORE:
@@ -174,6 +200,7 @@ def sync_completion(
                 temperature=temperature,
                 timeout=timeout,
                 stream=stream,
+                extra_headers=extra_headers if extra_headers else None,
                 **kwargs
             )
         except (ValueError, OllamaError, APIConnectionError, Timeout) as exc:

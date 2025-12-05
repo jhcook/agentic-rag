@@ -45,7 +45,8 @@ from src.core.models import (
     GroundedAnswerReq, RerankReq, VerifyReq, VerifySimpleReq,
     HealthResp, DocumentInfo, DocumentsResp, DeleteDocsReq,
     ConfigModeReq, QualityMetricsResp, Job, OpenAIConfigModel,
-    ChatMessage, ChatReq, VertexConfigReq, AppConfigReq
+    ChatMessage, ChatReq, VertexConfigReq, AppConfigReq,
+    OllamaModeReq, OllamaTestConnectionReq, OllamaStatusResp, OllamaTestConnectionResp
 )
 from src.core.interfaces import RAGBackend
 from src.core.google_auth import GoogleAuthManager
@@ -1733,6 +1734,168 @@ def api_get_vertex_config():
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to read vertex config: %s", e)
         return {}
+
+# --- Ollama Cloud Configuration Endpoints ---
+
+@app.get(f"/{pth}/ollama/mode")
+def api_get_ollama_mode():
+    """Get current Ollama mode (local/cloud/auto)."""
+    try:
+        from src.core.ollama_config import get_ollama_mode
+        mode = get_ollama_mode()
+        return {"mode": mode}
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to get Ollama mode: %s", e)
+        return {"mode": "local"}  # Default fallback
+
+@app.post(f"/{pth}/ollama/mode")
+def api_set_ollama_mode(req: OllamaModeReq):
+    """Set Ollama mode (local/cloud/auto)."""
+    mode = req.mode.strip().lower()
+    if mode not in ["local", "cloud", "auto"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode: {mode}. Must be 'local', 'cloud', or 'auto'"
+        )
+    
+    try:
+        # Read current settings
+        config_path = CONFIG_DIR / "settings.json"
+        config = {}
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        
+        # Update mode
+        config["ollamaMode"] = mode
+        
+        # Save settings
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        
+        # Reload configuration
+        try:
+            from src.core import rag_core
+            rag_core.reload_settings()
+            logger.info("Updated Ollama mode to %s and reloaded configuration", mode)
+        except Exception as reload_err:  # pylint: disable=broad-exception-caught
+            logger.warning("Failed to reload rag_core: %s", reload_err)
+        
+        return {"status": "ok", "mode": mode}
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to set Ollama mode: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get(f"/{pth}/ollama/status")
+def api_get_ollama_status():
+    """Get Ollama connection status for both local and cloud."""
+    try:
+        from src.core.ollama_config import (
+            get_ollama_mode,
+            get_ollama_endpoint,
+            get_ollama_local_endpoint,
+            get_ollama_cloud_endpoint,
+            test_cloud_connection,
+        )
+        import requests
+        
+        mode = get_ollama_mode()
+        endpoint = get_ollama_endpoint()
+        
+        # Test local connection
+        local_endpoint = get_ollama_local_endpoint()
+        local_available = False
+        local_status = None
+        try:
+            response = requests.get(f"{local_endpoint}/api/tags", timeout=2)
+            if response.ok:
+                local_available = True
+                local_status = "connected"
+            else:
+                local_status = "error"
+        except Exception:  # pylint: disable=broad-exception-caught
+            local_status = "disconnected"
+        
+        # Test cloud connection (only if mode is cloud or auto)
+        cloud_available = False
+        cloud_status = None
+        if mode in ["cloud", "auto"]:
+            try:
+                success, _ = test_cloud_connection()
+                cloud_available = success
+                cloud_status = "connected" if success else "error"
+            except Exception:  # pylint: disable=broad-exception-caught
+                cloud_status = "disconnected"
+        
+        return OllamaStatusResp(
+            mode=mode,
+            endpoint=endpoint,
+            cloud_available=cloud_available,
+            local_available=local_available,
+            cloud_status=cloud_status,
+            local_status=local_status
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to get Ollama status: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get(f"/{pth}/ollama/models")
+def api_list_ollama_models():
+    """List available models from current Ollama endpoint."""
+    try:
+        backend_instance = get_rag_backend()
+        if hasattr(backend_instance, 'list_models'):
+            models = backend_instance.list_models()
+            return {"models": models}
+        return {"models": []}
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to list Ollama models: %s", e)
+        return {"models": []}
+
+@app.post(f"/{pth}/ollama/test-connection")
+def api_test_ollama_connection(req: OllamaTestConnectionReq):
+    """Test connection to Ollama Cloud with API key."""
+    try:
+        from src.core.ollama_config import (
+            test_cloud_connection,
+            save_ollama_cloud_config,
+            save_ollama_cloud_proxy,
+        )
+        
+        # Test connection
+        success, message = test_cloud_connection(
+            api_key=req.api_key,
+            endpoint=req.endpoint,
+            ca_bundle=req.ca_bundle
+        )
+        
+        # If test successful, persist provided values
+        if success:
+            try:
+                if req.api_key:
+                    save_ollama_cloud_config(
+                        api_key=req.api_key,
+                        endpoint=req.endpoint,
+                        ca_bundle=req.ca_bundle
+                    )
+                    message += " (API key saved)"
+                elif req.ca_bundle is not None:
+                    # Save CA bundle even if API key not provided
+                    save_ollama_cloud_config(
+                        ca_bundle=req.ca_bundle,
+                        endpoint=req.endpoint
+                    )
+                if req.proxy is not None:
+                    save_ollama_cloud_proxy(req.proxy)
+            except Exception as save_err:  # pylint: disable=broad-exception-caught
+                logger.warning("Connection test succeeded but failed to save config: %s", save_err)
+                # Don't fail the request if save fails
+        
+        return OllamaTestConnectionResp(success=success, message=message)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to test Ollama connection: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/logs/{{log_type}}")
 def api_get_logs(log_type: str, lines: int = 500):

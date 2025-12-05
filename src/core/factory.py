@@ -327,15 +327,35 @@ class OllamaBackend:
         return ollama_core.chat(messages, **kwargs)
 
     def list_models(self) -> List[str]:
-        """List available Ollama models."""
+        """List available Ollama models from local or cloud."""
         try:
-            ollama_base = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
-            response = requests.get(f"{ollama_base}/api/tags", timeout=5)
+            # Use ollama_config to get endpoint and headers
+            try:
+                from src.core.ollama_config import (
+                    get_ollama_endpoint,
+                    get_ollama_client_headers,
+                )
+                endpoint = get_ollama_endpoint()
+                headers = get_ollama_client_headers()
+            except ImportError:
+                # Fallback to old method
+                endpoint = os.getenv("OLLAMA_API_BASE", "http://127.0.0.1:11434")
+                headers = {}
+            
+            response = requests.get(
+                f"{endpoint}/api/tags",
+                headers=headers if headers else None,
+                timeout=5
+            )
             if response.ok:
                 data = response.json()
                 models = data.get("models", [])
                 # Return list of model names
                 return [model.get("name", "") for model in models if model.get("name")]
+            else:
+                logger.warning(
+                    "Failed to list Ollama models: HTTP %d", response.status_code
+                )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to list Ollama models: %s", exc)
         return []
