@@ -1,6 +1,6 @@
 # Ollama Cloud GDPR Compliance Documentation
 
-**Last Updated**: 2025-01-27  
+**Last Updated**: 2025-12-07  
 **Status**: Active
 
 ---
@@ -199,12 +199,44 @@ When cloud mode is enabled, the following data categories may be sent to Ollama 
 - **Application**: See main application support channels
 - **Ollama Cloud**: See [Ollama Privacy Policy](https://ollama.com/privacy) for their contact information
 
+---
+
+## 11. API Key Storage, Retention, and Deletion (Ollama Cloud)
+
+**Personal data stored by this application**
+- Ollama Cloud API key (secret) plus endpoint URL, HTTPS proxy, and CA bundle path (hostnames can be personal data)
+- Storage location: local file `secrets/ollama_cloud_config.json` under the application base directory, written with restrictive permissions (rw-------)
+
+**Purpose of storage**
+- Authenticate calls to Ollama Cloud and keep connectivity settings between sessions
+- Avoid repeated credential prompts while maintaining secure, authenticated requests
+
+**Lawful basis for storing the key (GDPR Art. 6)**
+- **Contractual necessity**: Required to deliver the opt-in Ollama Cloud inference feature the user requests
+- **Legitimate interest**: Security and continuity of the service (stable authenticated access); local-only mode remains available as an alternative
+
+**Retention**
+- Stored locally until the user clears or overwrites the values; there is no automatic time-based deletion of the config file
+- Removing the key stops further transmission to Ollama Cloud; any data already sent to Ollama Cloud remains subject to Ollama's retention policy
+
+**Deletion / right to erasure for stored API keys**
+- Clear the stored key by sending an empty string (`""`) or `null` for `api_key` to `POST /api/ollama/cloud-config`. Example:
+
+  ```bash
+  curl -X POST "http://localhost:8001/api/ollama/cloud-config" \
+       -H "Content-Type: application/json" \
+       -d '{"api_key": "", "endpoint": null, "proxy": null, "ca_bundle": null}'
+  ```
+- Optional: delete `secrets/ollama_cloud_config.json` to remove all stored cloud configuration values
+- Switching to local mode also prevents any further transmission to Ollama Cloud
+- For historical data held by Ollama Cloud, submit a deletion request to Ollama via their privacy policy
+
 ### Supervisory Authority
 Users have the right to lodge a complaint with their local data protection supervisory authority.
 
 ---
 
-## 11. Updates to This Policy
+## 12. Updates to This Policy
 
 This document will be updated if:
 - Data processing practices change
@@ -212,8 +244,8 @@ This document will be updated if:
 - Legal requirements change
 - New features are added that affect data processing
 
-**Last Review**: 2025-01-27  
-**Next Review**: 2025-07-27 (or as needed)
+**Last Review**: 2025-12-07  
+**Next Review**: 2026-06-07 (or as needed)
 
 ---
 
@@ -224,8 +256,8 @@ This document will be updated if:
 | **Processor** | Ollama Cloud (Ollama, Inc.) |
 | **Lawful Basis** | Contractual necessity, legitimate interest |
 | **Data Categories** | Queries, document content, chat history |
-| **Retention** | Unknown (see Ollama Cloud policy) |
-| **Deletion** | Contact Ollama Cloud |
+| **Retention** | Local config: until user clears it; Ollama Cloud: see their policy (not documented) |
+| **Deletion** | Local: POST `/api/ollama/cloud-config` with empty `api_key` or delete `secrets/ollama_cloud_config.json`; Ollama Cloud: request via their policy |
 | **User Control** | Can disable cloud mode at any time |
 | **Default** | Local mode (no third-party transmission) |
 | **Encryption** | HTTPS/TLS in transit |
@@ -234,5 +266,4 @@ This document will be updated if:
 ---
 
 **Note**: This documentation is based on current understanding of Ollama Cloud's service. For the most up-to-date information about Ollama Cloud's data processing practices, refer to [Ollama's Privacy Policy](https://ollama.com/privacy).
-
 

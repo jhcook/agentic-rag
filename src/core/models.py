@@ -148,6 +148,15 @@ class OllamaTestConnectionReq(BaseModel):
     proxy: Optional[str] = Field(default=None, description="HTTPS proxy to use when testing (optional)")
     ca_bundle: Optional[str] = Field(default=None, description="Path to CA bundle PEM file (optional)")
 
+class OllamaCloudConfigReq(BaseModel):
+    """Request model for persisting Ollama Cloud secrets/config."""
+    api_key: Optional[str] = Field(default=None, description="API key to store (masked value retains existing)", alias="apiKey")
+    endpoint: Optional[str] = Field(default=None, description="Cloud endpoint URL")
+    proxy: Optional[str] = Field(default=None, description="HTTPS proxy URL")
+    ca_bundle: Optional[str] = Field(default=None, description="Path to CA bundle PEM file", alias="caBundle")
+
+    model_config = ConfigDict(populate_by_name=True)
+
 class OllamaStatusResp(BaseModel):
     """Response model for Ollama connection status."""
     mode: str
@@ -181,6 +190,8 @@ class AppConfigReq(BaseModel):
     rag_path: str = Field(alias="ragPath")
     debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
     ollama_cloud_proxy: Optional[str] = Field(default=None, alias="ollamaCloudProxy")
+    ollama_cloud_endpoint: Optional[str] = Field(default=None, alias="ollamaCloudEndpoint")
+    ollama_mode: Optional[str] = Field(default=None, alias="ollamaMode")
 
     model_config = ConfigDict(populate_by_name=True)
 

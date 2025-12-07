@@ -83,6 +83,7 @@ interface SettingsDashboardProps {
     cloud_status: string | null
     local_status: string | null
   } | null
+  ollamaCloudTestPassed?: boolean
 }
 
 export function SettingsDashboard({
@@ -105,13 +106,16 @@ export function SettingsDashboard({
   availableModes = [],
   onSetOllamaMode,
   onTestOllamaCloudConnection,
-  ollamaStatus
+  ollamaStatus,
+  ollamaCloudTestPassed = false
 }: SettingsDashboardProps) {
   const [ollamaExpanded, setOllamaExpanded] = useState(false)
   const [openaiExpanded, setOpenaiExpanded] = useState(false)
   const [googleExpanded, setGoogleExpanded] = useState(false)
   const [advancedExpanded, setAdvancedExpanded] = useState(false)
-  const ollamaAvailable = availableModes.includes('ollama')
+  const isCloudMode = config?.ollamaMode === 'cloud'
+  const isAutoMode = config?.ollamaMode === 'auto'
+  const ollamaAvailable = availableModes.includes('ollama') || ollamaCloudTestPassed
   const openaiAvailable = availableModes.includes('openai_assistants')
   const googleAvailable = availableModes.some((mode) => mode.startsWith('google') || mode === 'vertex_ai_search')
 
@@ -269,29 +273,31 @@ export function SettingsDashboard({
               <CollapsibleContent>
                 <div className="border-t border-border p-6 space-y-6">
                   <div className="space-y-4">
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="api-endpoint">Ollama API Endpoint</Label>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                                <Info className="h-4 w-4" />
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p className="max-w-xs">The URL where your local Ollama server is running. Default is http://localhost:11434</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
+                    {!isCloudMode && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor="api-endpoint">Ollama API Endpoint</Label>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
+                                  <Info className="h-4 w-4" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p className="max-w-xs">The URL where your local Ollama server is running. Default is http://localhost:11434</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                        <Input
+                          id="api-endpoint"
+                          value={config?.apiEndpoint || ''}
+                          onChange={(e) => onConfigChange('apiEndpoint', e.target.value)}
+                          placeholder="http://localhost:11434"
+                        />
                       </div>
-                      <Input
-                        id="api-endpoint"
-                        value={config?.apiEndpoint || ''}
-                        onChange={(e) => onConfigChange('apiEndpoint', e.target.value)}
-                        placeholder="http://localhost:11434"
-                      />
-                    </div>
+                    )}
 
                     <div className="space-y-4 rounded-lg border border-border p-4 bg-muted/20">
                       <h4 className="font-semibold text-sm">Ollama Mode Configuration</h4>
@@ -463,13 +469,15 @@ export function SettingsDashboard({
                           <div className="space-y-2 pt-2 border-t border-border">
                             <Label className="text-sm font-semibold">Connection Status</Label>
                             <div className="grid gap-2 md:grid-cols-2">
-                              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                                <span className="text-sm">Local</span>
-                                <Badge variant={ollamaStatus.local_status === 'connected' ? 'default' : 'secondary'}>
-                                  {ollamaStatus.local_status || 'unknown'}
-                                </Badge>
-                              </div>
-                              {(config?.ollamaMode === 'cloud' || config?.ollamaMode === 'auto') && (
+                              {!isCloudMode && (
+                                <div className="flex items-center justify-between p-2 rounded bg-muted/50">
+                                  <span className="text-sm">Local</span>
+                                  <Badge variant={ollamaStatus.local_status === 'connected' ? 'default' : 'secondary'}>
+                                    {ollamaStatus.local_status || 'unknown'}
+                                  </Badge>
+                                </div>
+                              )}
+                              {(isCloudMode || isAutoMode) && (
                                 <div className="flex items-center justify-between p-2 rounded bg-muted/50">
                                   <span className="text-sm">Cloud</span>
                                   <Badge variant={ollamaStatus.cloud_status === 'connected' ? 'default' : 'secondary'}>
@@ -792,11 +800,13 @@ export function SettingsDashboard({
                     </Collapsible>
                   </div>
 
-                  <div className="flex gap-3 pt-4 border-t border-border">
-                    <Button onClick={onTestConnection} variant="outline" className="flex-1">
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                      Test Connection
-                    </Button>
+                    <div className="flex gap-3 pt-4 border-t border-border">
+                    {!isCloudMode && (
+                      <Button onClick={onTestConnection} variant="outline" className="flex-1">
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                        Test Connection
+                      </Button>
+                    )}
                     <Button
                       onClick={() => onSwitchBackend('ollama')}
                       className="flex-1"

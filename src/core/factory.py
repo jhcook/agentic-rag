@@ -684,19 +684,51 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         """Get list of available backend modes (only properly configured ones)."""
         modes = []
 
-        # Local backend - check if Ollama is reachable (only if not disabled)
+        # Ollama backend - consider cloud/local based on configured mode
         if "ollama" in self.backends and _ollama_backend_enabled() and self.ollama_configured:
-            ollama_base = "http://127.0.0.1:11434"
-            if rag_core_module is not None:
-                ollama_base = getattr(rag_core_module, "OLLAMA_API_BASE", ollama_base)
+            endpoints_to_try: List[tuple[str, dict]] = []
+            verify_arg: bool | str = True
+            proxies = None
             try:
-                response = requests.get(f"{ollama_base.rstrip('/')}/api/tags", timeout=2)
-                if response.ok:
-                    data = response.json()
-                    if data.get("models"):
-                        modes.append("ollama")
+                from src.core.ollama_config import (
+                    get_ollama_endpoint_with_fallback,
+                    get_requests_ca_bundle,
+                    get_ollama_cloud_proxy,
+                )
+                primary, headers, fallback = get_ollama_endpoint_with_fallback()
+                endpoints_to_try.append((primary, headers or {}))
+                if fallback:
+                    endpoints_to_try.append((fallback, {}))
+                ca_bundle = get_requests_ca_bundle()
+                if ca_bundle:
+                    verify_arg = ca_bundle
+                proxy_url = get_ollama_cloud_proxy()
+                if proxy_url:
+                    proxies = {"http": proxy_url, "https": proxy_url}
             except Exception:
-                pass  # Ollama not available
+                # Fallback to legacy local-only check
+                ollama_base = "http://127.0.0.1:11434"
+                if rag_core_module is not None:
+                    ollama_base = getattr(rag_core_module, "OLLAMA_API_BASE", ollama_base)
+                endpoints_to_try.append((ollama_base, {}))
+
+            for endpoint, headers in endpoints_to_try:
+                try:
+                    response = requests.get(
+                        f"{endpoint.rstrip('/')}/api/tags",
+                        timeout=3,
+                        headers=headers,
+                        verify=verify_arg if endpoint.startswith("https://") else True,
+                        proxies=proxies if endpoint.startswith("https://") else None,
+                    )
+                    if response.ok:
+                        data = response.json()
+                        if data.get("models"):
+                            modes.append("ollama")
+                            break
+                except Exception:
+                    # Try next endpoint (e.g., fallback) before giving up
+                    continue
 
         # OpenAI Assistants - check if configured
         if "openai_assistants" in self.backends:

@@ -14,7 +14,8 @@ os.environ["RAG_PORT"] = "8001"
 os.environ["RAG_PATH"] = "api"
 
 from fastapi.testclient import TestClient
-from src.servers.rest_server import app
+from src.servers.rest_server import app, MASKED_SECRET
+from src.core import factory
 
 client = TestClient(app)
 
@@ -251,9 +252,123 @@ class TestOllamaFallbackLogic:
         assert mock_completion.call_count == 1
 
 
+class TestHybridBackendAvailability:
+    """Tests for backend availability calculations."""
+
+    def test_available_modes_allows_cloud_when_local_unreachable(self, monkeypatch):
+        """Hybrid backend should expose Ollama when cloud works but localhost fails."""
+        backend = factory.HybridBackend()
+        backend.backends["ollama"] = MagicMock()  # Avoid touching real core
+        backend.ollama_configured = True
+
+        monkeypatch.setattr(factory, "_ollama_backend_enabled", lambda: True)
+        monkeypatch.setattr("src.core.ollama_config.get_ollama_mode", lambda: "auto")
+        monkeypatch.setattr(
+            "src.core.ollama_config.get_ollama_endpoint_with_fallback",
+            lambda: ("https://ollama.com", {"Authorization": "Bearer test"}, "http://127.0.0.1:11434"),
+        )
+        monkeypatch.setattr("src.core.ollama_config.get_requests_ca_bundle", lambda: None)
+        monkeypatch.setattr("src.core.ollama_config.get_ollama_cloud_proxy", lambda: None)
+
+        calls = []
+
+        def fake_get(url, timeout=3, headers=None, verify=True, proxies=None):  # type: ignore[override]
+            calls.append((url, headers, proxies))
+            if "ollama.com" in url:
+                response = MagicMock()
+                response.ok = True
+                response.json.return_value = {"models": ["llama3"]}
+                return response
+            raise requests.ConnectionError("local down")
+
+        monkeypatch.setattr(factory.requests, "get", fake_get)
+
+        modes = backend.get_available_modes()
+
+        assert "ollama" in modes
+        assert any("ollama.com" in call[0] for call in calls)
+
+class TestOllamaCloudConfigPersistence:
+    """Tests for reading/writing Ollama Cloud secrets."""
+
+    def test_save_and_fetch_cloud_config(self, temp_secrets_dir, temp_config_dir, monkeypatch):
+        """API should persist cloud API key and return it to populate UI."""
+        secrets_path = temp_secrets_dir / "ollama_cloud_config.json"
+        settings_path = temp_config_dir / "settings.json"
+        settings_path.write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr("src.core.ollama_config.OLLAMA_CLOUD_SECRETS_PATH", secrets_path)
+        monkeypatch.setattr("src.core.ollama_config.SETTINGS_PATH", settings_path)
+
+        save_resp = client.post(
+            "/api/ollama/cloud-config",
+            json={
+                "api_key": "sk-test-123",
+                "endpoint": "https://ollama.com",
+                "proxy": "http://proxy.local:8080",
+                "ca_bundle": "/tmp/corp.pem"
+            }
+        )
+        assert save_resp.status_code == 200
+        assert save_resp.json()["status"] == "saved"
+
+        fetch_resp = client.get("/api/ollama/cloud-config")
+        assert fetch_resp.status_code == 200
+        data = fetch_resp.json()
+        assert data["api_key"] == MASKED_SECRET
+        assert data["has_api_key"] is True
+        assert data["endpoint"] == "https://ollama.com"
+        assert data["proxy"] == "http://proxy.local:8080"
+        assert data["ca_bundle"] == "/tmp/corp.pem"
+
+
+class TestOpenAIConfigMasking:
+    """Tests for OpenAI config masking and persistence."""
+
+    def test_openai_key_is_masked_and_preserved(self, tmp_path, monkeypatch):
+        """API should mask keys on GET and keep stored key when placeholder is posted."""
+        monkeypatch.chdir(tmp_path)
+
+        save_resp = client.post(
+            "/api/config/openai",
+            json={
+                "apiKey": "sk-openai-test",
+                "model": "gpt-4-turbo-preview",
+                "assistantId": ""
+            },
+        )
+        assert save_resp.status_code == 200
+
+        fetch_resp = client.get("/api/config/openai")
+        assert fetch_resp.status_code == 200
+        data = fetch_resp.json()
+        assert data["api_key"] == MASKED_SECRET
+        assert data["has_api_key"] is True
+        assert data["model"] == "gpt-4-turbo-preview"
+
+        # Update model while keeping existing key masked
+        update_resp = client.post(
+            "/api/config/openai",
+            json={
+                "apiKey": MASKED_SECRET,
+                "model": "gpt-4.1-mini",
+                "assistantId": "asst_123",
+            },
+        )
+        assert update_resp.status_code == 200
+
+        saved_path = tmp_path / "secrets" / "openai_config.json"
+        with open(saved_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+
+        assert saved["api_key"] == "sk-openai-test"
+        assert saved["model"] == "gpt-4.1-mini"
+        assert saved["assistant_id"] == "asst_123"
+
+
 class TestOllamaSecurityFeatures:
     """Tests for security features."""
-    
+
     def test_api_key_redaction_in_errors(self):
         """Test API keys are redacted from error messages."""
         from src.core.ollama_config import _redact_api_key
@@ -306,4 +421,3 @@ class TestOllamaSecurityFeatures:
         file_stat = secrets_path.stat()
         # Check permissions are 600 (rw-------)
         assert (file_stat.st_mode & 0o777) == 0o600
-

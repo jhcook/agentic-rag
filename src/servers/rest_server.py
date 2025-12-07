@@ -20,6 +20,7 @@ import queue
 import asyncio
 import uuid
 import inspect
+import stat
 from pathlib import Path
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Callable, Tuple
@@ -46,7 +47,8 @@ from src.core.models import (
     HealthResp, DocumentInfo, DocumentsResp, DeleteDocsReq,
     ConfigModeReq, QualityMetricsResp, Job, OpenAIConfigModel,
     ChatMessage, ChatReq, VertexConfigReq, AppConfigReq,
-    OllamaModeReq, OllamaTestConnectionReq, OllamaStatusResp, OllamaTestConnectionResp
+    OllamaModeReq, OllamaTestConnectionReq, OllamaCloudConfigReq,
+    OllamaStatusResp, OllamaTestConnectionResp
 )
 from src.core.interfaces import RAGBackend
 from src.core.google_auth import GoogleAuthManager
@@ -59,6 +61,7 @@ from src.core.config_paths import (
     VERTEX_CONFIG_PATH,
     LEGACY_VERTEX_CONFIG_PATH,
 )
+from src.core.ollama_config import _redact_api_key  # pylint: disable=protected-access
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -224,6 +227,7 @@ auth_manager = GoogleAuthManager()
 MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = os.getenv("MCP_PORT", "8000")
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
+MASKED_SECRET = "***MASKED***"
 
 def _mcp_base() -> str:
     """Get the base URL for MCP server."""
@@ -239,6 +243,27 @@ def _notify_mcp_logging_update(debug_mode: bool):
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # Don't fail config save if MCP notification fails
         logger.debug("MCP logging notification failed (non-critical): %s", exc)
+
+def _mask_secret(value: Optional[str]) -> tuple[str, bool]:
+    """
+    Return a masked value and flag indicating whether a secret was present.
+    
+    Args:
+        value: Raw secret value.
+    
+    Returns:
+        Tuple of (masked_value, has_value).
+    """
+    if value and value.strip():
+        return MASKED_SECRET, True
+    return "", False
+
+def _redact_error_message(message: str, *secrets: Optional[str]) -> str:
+    """Redact any provided secrets from a log or HTTP error message."""
+    redacted = message or ""
+    for secret in secrets:
+        redacted = _redact_api_key(redacted, secret)
+    return redacted
 
 def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     """
@@ -1416,21 +1441,48 @@ def auth_logout(request: Request, provider: Optional[str] = None):
 @app.post(f"/{pth}/config/openai")
 def save_openai_config(_request: Request, config: OpenAIConfigModel):
     """Save OpenAI API configuration to secrets/openai_config.json."""
+    incoming_key = config.api_key
+    existing_api_key = ""
     try:
         os.makedirs("secrets", exist_ok=True)
+
+        existing_config: dict[str, Any] = {}
+        if os.path.exists("secrets/openai_config.json"):
+            try:
+                with open("secrets/openai_config.json", "r", encoding="utf-8") as f:
+                    existing_config = json.load(f)
+            except (json.JSONDecodeError, OSError) as exc:
+                sanitized_err = _redact_error_message(str(exc), incoming_key)
+                logger.warning("Failed to read existing OpenAI config: %s", sanitized_err)
+
+        existing_api_key = existing_config.get("api_key", "")
+
+        if incoming_key is None or incoming_key == MASKED_SECRET:
+            if not existing_api_key:
+                raise HTTPException(status_code=400, detail="API key is required for OpenAI configuration")
+            api_key_to_save = existing_api_key
+        else:
+            api_key_to_save = incoming_key.strip() if incoming_key else ""
+        
         config_data = {
-            "api_key": config.api_key,
+            "api_key": api_key_to_save,
             "model": config.model,
             "assistant_id": config.assistant_id
         }
         with open("secrets/openai_config.json", "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=2)
         
+        try:
+            os.chmod("secrets/openai_config.json", stat.S_IRUSR | stat.S_IWUSR)
+        except OSError as perm_err:
+            logger.warning("Failed to set permissions on OpenAI config: %s", perm_err)
+        
         logger.info("OpenAI configuration saved to secrets/openai_config.json")
         return JSONResponse({"status": "success", "message": "Configuration saved"})
     except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Failed to save OpenAI config: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        error_msg = _redact_error_message(str(e), incoming_key, existing_api_key)
+        logger.error("Failed to save OpenAI config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from e
 
 @app.post(f"/{pth}/config/openai/reload")
 def reload_openai_backend(_request: Request):
@@ -1455,29 +1507,33 @@ def reload_openai_backend(_request: Request):
 
 @app.get(f"/{pth}/config/openai")
 def get_openai_config(_request: Request):
-    """Get OpenAI configuration (without exposing the full API key)."""
+    """Get OpenAI configuration (API key is masked; has_api_key indicates presence)."""
+    existing_api_key: Optional[str] = None
     try:
         if not os.path.exists("secrets/openai_config.json"):
-            return JSONResponse({"api_key": "", "model": "gpt-4-turbo-preview", "assistant_id": ""})
+            masked_key, has_key = _mask_secret(None)
+            return JSONResponse({
+                "api_key": masked_key,
+                "has_api_key": has_key,
+                "model": "gpt-4-turbo-preview",
+                "assistant_id": ""
+            })
         
         with open("secrets/openai_config.json", "r", encoding="utf-8") as f:
             config = json.load(f)
-        
-        # Mask the API key for security (show only last 4 chars)
-        api_key = config.get("api_key", "")
-        if len(api_key) > 4:
-            masked_key = "sk-..." + api_key[-4:]
-        else:
-            masked_key = ""
-        
+
+        existing_api_key = config.get("api_key", "")
+        masked_key, has_key = _mask_secret(existing_api_key)
         return JSONResponse({
             "api_key": masked_key,
+            "has_api_key": has_key,
             "model": config.get("model", "gpt-4-turbo-preview"),
             "assistant_id": config.get("assistant_id", "")
         })
     except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Failed to load OpenAI config: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        error_msg = _redact_error_message(str(e), existing_api_key)
+        logger.error("Failed to load OpenAI config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from e
 
 @app.get(f"/{pth}/config/openai/models")
 def get_openai_models(_request: Request):
@@ -1627,7 +1683,20 @@ def api_save_app_config(req: AppConfigReq):
                 return bool(value.strip())
             return bool(value)
 
-        ollama_configured = all(_has_value(field) for field in required_fields)
+        # Treat Ollama as configured if we have a model and either:
+        # - a local endpoint, or
+        # - a stored Ollama Cloud API key (cloud-only users)
+        has_model = _has_value("model")
+        has_local_endpoint = _has_value("apiEndpoint")
+        try:
+            from src.core import ollama_config
+
+            cloud_api_key = ollama_config.get_ollama_api_key()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            cloud_api_key = None
+            logger.warning("Unable to read Ollama cloud config when saving app config: %s", exc)
+
+        ollama_configured = has_model and (has_local_endpoint or bool(cloud_api_key))
         payload["ollamaConfigured"] = ollama_configured
         if ollama_configured:
             payload["ragMode"] = payload.get("ragMode", "ollama")
@@ -1808,7 +1877,11 @@ def api_get_ollama_status():
         local_available = False
         local_status = None
         try:
-            response = requests.get(f"{local_endpoint}/api/tags", timeout=2)
+            response = requests.get(
+                f"{local_endpoint}/api/tags",
+                timeout=2,
+                proxies={"http": "", "https": ""},  # bypass system proxies for localhost
+            )
             if response.ok:
                 local_available = True
                 local_status = "connected"
@@ -1862,10 +1935,11 @@ def api_test_ollama_connection(req: OllamaTestConnectionReq):
             save_ollama_cloud_config,
             save_ollama_cloud_proxy,
         )
+        request_api_key = None if req.api_key == MASKED_SECRET else req.api_key
         
         # Test connection
         success, message = test_cloud_connection(
-            api_key=req.api_key,
+            api_key=request_api_key,
             endpoint=req.endpoint,
             ca_bundle=req.ca_bundle
         )
@@ -1873,9 +1947,9 @@ def api_test_ollama_connection(req: OllamaTestConnectionReq):
         # If test successful, persist provided values
         if success:
             try:
-                if req.api_key:
+                if request_api_key:
                     save_ollama_cloud_config(
-                        api_key=req.api_key,
+                        api_key=request_api_key,
                         endpoint=req.endpoint,
                         ca_bundle=req.ca_bundle
                     )
@@ -1896,6 +1970,62 @@ def api_test_ollama_connection(req: OllamaTestConnectionReq):
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to test Ollama connection: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.get(f"/{pth}/ollama/cloud-config")
+def api_get_ollama_cloud_config():
+    """Fetch stored Ollama Cloud configuration (API key is masked)."""
+    api_key_raw: Optional[str] = None
+    try:
+        from src.core.ollama_config import (
+            get_ollama_api_key,
+            get_ollama_cloud_endpoint,
+            get_requests_ca_bundle,
+            get_ollama_cloud_proxy,
+        )
+        api_key_raw = get_ollama_api_key()
+        masked_key, has_key = _mask_secret(api_key_raw)
+        return {
+            "api_key": masked_key,
+            "has_api_key": has_key,
+            "endpoint": get_ollama_cloud_endpoint(),
+            "ca_bundle": get_requests_ca_bundle() or "",
+            "proxy": get_ollama_cloud_proxy() or "",
+        }
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        error_msg = _redact_error_message(str(exc), api_key_raw)
+        logger.error("Failed to read Ollama cloud config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from exc
+
+@app.post(f"/{pth}/ollama/cloud-config")
+def api_save_ollama_cloud_config(req: OllamaCloudConfigReq):
+    """Persist Ollama Cloud secrets/config without forcing a live test."""
+    api_key: Optional[str] = None
+    try:
+        from src.core.ollama_config import (
+            save_ollama_cloud_config,
+            save_ollama_cloud_proxy,
+        )
+
+        api_key = None if req.api_key == MASKED_SECRET else req.api_key
+
+        if any([api_key is not None, req.endpoint is not None, req.ca_bundle is not None]):
+            save_ollama_cloud_config(
+                api_key=api_key,
+                endpoint=req.endpoint,
+                ca_bundle=req.ca_bundle,
+            )
+
+        if req.proxy is not None:
+            save_ollama_cloud_proxy(req.proxy)
+
+        return {"status": "saved"}
+    except ValueError as exc:
+        error_msg = _redact_error_message(str(exc), api_key, req.api_key)
+        raise HTTPException(status_code=400, detail=error_msg) from exc
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        error_msg = _redact_error_message(str(exc), api_key, req.api_key)
+        logger.error("Failed to save Ollama cloud config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from exc
 
 @app.get(f"/{pth}/logs/{{log_type}}")
 def api_get_logs(log_type: str, lines: int = 500):

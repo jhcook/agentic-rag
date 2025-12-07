@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -88,6 +88,8 @@ type IndexJob = {
   }
 }
 
+const MASKED_SECRET = '***MASKED***'
+
 const createDefaultOllamaConfig = (): OllamaConfig => ({
     apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
     model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
@@ -150,6 +152,7 @@ function App() {
     model: 'gpt-4-turbo-preview',
     assistantId: ''
   })
+  const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [openaiModels, setOpenaiModels] = useState<string[]>([])
   const searchAbortRef = useRef<AbortController | null>(null)
   const [jobProgress, setJobProgress] = useState<{
@@ -172,6 +175,8 @@ function App() {
     cloud_status: string | null
     local_status: string | null
   } | null>(null)
+  const [hasOllamaCloudApiKey, setHasOllamaCloudApiKey] = useState(false)
+  const [ollamaCloudTestPassed, setOllamaCloudTestPassed] = useState(false)
   const getApiBase = useCallback(() => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
@@ -269,6 +274,25 @@ function App() {
             }))
           }
         }
+
+        // Load stored Ollama Cloud secrets so the key stays populated
+        try {
+          const cloudRes = await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`)
+          if (cloudRes.ok) {
+            const cloudData = await cloudRes.json()
+            const hasCloudKey = Boolean(cloudData?.has_api_key ?? cloudData?.hasApiKey ?? cloudData?.api_key)
+            setHasOllamaCloudApiKey(hasCloudKey)
+            setOllamaConfig(prev => ({
+              ...prev,
+              ollamaCloudApiKey: hasCloudKey ? MASKED_SECRET : (cloudData?.api_key ?? prev.ollamaCloudApiKey),
+              ollamaCloudEndpoint: cloudData?.endpoint ?? prev.ollamaCloudEndpoint,
+              ollamaCloudProxy: cloudData?.proxy ?? prev.ollamaCloudProxy,
+              ollamaCloudCABundle: cloudData?.ca_bundle ?? prev.ollamaCloudCABundle,
+            }))
+          }
+        } catch (err) {
+          console.error('Failed to load Ollama cloud config', err)
+        }
       } catch (e) {
         console.error("Failed to fetch app config", e)
       }
@@ -347,8 +371,14 @@ function App() {
       fetch(`http://${host}:${port}/${base}/config/openai`)
         .then(res => res.json())
         .then(config => {
-          if (config.api_key || config.model) {
-            setOpenaiConfig(config)
+          if (config.api_key || config.apiKey || config.model || config.has_api_key || config.hasApiKey) {
+            const hasKey = Boolean(config.has_api_key ?? config.hasApiKey ?? config.apiKey ?? config.api_key)
+            setHasOpenaiApiKey(hasKey)
+            setOpenaiConfig({
+              apiKey: hasKey ? MASKED_SECRET : '',
+              model: config.model || 'gpt-4-turbo-preview',
+              assistantId: config.assistantId || config.assistant_id || ''
+            })
           }
         })
         .catch(err => console.error('Failed to load OpenAI config:', err))
@@ -870,11 +900,16 @@ function App() {
     })
   }
 
-  const handleSaveConfig = async (configToSave?: OllamaConfig) => {
+  const handleSaveConfig = async (configToSave?: OllamaConfig, cloudApiKeyOverride?: string | null) => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
     const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
     const payload = configToSave || ollamaConfig
+    const effectiveCloudApiKey = cloudApiKeyOverride !== undefined
+      ? (cloudApiKeyOverride === null ? '' : cloudApiKeyOverride)
+      : (payload?.ollamaCloudApiKey === MASKED_SECRET && hasOllamaCloudApiKey)
+        ? undefined
+        : payload?.ollamaCloudApiKey
 
     if (!payload?.apiEndpoint?.trim() || !payload?.model?.trim()) {
       toast.error('API endpoint and model are required')
@@ -886,6 +921,31 @@ function App() {
     const { ollamaCloudApiKey: _omitKey, ollamaCloudCABundle: _omitCABundle, ...safePayload } = payload
 
     try {
+      // Persist cloud secrets first so the key remains available on reload
+      const shouldPersistCloud = (
+        cloudApiKeyOverride !== undefined ||
+        effectiveCloudApiKey !== undefined ||
+        payload?.ollamaCloudEndpoint !== undefined ||
+        payload?.ollamaCloudProxy !== undefined ||
+        payload?.ollamaCloudCABundle !== undefined
+      )
+      if (shouldPersistCloud) {
+        const cloudRes = await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: cloudApiKeyOverride !== undefined ? cloudApiKeyOverride : effectiveCloudApiKey,
+            endpoint: payload?.ollamaCloudEndpoint,
+            proxy: payload?.ollamaCloudProxy,
+            ca_bundle: payload?.ollamaCloudCABundle,
+          })
+        })
+        if (!cloudRes.ok) {
+          const detail = await cloudRes.json().catch(() => ({}))
+          throw new Error(detail.detail || `Failed to save Ollama Cloud config (HTTP ${cloudRes.status})`)
+        }
+      }
+
       const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -899,6 +959,14 @@ function App() {
         description: 'Settings have been saved to server'
       })
       await fetchMode()
+      const nextHasCloudKey = cloudApiKeyOverride !== undefined
+        ? Boolean(cloudApiKeyOverride)
+        : (effectiveCloudApiKey === undefined ? hasOllamaCloudApiKey : Boolean(effectiveCloudApiKey))
+      setHasOllamaCloudApiKey(nextHasCloudKey)
+      setOllamaConfig(prev => ({
+        ...prev,
+        ...(nextHasCloudKey ? { ollamaCloudApiKey: MASKED_SECRET } : { ollamaCloudApiKey: '' })
+      }))
     } catch (e) {
       console.error("Failed to save config", e)
       toast.error('Failed to save configuration')
@@ -935,10 +1003,12 @@ function App() {
           model: 'gpt-4-turbo-preview',
           assistantId: ''
         })
+        setHasOpenaiApiKey(false)
         setOpenaiModels([])
       } else if (provider === 'ollama') {
         toast.success('Disconnected from Ollama backend')
         let updatedConfig = false
+        setHasOllamaCloudApiKey(false)
         try {
           const configRes = await fetch(`http://${host}:${port}/${base}/config/app`)
           if (configRes.ok) {
@@ -954,7 +1024,9 @@ function App() {
         }
         if (!updatedConfig) {
           setOllamaConfig(createDefaultOllamaConfig())
+          setHasOllamaCloudApiKey(false)
         }
+        setOllamaCloudTestPassed(false)
       } else {
         toast.success('Disconnected from all providers')
       }
@@ -967,7 +1039,10 @@ function App() {
   }
 
   const handleSaveOpenAIConfig = async () => {
-    if (!openaiConfig.apiKey) {
+    const isPlaceholder = openaiConfig.apiKey === MASKED_SECRET
+    const hasUsableKey = (!!openaiConfig.apiKey && !isPlaceholder) || hasOpenaiApiKey
+
+    if (!hasUsableKey) {
       toast.error('Please enter an API key')
       return
     }
@@ -983,7 +1058,10 @@ function App() {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(openaiConfig)
+        body: JSON.stringify({
+          ...openaiConfig,
+          apiKey: isPlaceholder && hasOpenaiApiKey ? MASKED_SECRET : openaiConfig.apiKey
+        })
       })
       
       if (!saveResponse.ok) {
@@ -1018,6 +1096,15 @@ function App() {
       // Refresh available modes to update UI
       await refreshServiceStatuses()
       await fetchMode()
+      const keyWasCleared = openaiConfig.apiKey !== MASKED_SECRET && !openaiConfig.apiKey
+      const hasKeyConfigured = keyWasCleared ? false : hasUsableKey
+      setHasOpenaiApiKey(hasKeyConfigured)
+      setOpenaiConfig(prev => ({
+        ...prev,
+        apiKey: hasKeyConfigured ? MASKED_SECRET : '',
+        model: openaiConfig.model,
+        assistantId: openaiConfig.assistantId
+      }))
       
     } catch (err) {
       toast.dismiss('openai-reload')
@@ -1028,11 +1115,63 @@ function App() {
   }
 
   const handleTestOpenAIConnection = async () => {
+    const isPlaceholder = openaiConfig.apiKey === MASKED_SECRET
+    const { host, port, base } = getApiBase()
+
+    // If we already have a stored key, allow testing without re-entering it
+    if (isPlaceholder && hasOpenaiApiKey) {
+      toast.loading('Testing OpenAI connection...', { id: 'openai-test' })
+      try {
+        const modelsRes = await fetch(`http://${host}:${port}/${base}/config/openai/models`)
+        if (!modelsRes.ok) {
+          const errorData = await modelsRes.json().catch(() => ({}))
+          throw new Error(errorData.detail || `HTTP ${modelsRes.status}`)
+        }
+
+        const modelsData = await modelsRes.json()
+        if (modelsData.warning) {
+          toast.warning('API key valid but limited access', {
+            id: 'openai-test',
+            description: modelsData.message || 'No GPT models available',
+            duration: 10000
+          })
+          setOpenaiModels([])
+          return
+        }
+
+        if (modelsData.models && Array.isArray(modelsData.models)) {
+          const modelIds = modelsData.models.map((m: any) => m.id || m.name || m)
+          setOpenaiModels(modelIds)
+          toast.success('Connection successful!', {
+            id: 'openai-test',
+            description: `Found ${modelIds.length} available models`
+          })
+          return
+        }
+
+        toast.success('Connection successful!', {
+          id: 'openai-test',
+          description: 'API key is valid'
+        })
+        return
+      } catch (err) {
+        toast.error('Connection failed', {
+          id: 'openai-test',
+          description: err instanceof Error ? err.message : 'Invalid API key'
+        })
+        return
+      }
+    }
+
     if (!openaiConfig.apiKey) {
       toast.error('Please enter an API key first')
       return
     }
-    
+    if (isPlaceholder) {
+      toast.error('Enter your API key to test the connection')
+      return
+    }
+
     toast.loading('Testing OpenAI connection...', { id: 'openai-test' })
     
     try {
@@ -1119,6 +1258,7 @@ function App() {
       
       const result = await response.json()
       setActiveMode(result.mode)
+      await fetchMode()
       
       const modeNames: Record<string, string> = {
         'ollama': 'Ollama',
@@ -1200,16 +1340,22 @@ function App() {
       
       // If successful, update local config with saved API key
       if (result.success) {
-        setOllamaConfig(prev => ({
-          ...prev,
-          ollamaCloudApiKey: apiKey,
-          ollamaCloudEndpoint: endpoint || prev.ollamaCloudEndpoint,
+        const normalizedEndpoint = endpoint || ollamaConfig?.ollamaCloudEndpoint || ''
+        setOllamaCloudTestPassed(true)
+        const useStoredKey = apiKey === MASKED_SECRET && hasOllamaCloudApiKey
+        const hasKey = useStoredKey || Boolean(apiKey)
+        setHasOllamaCloudApiKey(hasKey)
+        const nextConfig = {
+          ...ollamaConfig,
+          ollamaCloudApiKey: hasKey ? MASKED_SECRET : '',
+          ollamaCloudEndpoint: normalizedEndpoint,
           ollamaMode: 'cloud'
-        }))
+        }
+        setOllamaConfig(nextConfig)
         // Optimistically update cloud status without waiting for the next poll
         setOllamaStatus(prev => ({
           mode: 'cloud',
-          endpoint: endpoint || prev?.endpoint || '',
+          endpoint: normalizedEndpoint || prev?.endpoint || '',
           cloud_available: true,
           local_available: prev?.local_available ?? false,
           cloud_status: 'connected',
@@ -1225,6 +1371,31 @@ function App() {
         }
         // Refresh status
         await fetchOllamaStatus()
+        // Ensure the UI enables the Ollama backend immediately after a successful test
+        setAvailableModes(prev => prev.includes('ollama') ? prev : [...prev, 'ollama'])
+        const overrideKey = useStoredKey ? undefined : apiKey
+        try {
+          await handleSaveConfig(nextConfig, overrideKey)
+        } catch (saveErr) {
+          console.error('Failed to persist Ollama Cloud config after test', saveErr)
+          toast.error('Connection succeeded but settings were not saved', {
+            description: saveErr instanceof Error ? saveErr.message : 'Unknown error'
+          })
+        }
+        await fetchMode()
+        try {
+          if (activeMode !== 'ollama') {
+            await handleSwitchBackend('ollama')
+          }
+        } catch (switchErr) {
+          console.error('Failed to activate Ollama backend after cloud test', switchErr)
+          toast.error('Connection saved but backend is not active', {
+            description: switchErr instanceof Error ? switchErr.message : 'Switch failed'
+          })
+        }
+      }
+      if (!result.success) {
+        setOllamaCloudTestPassed(false)
       }
       
       return {
@@ -1427,27 +1598,49 @@ function App() {
 
   const handleTestConnection = async () => {
     toast.loading('Testing connection...', { id: 'test-connection' })
-    
-    setTimeout(() => {
-      const isSuccess = Math.random() > 0.3
-      if (isSuccess) {
+
+    const host = ollamaConfig?.ragHost || '127.0.0.1'
+    const port = ollamaConfig?.ragPort || '8001'
+    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/ollama/status`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+
+      const localOk = data?.local_available
+      const cloudOk = data?.cloud_available
+      const endpoint = data?.endpoint || ollamaConfig?.apiEndpoint || 'unknown'
+
+      if (localOk || cloudOk) {
         toast.success('Connection successful', {
           id: 'test-connection',
-          description: `Connected to Ollama at ${ollamaConfig?.apiEndpoint || 'localhost'}`
+          description: cloudOk ? `Cloud reachable (${endpoint})` : `Local reachable (${endpoint})`
         })
       } else {
         toast.error('Connection failed', {
           id: 'test-connection',
-          description: 'Unable to reach Ollama API endpoint'
+          description: 'No Ollama endpoint responded'
         })
       }
-    }, 1500)
+    } catch (err) {
+      toast.error('Connection failed', {
+        id: 'test-connection',
+        description: err instanceof Error ? err.message : 'Unknown error'
+      })
+    }
   }
 
   const items = indexedItems || []
   const remoteItems = backendDocumentList.length > 0 ? backendDocumentList : items
   const totalFiles = backendDocs !== null ? backendDocs : remoteItems.length
   const totalSize = backendSize !== null ? backendSize : remoteItems.reduce((acc, item) => acc + (item.size || 0), 0)
+  const effectiveActiveMode = useMemo(() => {
+    if (activeMode && availableModes.includes(activeMode)) {
+      return activeMode
+    }
+    return null
+  }, [activeMode, availableModes])
 
   return (
     <TooltipProvider>
@@ -1754,11 +1947,12 @@ function App() {
               onSaveOpenAIConfig={handleSaveOpenAIConfig}
               onTestOpenAIConnection={handleTestOpenAIConnection}
               onSwitchBackend={handleSwitchBackend}
-              activeMode={activeMode}
+              activeMode={effectiveActiveMode}
               availableModes={availableModes}
               onSetOllamaMode={handleSetOllamaMode}
               onTestOllamaCloudConnection={handleTestOllamaCloudConnection}
               ollamaStatus={ollamaStatus}
+              ollamaCloudTestPassed={ollamaCloudTestPassed}
             />
           </TabsContent>
         </Tabs>

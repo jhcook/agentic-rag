@@ -440,10 +440,9 @@ def main():
     elif args.role == "client":
         args.skip_ollama = True
 
-    # Propagate skip flags to environment so downstream services pick them up
+    # Propagate skip flags so we can skip launching Ollama without disabling the backend
     if args.skip_ollama:
         os.environ["SKIP_OLLAMA"] = "1"
-        os.environ["DISABLE_OLLAMA_BACKEND"] = "1"
     
     # Load environment
     env_file = ROOT_DIR / args.env

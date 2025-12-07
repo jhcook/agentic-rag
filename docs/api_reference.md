@@ -134,8 +134,62 @@ Check the status of the server and get basic statistics.
 curl "http://localhost:8001/api/health"
 ```
 
+## Ollama Cloud Configuration
+
+Manage credentials and endpoints for Ollama Cloud without exposing secrets.
+
+### GET /api/ollama/cloud-config
+
+Returns stored cloud configuration. API keys are **masked** with the placeholder `***MASKED***`; use the `has_api_key` boolean to detect if a key is present.
+
+```json
+{
+  "api_key": "***MASKED***",
+  "has_api_key": true,
+  "endpoint": "https://ollama.com",
+  "proxy": "http://proxy.local:8080",
+  "ca_bundle": "/path/to/corp.pem"
+}
+```
+
+### POST /api/ollama/cloud-config
+
+Persists cloud settings. Send a real key to update it, or send the masking placeholder to keep the stored key unchanged.
+
+```json
+{
+  "api_key": "sk-ollama-123",        // or "***MASKED***" to leave existing key untouched
+  "endpoint": "https://ollama.com",
+  "proxy": "http://proxy.local:8080",
+  "ca_bundle": "/path/to/corp.pem"
+}
+```
+
 ## Authentication
 
 Some endpoints, particularly those related to Google Drive integration, may require authentication. The API supports OAuth2 flow for Google services.
 
 See [Google Integration](./google_integration.md) for more details.
+
+## Secret Masking Behavior
+
+- Secrets returned by configuration endpoints are masked with `***MASKED***`.
+- A companion `has_api_key` flag indicates whether a secret is stored server-side.
+- When updating configs, send the masking placeholder to keep the stored key; send an empty string to clear; send a new value to replace.
+
+### Delete/Clear the Ollama Cloud API key
+
+- To remove a stored Ollama Cloud key, call `POST /api/ollama/cloud-config` with `api_key` set to `""` (empty string) or `null`. Example:
+
+  ```bash
+  curl -X POST "http://localhost:8001/api/ollama/cloud-config" \
+       -H "Content-Type: application/json" \
+       -d '{"api_key": "", "endpoint": null, "proxy": null, "ca_bundle": null}'
+  ```
+- After clearing, `GET /api/ollama/cloud-config` will return `has_api_key: false`.
+
+### Retention and storage for Ollama Cloud credentials
+
+- Secrets are stored locally in `secrets/ollama_cloud_config.json` with restrictive file permissions.
+- They persist until you overwrite them or clear them via the deletion call above; there is no automatic time-based deletion.
+- Removing the key stops further transmission to Ollama Cloud; data already sent to Ollama Cloud remains subject to Ollama's own retention policy.

@@ -575,7 +575,7 @@ paths:
   /api/config/openai:
     get:
       summary: Get Openai Config
-      description: Get OpenAI configuration (without exposing the full API key).
+      description: Get OpenAI configuration (API key is masked; use has_api_key to detect presence).
       operationId: get_openai_config_api_config_openai_get
       responses:
         '200':
@@ -592,6 +592,54 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/OpenAIConfigModel'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/ollama/cloud-config:
+    get:
+      summary: Get Ollama Cloud Config
+      description: Fetch stored Ollama Cloud configuration (API key is masked; use has_api_key to detect presence). To delete a stored key, POST with api_key set to an empty string or null.
+      operationId: api_get_ollama_cloud_config_api_ollama_cloud_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key:
+                    type: string
+                    description: Masked secret placeholder when a key is stored.
+                    example: '***MASKED***'
+                  has_api_key:
+                    type: boolean
+                    description: Indicates whether a key is stored server-side.
+                  endpoint:
+                    type: string
+                  ca_bundle:
+                    type: string
+                  proxy:
+                    type: string
+    post:
+      summary: Save Ollama Cloud Config
+      description: Persist Ollama Cloud configuration (API key, endpoint, proxy, CA bundle). Send the masking placeholder to keep the key unchanged; send an empty string or null for api_key to clear the stored secret. Secrets are stored locally until overwritten or cleared.
+      operationId: api_save_ollama_cloud_config_api_ollama_cloud_config_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaCloudConfigReq'
         required: true
       responses:
         '200':
@@ -1197,7 +1245,9 @@ components:
     OpenAIConfigModel:
       properties:
         api_key:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Api Key
         model:
           type: string
@@ -1208,10 +1258,34 @@ components:
           title: Assistant Id
           default: ''
       type: object
-      required:
-      - api_key
       title: OpenAIConfigModel
       description: OpenAI configuration model.
+    OllamaCloudConfigReq:
+      properties:
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+          description: Send "***MASKED***" to leave the stored key unchanged; send an empty string or null to delete the stored key.
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Endpoint
+        proxy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proxy
+        ca_bundle:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ca Bundle
+      type: object
+      title: OllamaCloudConfigReq
+      description: Request model for persisting Ollama Cloud secrets/config.
     QualityMetricsResp:
       properties:
         total_searches:
