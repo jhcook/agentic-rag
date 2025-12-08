@@ -16,9 +16,9 @@ Agentic RAG (Retrieval-Augmented Generation) combines a document store, FAISS in
 git clone https://github.com/yourorg/agentic-rag.git
 cd agentic-rag
 # start all services (Ollama, REST API, MCP server, UI)
-python start.sh
+start.sh
 # stop everything
-python stop.sh
+stop.sh
 ```
 
 `start.sh`/`start.py` do the heavy lifting:
