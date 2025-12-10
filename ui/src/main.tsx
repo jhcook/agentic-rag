@@ -8,8 +8,6 @@ import { Toaster } from './components/ui/sonner.tsx'
 import { TooltipProvider } from './components/ui/tooltip.tsx'
 import { useTheme } from './hooks/use-theme.ts'
 
-import "./main.css"
-import "./styles/theme.css"
 import "./index.css"
 
 /**

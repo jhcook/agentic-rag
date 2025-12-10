@@ -97,15 +97,7 @@ def load_app_config():
             # Map settings.json keys to rag_core variables
             if "apiEndpoint" in config:
                 rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
-            elif "ollamaApiUrl" in config:  # Legacy fallback
-                rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
 
-            if "model" in config:
-                rag_core.LLM_MODEL_NAME = config["model"]
-                rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
-            elif "ollamaModel" in config:  # Legacy fallback
-                rag_core.LLM_MODEL_NAME = config["ollamaModel"]
-                rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
 
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]

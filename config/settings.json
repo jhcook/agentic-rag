@@ -16,7 +16,10 @@
   "ragPath": "api",
   "debugMode": false,
   "ollamaCloudProxy": null,
+  "ollamaCloudEndpoint": "https://ollama.com",
+  "ollamaMode": "local",
+  "ollamaCloudApiKey": null,
+  "ollamaCloudCABundle": "",
   "ollamaConfigured": true,
-  "ragMode": "ollama",
-  "ollamaMode": "local"
+  "ragMode": "ollama"
 }

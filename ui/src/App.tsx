@@ -1,105 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Progress } from '@/components/ui/progress'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { 
-  Database, 
-  MessageCircle as ChatCircle, 
-  Settings as GearSix, 
-  FolderOpen, 
-  Zap as Lightning,
-  CheckCircle,
-  AlertCircle as WarningCircle,
-  CloudUpload as CloudArrowUp,
-  Play,
-  Pause,
-  File,
-  Plus,
-  Trash,
-  ChevronDown as CaretDown,
-  ChevronUp as CaretUp,
-  Info,
-  LineChart as ChartLine,
-  List as ListBullets,
-  RotateCcw
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { MetricsDashboard } from '@/components/MetricsDashboard'
-import { LogsViewer } from '@/components/LogsViewer'
-import { ProviderSelector } from '@/components/ProviderSelector'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Toaster } from 'sonner'
+import { MainLayout } from '@/components/layout/MainLayout'
+import { DashboardView } from '@/features/dashboard/DashboardView'
+import { SettingsView, OllamaConfig } from '@/features/settings/SettingsView'
+import { SearchView } from '@/features/search/SearchView'
 import { FileManager } from '@/components/FileManager'
-import { ChatInterface, Message } from '@/components/ChatInterface'
-import { ConversationSidebar, Conversation } from '@/components/ConversationSidebar'
-import { SettingsDashboard } from '@/components/SettingsDashboard'
-import { DeletionStatusBar } from '@/components/DeletionStatusBar'
-
-type IndexedItem = {
-  id: string
-  name: string
-  path: string
-  type: 'file' | 'directory'
-  size?: number
-  addedAt: string
-}
-
-type OllamaConfig = {
-  apiEndpoint: string
-  model: string
-  embeddingModel: string
-  temperature: string
-  topP: string
-  topK: string
-  repeatPenalty: string
-  seed: string
-  numCtx: string
-  mcpHost: string
-  mcpPort: string
-  mcpPath: string
-  ragHost: string
-  ragPort: string
-  ragPath: string
-  debugMode?: boolean
-  ollamaCloudApiKey?: string
-  ollamaCloudEndpoint?: string
-  ollamaCloudProxy?: string
-  ollamaCloudCABundle?: string
-}
-
-type IndexJob = {
-  id: string
-  type: string
-  status: string
-  error?: string
-  result?: Record<string, unknown>
-  error_type?: string
-  queued_at?: string
-  started_at?: string
-  finished_at?: string
-  last_update?: string
-  notification?: {
-    type: string
-    message: string
-  }
-}
+import { LogsViewer } from '@/components/LogsViewer'
+import { HelpView } from '@/features/help/HelpView'
+import { toast } from 'sonner'
+import { Message } from '@/components/ChatInterface'
+import { Conversation } from '@/components/ConversationSidebar'
 
 const MASKED_SECRET = '***MASKED***'
 
 const createDefaultOllamaConfig = (): OllamaConfig => ({
-    apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
-    model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
-    embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
-    temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
-    topP: '0.9',
-    topK: '40',
-    repeatPenalty: '1.1',
-    seed: '-1',
-    numCtx: '2048',
+  apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
+  model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
+  embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
+  temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
+  topP: '0.9',
+  topK: '40',
+  repeatPenalty: '1.1',
+  seed: '-1',
+  numCtx: '2048',
   mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
   mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
   mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
@@ -111,72 +34,51 @@ const createDefaultOllamaConfig = (): OllamaConfig => ({
   ollamaCloudEndpoint: '',
   ollamaCloudProxy: '',
   ollamaCloudCABundle: '',
+  ollamaMode: 'local',
+  availableModels: [],
 })
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [systemStatus, setSystemStatus] = useState<'running' | 'stopped' | 'error' | 'warning'>('stopped')
-  const [selectedService, setSelectedService] = useState<'rest' | 'mcp' | 'ui' | 'ollama'>('rest')
-  const [serviceStatuses, setServiceStatuses] = useState<Record<string, 'running' | 'stopped' | 'error' | 'warning'>>({
-    rest: 'stopped',
-    mcp: 'stopped',
-    ui: 'stopped',
-    ollama: 'stopped'
-  })
+  const [serviceStatuses, setServiceStatuses] = useState<Record<string, 'running' | 'stopped' | 'error' | 'warning'>>({})
+  const [queriesToday, setQueriesToday] = useState(0)
+
+  // Data State
+  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(createDefaultOllamaConfig())
   const [backendDocs, setBackendDocs] = useState<number | null>(null)
   const [backendSize, setBackendSize] = useState<number | null>(null)
-  const [backendDocumentList, setBackendDocumentList] = useState<IndexedItem[]>([])
-  const [indexedItems, setIndexedItems] = useState<IndexedItem[]>([])
-  const [ollamaExpanded, setOllamaExpanded] = useState(false)
-  const [googleExpanded, setGoogleExpanded] = useState(false)
-  const [advancedExpanded, setAdvancedExpanded] = useState(false)
-  const [ollamaConfig, setOllamaConfig] = useState<OllamaConfig>(createDefaultOllamaConfig())
+  const [activeMode, setActiveMode] = useState<string>('none')
+
+  // Search State
   const [queryText, setQueryText] = useState('')
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [searchAnswer, setSearchAnswer] = useState<string | null>(null)
   const [searchSources, setSearchSources] = useState<string[]>([])
-  const [searchJobId, setSearchJobId] = useState<string | null>(null)
   const [searchMessage, setSearchMessage] = useState<string | null>(null)
-  const [flushLoading, setFlushLoading] = useState(false)
-  const [statusMessage, setStatusMessage] = useState<string>('Idle')
-  const reportedJobErrors = useRef<Set<string>>(new Set())
-  const stalledToastId = useRef<string | number | null>(null)
-  const [vertexConfig, setVertexConfig] = useState({
-    projectId: '',
-    location: 'us-central1',
-    dataStoreId: ''
-  })
-  const [openaiConfig, setOpenaiConfig] = useState({
-    apiKey: '',
-    model: 'gpt-4-turbo-preview',
-    assistantId: ''
-  })
+  const searchAbortRef = useRef<AbortController | null>(null)
+
+  // Settings State
+  const [vertexConfig, setVertexConfig] = useState({ projectId: '', location: '', dataStoreId: '' })
+  const [openaiConfig, setOpenaiConfig] = useState({ apiKey: '', model: 'gpt-4-turbo-preview', assistantId: '' })
   const [hasOpenaiApiKey, setHasOpenaiApiKey] = useState(false)
   const [openaiModels, setOpenaiModels] = useState<string[]>([])
-  const searchAbortRef = useRef<AbortController | null>(null)
-  const [jobProgress, setJobProgress] = useState<{
-    total: number
-    completed: number
-    failed: number
-    visible: boolean
-  }>({ total: 0, completed: 0, failed: 0, visible: false })
+  const [hasOllamaCloudApiKey, setHasOllamaCloudApiKey] = useState(false)
+  const [ollamaStatus, setOllamaStatus] = useState<any>(null)
+
+  // Chat State
   const [chatMessages, setChatMessages] = useState<Message[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [activeMode, setActiveMode] = useState<string | null>(null)
-  const [availableModes, setAvailableModes] = useState<string[]>([])
-  const [ollamaStatus, setOllamaStatus] = useState<{
-    mode: string
-    endpoint: string
-    cloud_available: boolean
-    local_available: boolean
-    cloud_status: string | null
-    local_status: string | null
-  } | null>(null)
-  const [hasOllamaCloudApiKey, setHasOllamaCloudApiKey] = useState(false)
-  const [ollamaCloudTestPassed, setOllamaCloudTestPassed] = useState(false)
+
+  // Job Progress
+  const [jobProgress, setJobProgress] = useState({ total: 0, completed: 0, failed: 0, visible: false })
+  const [backendDocumentList, setBackendDocumentList] = useState<any[]>([])
+
+
+  // --- Helper: Get API Base ---
   const getApiBase = useCallback(() => {
     const host = ollamaConfig?.ragHost || '127.0.0.1'
     const port = ollamaConfig?.ragPort || '8001'
@@ -184,1796 +86,432 @@ function App() {
     return { host, port, base }
   }, [ollamaConfig])
 
-  const refreshServiceStatuses = useCallback(async () => {
-    const { host, port, base } = getApiBase()
-    try {
-      const res = await fetch(`http://${host}:${port}/${base}/services`)
-      if (!res.ok) return
-      const data = await res.json()
-      if (Array.isArray(data?.services)) {
-        setServiceStatuses(prev => {
-          const next = { ...prev }
-          data.services.forEach((svc: any) => {
-            if (svc?.service) {
-              next[svc.service] = svc.status || 'stopped'
-            }
-          })
-          return next
-        })
-        
-        // Update overall system status based on all services
-        const allRunning = data.services.every((svc: any) => svc.status === 'running')
-        const allStopped = data.services.every((svc: any) => svc.status === 'stopped')
-        const someRunning = data.services.some((svc: any) => svc.status === 'running')
-        
-        if (allRunning) {
-          setSystemStatus('running')
-        } else if (allStopped) {
-          setSystemStatus('stopped')
-        } else if (someRunning) {
-          setSystemStatus('warning')
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load service status', err)
-      setSystemStatus('error')
-    }
-  }, [getApiBase])
-
-  const performServiceAction = useCallback(async (action: 'start' | 'stop' | 'restart') => {
-    const { host, port, base } = getApiBase()
-    const toastId = `service-${action}`
-    toast.loading(`${action === 'restart' ? 'Restarting' : action === 'start' ? 'Starting' : 'Stopping'} ${selectedService}...`, { id: toastId })
-    try {
-      const res = await fetch(`http://${host}:${port}/${base}/services/${selectedService}/${action}`, {
-        method: 'POST'
-      })
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || `Failed to ${action} ${selectedService}`)
-      }
-      const data = await res.json()
-      const portDetail = action === 'restart' ? data?.start?.port : data?.port
-      const successLabel = action === 'restart' ? 'restarted' : action === 'start' ? 'started' : 'stopped'
-      toast.success(`${selectedService} ${successLabel}`, {
-        id: toastId,
-        description: portDetail ? `Port: ${portDetail}` : undefined
-      })
-      refreshServiceStatuses()
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : `Failed to ${action} ${selectedService}`, { id: toastId })
-    }
-  }, [getApiBase, refreshServiceStatuses, selectedService])
-
-  // Fetch app config on mount
+  // --- Effect: Load App Config ---
   useEffect(() => {
-    const fetchAppConfig = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const loadConfig = async () => {
+      const { host, port, base } = getApiBase()
       try {
         const res = await fetch(`http://${host}:${port}/${base}/config/app`)
         if (res.ok) {
           const data = await res.json()
-          if (Object.keys(data).length > 0) {
-            setOllamaConfig(prev => ({
-              ...prev,
-              ...data
-            }))
-          }
-        }
-        
-        // Also fetch Ollama mode
-        const modeRes = await fetch(`http://${host}:${port}/${base}/ollama/mode`)
-        if (modeRes.ok) {
-          const modeData = await modeRes.json()
-          if (modeData.mode) {
-            setOllamaConfig(prev => ({
-              ...prev,
-              ollamaMode: modeData.mode
-            }))
-          }
+          setOllamaConfig(prev => ({ ...prev, ...data }))
         }
 
-        // Load stored Ollama Cloud secrets so the key stays populated
-        try {
-          const cloudRes = await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`)
-          if (cloudRes.ok) {
-            const cloudData = await cloudRes.json()
-            const hasCloudKey = Boolean(cloudData?.has_api_key ?? cloudData?.hasApiKey ?? cloudData?.api_key)
-            setHasOllamaCloudApiKey(hasCloudKey)
-            setOllamaConfig(prev => ({
-              ...prev,
-              ollamaCloudApiKey: hasCloudKey ? MASKED_SECRET : (cloudData?.api_key ?? prev.ollamaCloudApiKey),
-              ollamaCloudEndpoint: cloudData?.endpoint ?? prev.ollamaCloudEndpoint,
-              ollamaCloudProxy: cloudData?.proxy ?? prev.ollamaCloudProxy,
-              ollamaCloudCABundle: cloudData?.ca_bundle ?? prev.ollamaCloudCABundle,
-            }))
-          }
-        } catch (err) {
-          console.error('Failed to load Ollama cloud config', err)
+        const modeRes = await fetch(`http://${host}:${port}/${base}/config/mode`)
+        if (modeRes.ok) setActiveMode((await modeRes.json()).mode)
+
+        // Load cloud config
+        const cloudRes = await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`)
+        if (cloudRes.ok) {
+          const d = await cloudRes.json()
+          const hasKey = Boolean(d.has_api_key ?? d.api_key)
+          setHasOllamaCloudApiKey(hasKey)
+          setOllamaConfig(prev => ({
+            ...prev,
+            ollamaCloudApiKey: hasKey ? MASKED_SECRET : (d.api_key ?? ''),
+            ollamaCloudEndpoint: d.endpoint ?? '',
+            ollamaCloudCABundle: d.ca_bundle ?? '',
+            ollamaCloudProxy: d.proxy ?? '',
+          }))
         }
-      } catch (e) {
-        console.error("Failed to fetch app config", e)
-      }
+
+        // Load OpenAI config
+        const openaiRes = await fetch(`http://${host}:${port}/${base}/config/openai`)
+        if (openaiRes.ok) {
+          const d = await openaiRes.json()
+          setOpenaiConfig(prev => ({
+            ...prev,
+            apiKey: d.api_key || '',
+            model: d.model || 'gpt-4-turbo-preview',
+            assistantId: d.assistant_id || ''
+          }))
+          setHasOpenaiApiKey(d.has_api_key)
+
+          // If we have a key, try to load models silently
+          if (d.has_api_key) {
+            fetch(`http://${host}:${port}/${base}/config/openai/models`).then(async r => {
+              if (r.ok) {
+                const data = await r.json()
+                if (data.models) setOpenaiModels(data.models.map((m: any) => m.id))
+              }
+            }).catch(() => { })
+          }
+        }
+      } catch (e) { console.error('Config load failed', e) }
     }
-    fetchAppConfig()
-  }, []) // Run once on mount, using initial env vars to find server
+    loadConfig()
+  }, []) // Init
 
-  const fetchMode = useCallback(async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+  // --- Effect: Service Status Poll ---
+  useEffect(() => {
+    const checkServices = async () => {
+      const { host, port, base } = getApiBase()
       try {
-        const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
+        const res = await fetch(`http://${host}:${port}/${base}/services`)
         if (res.ok) {
           const data = await res.json()
-        setActiveMode(data.mode || 'none')
-        setAvailableModes(Array.isArray(data.available_modes) ? data.available_modes : [])
-        }
-      } catch (e) {
-        console.error("Failed to fetch mode", e)
-      }
-  }, [ollamaConfig])
+          const svcs: any[] = data.services || []
+          const map: any = {}
+          svcs.forEach(s => map[s.service] = s.status || 'stopped')
+          setServiceStatuses(map)
 
-  const fetchOllamaStatus = useCallback(async () => {
-    try {
-      const { host, port, base } = getApiBase()
-      const response = await fetch(`http://${host}:${port}/${base}/ollama/status`)
-      if (response.ok) {
-        const data = await response.json()
-        setOllamaStatus(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch Ollama status', err)
+          if (svcs.every(s => s.status === 'running')) setSystemStatus('running')
+          else if (svcs.every(s => s.status === 'stopped')) setSystemStatus('stopped')
+          else if (svcs.some(s => s.status === 'error')) setSystemStatus('error')
+          else setSystemStatus('warning')
+        }
+      } catch { setSystemStatus('error') }
     }
+    const id = setInterval(checkServices, 5000)
+    checkServices()
+    return () => clearInterval(id)
   }, [getApiBase])
 
+  // --- Effect: Jobs Poll ---
   useEffect(() => {
-    fetchMode()
-    const interval = setInterval(fetchMode, 5000)
-    return () => clearInterval(interval)
-  }, [fetchMode])
-
-  useEffect(() => {
-    fetchOllamaStatus()
-    const interval = setInterval(fetchOllamaStatus, 5000)
-    return () => clearInterval(interval)
-  }, [fetchOllamaStatus])
-
-  // Load conversations from localStorage on mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('conversations')
-      if (saved) {
-        const parsed = JSON.parse(saved) as Conversation[]
-        setConversations(parsed)
-        // Restore active conversation if it exists
-        const activeId = localStorage.getItem('activeConversationId')
-        if (activeId && parsed.find(c => c.id === activeId)) {
-          setActiveConversationId(activeId)
-          const activeConv = parsed.find(c => c.id === activeId)
-          if (activeConv) {
-            setChatMessages(activeConv.messages)
-          }
-        } else if (parsed.length > 0) {
-          // Use most recent conversation
-          const mostRecent = parsed.sort((a, b) => b.updatedAt - a.updatedAt)[0]
-          setActiveConversationId(mostRecent.id)
-          setChatMessages(mostRecent.messages)
-        }
-      }
-      
-      // Load OpenAI config from backend
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      fetch(`http://${host}:${port}/${base}/config/openai`)
-        .then(res => res.json())
-        .then(config => {
-          if (config.api_key || config.apiKey || config.model || config.has_api_key || config.hasApiKey) {
-            const hasKey = Boolean(config.has_api_key ?? config.hasApiKey ?? config.apiKey ?? config.api_key)
-            setHasOpenaiApiKey(hasKey)
-            setOpenaiConfig({
-              apiKey: hasKey ? MASKED_SECRET : '',
-              model: config.model || 'gpt-4-turbo-preview',
-              assistantId: config.assistantId || config.assistant_id || ''
-            })
-          }
-        })
-        .catch(err => console.error('Failed to load OpenAI config:', err))
-    } catch (e) {
-      console.error('Failed to load conversations:', e)
-    }
-  }, [])
-
-  // Save conversations to localStorage whenever they change
-  useEffect(() => {
-    try {
-      localStorage.setItem('conversations', JSON.stringify(conversations))
-      if (activeConversationId) {
-        localStorage.setItem('activeConversationId', activeConversationId)
-      } else {
-        localStorage.removeItem('activeConversationId')
-      }
-    } catch (e) {
-      console.error('Failed to save conversations:', e)
-    }
-  }, [conversations, activeConversationId])
-
-  // Update active conversation when messages change
-  useEffect(() => {
-      if (activeConversationId) {
-        // Update existing conversation
-        setConversations(prev => {
-          const existing = prev.find(c => c.id === activeConversationId)
-          if (existing) {
-            return prev.map(conv => {
-              if (conv.id === activeConversationId) {
-                return {
-                  ...conv,
-                  messages: chatMessages,
-                  updatedAt: Date.now()
-                }
-              }
-              return conv
-            })
-        } else if (chatMessages.length > 0) {
-          // Create new conversation with existing ID if it doesn't exist but we have messages
-            const newConv: Conversation = {
-              id: activeConversationId,
-              title: 'New Conversation',
-              messages: chatMessages,
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            }
-            return [newConv, ...prev]
-          }
-        return prev
-        })
-    } else if (chatMessages.length > 0) {
-        // No active conversation but messages exist - create one
-        const newId = crypto.randomUUID()
-        const newConv: Conversation = {
-          id: newId,
-          title: 'New Conversation',
-          messages: chatMessages,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        }
-        setConversations(prev => [newConv, ...prev])
-        setActiveConversationId(newId)
-    }
-  }, [chatMessages, activeConversationId])
-
-  // Save conversation when switching away from search tab
-  useEffect(() => {
-    if (activeTab !== 'search' && activeConversationId && chatMessages.length > 0) {
-      setConversations(prev => {
-        return prev.map(conv => {
-          if (conv.id === activeConversationId) {
-            return {
-              ...conv,
-              messages: chatMessages,
-              updatedAt: Date.now()
-            }
-          }
-          return conv
-        })
-      })
-    }
-  }, [activeTab, activeConversationId, chatMessages])
-
-  const createNewConversation = () => {
-    const newId = crypto.randomUUID()
-    const newConv: Conversation = {
-      id: newId,
-      title: 'New Conversation',
-      messages: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    }
-    setConversations(prev => [newConv, ...prev])
-    setActiveConversationId(newId)
-    setChatMessages([])
-  }
-
-  const selectConversation = (id: string) => {
-    const conv = conversations.find(c => c.id === id)
-    if (conv) {
-      setActiveConversationId(id)
-      setChatMessages(conv.messages)
-      setSidebarOpen(false) // Close sidebar on mobile after selection
-    }
-  }
-
-  const deleteConversation = (id: string) => {
-    setConversations(prev => {
-      const filtered = prev.filter(c => c.id !== id)
-      // If deleting active conversation, switch to another or create new
-      if (id === activeConversationId) {
-        if (filtered.length > 0) {
-          const mostRecent = filtered.sort((a, b) => b.updatedAt - a.updatedAt)[0]
-          setActiveConversationId(mostRecent.id)
-          setChatMessages(mostRecent.messages)
-        } else {
-          setActiveConversationId(null)
-          setChatMessages([])
-        }
-      }
-      return filtered
-    })
-    toast.success('Conversation deleted')
-  }
-
-  // Fetch Vertex config on mount
-  useEffect(() => {
-    const fetchVertexConfig = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      try {
-        const res = await fetch(`http://${host}:${port}/${base}/config/vertex`)
-        if (res.ok) {
-          const data = await res.json()
-          setVertexConfig({
-            projectId: data.VERTEX_PROJECT_ID || '',
-            location: data.VERTEX_LOCATION || 'us-central1',
-            dataStoreId: data.VERTEX_DATA_STORE_ID || ''
-          })
-        }
-      } catch (e) {
-        console.error("Failed to fetch vertex config", e)
-      }
-    }
-    fetchVertexConfig()
-  }, [ollamaConfig])
-
-  const handleSaveVertexConfig = async () => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    try {
-      const res = await fetch(`http://${host}:${port}/${base}/config/vertex`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          project_id: vertexConfig.projectId,
-          location: vertexConfig.location,
-          data_store_id: vertexConfig.dataStoreId
-        })
-      })
-      if (res.ok) {
-        toast.success('Vertex AI configuration saved')
-      } else {
-        throw new Error('Failed to save')
-      }
-    } catch (e) {
-      toast.error('Failed to save Vertex AI configuration')
-    }
-  }
-
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const result = reader.result as string
-        const base64 = result.split(',')[1] || ''
-        resolve(base64)
-      }
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-
-  // Sync UI defaults from env when present (fallback to existing KV values)
-  useEffect(() => {
-    setOllamaConfig((current) => {
-      const cfg = current || {
-        apiEndpoint: 'http://127.0.0.1:11434',
-        model: 'qwen2.5:7b',
-        embeddingModel: 'Snowflake/arctic-embed-xs',
-        temperature: '0.7',
-        topP: '0.9',
-        topK: '40',
-        repeatPenalty: '1.1',
-        seed: '-1',
-        numCtx: '2048',
-        mcpHost: '127.0.0.1',
-        mcpPort: '8000',
-        mcpPath: '/mcp',
-        ragHost: '127.0.0.1',
-        ragPort: '8001',
-        ragPath: 'api'
-      }
-      return {
-        apiEndpoint: cfg.apiEndpoint || import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
-        model: cfg.model || (import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b'),
-        embeddingModel: cfg.embeddingModel || import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
-        temperature: cfg.temperature || import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
-        topP: cfg.topP || '0.9',
-        topK: cfg.topK || '40',
-        repeatPenalty: cfg.repeatPenalty || '1.1',
-        seed: cfg.seed || '-1',
-        numCtx: cfg.numCtx || '2048',
-        mcpHost: cfg.mcpHost || import.meta.env.VITE_MCP_HOST || '127.0.0.1',
-        mcpPort: cfg.mcpPort || import.meta.env.VITE_MCP_PORT || '8000',
-        mcpPath: cfg.mcpPath || import.meta.env.VITE_MCP_PATH || '/mcp',
-        ragHost: cfg.ragHost || import.meta.env.VITE_RAG_HOST || 'localhost',
-        ragPort: cfg.ragPort || import.meta.env.VITE_RAG_PORT || '8001',
-        ragPath: cfg.ragPath || import.meta.env.VITE_RAG_PATH || 'api',
-      }
-    })
-  // run once on mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Poll indexing jobs to show background progress
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    const { host, port, base } = getApiBase()
+    const pollJobs = async () => {
       try {
         const res = await fetch(`http://${host}:${port}/${base}/jobs`)
         if (!res.ok) return
-        const data = await res.json() as { jobs?: IndexJob[] }
+        const data = await res.json()
         const jobs = data.jobs || []
         const total = jobs.length
-        const completed = jobs.filter(j => j.status === 'completed').length
-        const failedJobs = jobs.filter(j => j.status === 'failed')
-        const failed = failedJobs.length
+        const completed = jobs.filter((j: any) => j.status === 'completed').length
+        const failed = jobs.filter((j: any) => j.status === 'failed').length
         const visible = total > 0 && (completed + failed) < total
-
-        // Surface newly failed jobs with toast notifications
-        failedJobs.forEach(job => {
-          if (!reportedJobErrors.current.has(job.id)) {
-            reportedJobErrors.current.add(job.id)
-            const notification = job.notification
-            const rawMessage = notification?.message || job.error || 'Indexing job failed.'
-            const errorMessage = rawMessage.length > 240 ? `${rawMessage.slice(0, 237)}…` : rawMessage
-            if (notification?.type === 'ssl_error' || job.error_type === 'ssl_error') {
-              toast.error('Indexing blocked by SSL certificate error. Check the logs and fix the trust store.', {
-                description: errorMessage,
-                duration: 10000
-              })
-            } else {
-              toast.error('Indexing job failed', {
-                description: errorMessage,
-                duration: 8000
-              })
-            }
-          }
-        })
-
-        const now = Date.now()
-        const staleJobs = jobs.filter(job => {
-          if (job.status === 'completed' || job.status === 'failed') return false
-          const referenceIso = job.last_update
-            || (job.status === 'queued' ? job.queued_at : undefined)
-            || job.started_at
-            || job.queued_at
-          if (!referenceIso) return false
-          const referenceMs = Date.parse(referenceIso)
-          if (Number.isNaN(referenceMs)) return false
-          const threshold = job.status === 'queued' ? 60_000 : 180_000
-          return now - referenceMs > threshold
-        })
-        if (staleJobs.length > 0) {
-          const queuedCount = staleJobs.filter(job => job.status === 'queued').length
-          const runningCount = staleJobs.length - queuedCount
-          const parts = [] as string[]
-          if (queuedCount) parts.push(`${queuedCount} queued`)
-          if (runningCount) parts.push(`${runningCount} running`)
-          const description = parts.length > 0
-            ? `${parts.join(' and ')} job${staleJobs.length === 1 ? '' : 's'} have not advanced.`
-            : `${staleJobs.length} job${staleJobs.length === 1 ? '' : 's'} have not advanced.`
-          if (!stalledToastId.current) {
-            stalledToastId.current = toast.warning('Indexing activity stalled. Please check the server logs.', {
-              description,
-              duration: 15000
-            })
-          }
-        } else if (stalledToastId.current) {
-          toast.dismiss(stalledToastId.current)
-          stalledToastId.current = null
-        }
-
-        const recentFailures = failedJobs.filter(job => {
-          if (!job.finished_at) return true
-          const finishedAtMs = Date.parse(job.finished_at)
-          if (Number.isNaN(finishedAtMs)) return true
-          return now - finishedAtMs <= 300_000
-        })
-
         setJobProgress({ total, completed, failed, visible })
-        if (staleJobs.length > 0) {
-          setStatusMessage('Indexing stalled — check logs for details')
-        } else if (visible) {
-          setStatusMessage(`Indexing ${total - completed - failed} job(s)`)
-        } else if (recentFailures.length > 0) {
-          const sslFailure = recentFailures.some(job => job.notification?.type === 'ssl_error' || job.error_type === 'ssl_error')
-          setStatusMessage(sslFailure ? 'Indexing blocked: SSL certificate error' : 'Indexing encountered errors')
-        } else if (searching) {
-          setStatusMessage('Searching...')
-        } else {
-          setStatusMessage('Idle')
-        }
-      } catch (_) {
-        // ignore polling errors, will try again on next tick
-      }
-    }, 2500)
-    return () => clearInterval(interval)
-  }, [ollamaConfig, searching])
-
-  const handleAddDirectory = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.webkitdirectory = true
-    input.multiple = true
-
-    input.onchange = (e) => {
-      const files = (e.target as HTMLInputElement).files
-      if (files && files.length > 0) {
-        const visibleFiles = Array.from(files).filter(f => !f.name.startsWith('.'))
-        const host = ollamaConfig?.ragHost || '127.0.0.1'
-        const port = ollamaConfig?.ragPort || '8001'
-        const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-        const url = `http://${host}:${port}/${base}/upsert_document`
-        const toastId = 'upload-dir'
-        toast.loading('Queuing directory for indexing...', { id: toastId })
-
-        const upload = async () => {
-          let success = 0
-          let skipped = files.length - visibleFiles.length
-          for (const file of visibleFiles) {
-            try {
-              const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
-              // Always use just the filename, not the full path with directories
-              let payload: Record<string, unknown> = { uri: file.name }
-              if (isBinary) {
-                payload.binary_base64 = await fileToBase64(file)
-              } else {
-                payload.text = await file.text()
-              }
-              const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-              })
-              const data = await res.json()
-              if (!res.ok || data?.error) {
-                throw new Error(data?.error || `HTTP ${res.status}`)
-              }
-              success += 1
-            } catch (err) {
-              console.error('Upload failed for', file.name, err)
-              skipped += 1
-            }
-          }
-
-          toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
-        }
-
-        upload()
-      }
+      } catch { }
     }
+    const id = setInterval(pollJobs, 2500)
+    return () => clearInterval(id)
+  }, [getApiBase])
 
-    input.click()
-  }
-
-  const handleDeleteRemote = async (uri: string) => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    const url = `http://${host}:${port}/${base}/documents/delete`
-    const loadingId = `delete-${uri}`
-    toast.loading('Deleting from index...', { id: loadingId })
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uris: [uri] }),
-      })
-      const data = await res.json()
-      if (!res.ok || data?.error) {
-        throw new Error(data?.error || `HTTP ${res.status}`)
-      }
-      setBackendDocumentList(prev => prev.filter(d => d.id !== uri))
-      toast.success('Removed from index', { id: loadingId })
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete', { id: loadingId })
-    }
-  }
-
-  const handleFlushCache = async () => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    const url = `http://${host}:${port}/${base}/flush_cache`
-    setFlushLoading(true)
-    const toastId = 'flush-cache'
-    toast.loading('Flushing cache...', { id: toastId })
-    try {
-      const res = await fetch(url, { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok || data?.error) {
-        throw new Error(data?.error || `HTTP ${res.status}`)
-      }
-      setBackendDocumentList([])
-      setBackendDocs(0)
-      setBackendSize(0)
-      toast.success('Cache flushed', { id: toastId })
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'Failed to flush cache', { id: toastId })
-    } finally {
-      setFlushLoading(false)
-    }
-  }
-
-  const handleAddFile = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.multiple = true
-    input.accept = '.txt,.pdf,.doc,.docx,.md,.json,.csv,.xml'
-    
-    input.onchange = (e) => {
-      const files = (e.target as HTMLInputElement).files
-      if (files && files.length > 0) {
-        const visibleFiles = Array.from(files).filter(f => !f.name.startsWith('.'))
-        const host = ollamaConfig?.ragHost || '127.0.0.1'
-        const port = ollamaConfig?.ragPort || '8001'
-        const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-        const url = `http://${host}:${port}/${base}/upsert_document`
-        const toastId = 'upload-files'
-        toast.loading('Queuing files for indexing...', { id: toastId })
-
-        const upload = async () => {
-          let success = 0
-          let skipped = files.length - visibleFiles.length
-          for (const file of visibleFiles) {
-            try {
-              const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
-              let payload: Record<string, unknown> = { uri: file.name }
-              if (isBinary) {
-                payload.binary_base64 = await fileToBase64(file)
-              } else {
-                payload.text = await file.text()
-              }
-              const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-              })
-              const data = await res.json()
-              if (!res.ok || data?.error) {
-                throw new Error(data?.error || `HTTP ${res.status}`)
-              }
-              success += 1
-            } catch (err) {
-              // Continue uploading others but report failure at end
-              console.error('Upload failed for', file.name, err)
-              skipped += 1
-            }
-          }
-
-          toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
-        }
-
-        upload()
-      }
-    }
-    
-    input.click()
-  }
-
-  const handleRemoveItem = (id: string) => {
-    setIndexedItems(current => {
-      const items = current || []
-      const item = items.find(i => i.id === id)
-      if (item) {
-        toast.info(`Removed: ${item.name}`)
-      }
-      return items.filter(i => i.id !== id)
-    })
-  }
-
-  const formatFileSize = (bytes?: number | null) => {
-    if (bytes === undefined || bytes === null) return 'N/A'
-    if (bytes === 0) return '0 B'
-    const units = ['B', 'KB', 'MB', 'GB']
-    let size = bytes
-    let unitIndex = 0
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024
-      unitIndex++
-    }
-    return `${size.toFixed(1)} ${units[unitIndex]}`
-  }
-
-  const handleConfigChange = (field: keyof OllamaConfig, value: string | boolean) => {
-    setOllamaConfig(current => {
-      const currentConfig = current || createDefaultOllamaConfig()
-      return {
-        ...currentConfig,
-        [field]: value
-      }
-    })
-  }
-
-  const handleSaveConfig = async (configToSave?: OllamaConfig, cloudApiKeyOverride?: string | null) => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    const payload = configToSave || ollamaConfig
-    const effectiveCloudApiKey = cloudApiKeyOverride !== undefined
-      ? (cloudApiKeyOverride === null ? '' : cloudApiKeyOverride)
-      : (payload?.ollamaCloudApiKey === MASKED_SECRET && hasOllamaCloudApiKey)
-        ? undefined
-        : payload?.ollamaCloudApiKey
-
-    if (!payload?.apiEndpoint?.trim() || !payload?.model?.trim()) {
-      toast.error('API endpoint and model are required')
-      return
-    }
-
-    // Do not persist secrets (API key, CA bundle) via app config
-    // Proxy is safe to store in settings.json.
-    const { ollamaCloudApiKey: _omitKey, ollamaCloudCABundle: _omitCABundle, ...safePayload } = payload
-
-    try {
-      // Persist cloud secrets first so the key remains available on reload
-      const shouldPersistCloud = (
-        cloudApiKeyOverride !== undefined ||
-        effectiveCloudApiKey !== undefined ||
-        payload?.ollamaCloudEndpoint !== undefined ||
-        payload?.ollamaCloudProxy !== undefined ||
-        payload?.ollamaCloudCABundle !== undefined
-      )
-      if (shouldPersistCloud) {
-        const cloudRes = await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            api_key: cloudApiKeyOverride !== undefined ? cloudApiKeyOverride : effectiveCloudApiKey,
-            endpoint: payload?.ollamaCloudEndpoint,
-            proxy: payload?.ollamaCloudProxy,
-            ca_bundle: payload?.ollamaCloudCABundle,
-          })
-        })
-        if (!cloudRes.ok) {
-          const detail = await cloudRes.json().catch(() => ({}))
-          throw new Error(detail.detail || `Failed to save Ollama Cloud config (HTTP ${cloudRes.status})`)
-        }
-      }
-
-      const res = await fetch(`http://${host}:${port}/${base}/config/app`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(safePayload)
-      })
-      
-      if (!res.ok) {
-        throw new Error('Failed to save')
-      }
-      toast.success('Configuration saved', {
-        description: 'Settings have been saved to server'
-      })
-      await fetchMode()
-      const nextHasCloudKey = cloudApiKeyOverride !== undefined
-        ? Boolean(cloudApiKeyOverride)
-        : (effectiveCloudApiKey === undefined ? hasOllamaCloudApiKey : Boolean(effectiveCloudApiKey))
-      setHasOllamaCloudApiKey(nextHasCloudKey)
-      setOllamaConfig(prev => ({
-        ...prev,
-        ...(nextHasCloudKey ? { ollamaCloudApiKey: MASKED_SECRET } : { ollamaCloudApiKey: '' })
-      }))
-    } catch (e) {
-      console.error("Failed to save config", e)
-      toast.error('Failed to save configuration')
-    }
-  }
-
-  const handleGoogleLogin = () => {
-    const host = ollamaConfig?.ragHost || 'localhost'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    window.open(`http://${host}:${port}/${base}/auth/login?t=${Date.now()}`, '_blank', 'width=600,height=700')
-  }
-
-  const handleDisconnect = async (provider?: 'google' | 'openai_assistants' | 'ollama') => {
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    let url = `http://${host}:${port}/${base}/auth/logout`
-    
-    if (provider) {
-        url += `?provider=${provider}`
-    }
-    
-    try {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      
-      if (provider === 'google') {
-      toast.success('Disconnected from Google Account')
-      } else if (provider === 'openai_assistants') {
-        toast.success('Disconnected from OpenAI Assistants')
-        setOpenaiConfig({
-          apiKey: '',
-          model: 'gpt-4-turbo-preview',
-          assistantId: ''
-        })
-        setHasOpenaiApiKey(false)
-        setOpenaiModels([])
-      } else if (provider === 'ollama') {
-        toast.success('Disconnected from Ollama backend')
-        let updatedConfig = false
-        setHasOllamaCloudApiKey(false)
-        try {
-          const configRes = await fetch(`http://${host}:${port}/${base}/config/app`)
-          if (configRes.ok) {
-            const configData = await configRes.json()
-            if (configData && typeof configData === 'object') {
-              const merged = { ...createDefaultOllamaConfig(), ...configData }
-              setOllamaConfig(merged)
-              updatedConfig = true
-            }
-          }
-        } catch (err) {
-          console.error('Failed to reload app config after Ollama disconnect', err)
-        }
-        if (!updatedConfig) {
-          setOllamaConfig(createDefaultOllamaConfig())
-          setHasOllamaCloudApiKey(false)
-        }
-        setOllamaCloudTestPassed(false)
-      } else {
-        toast.success('Disconnected from all providers')
-      }
-      
-      await fetchMode()
-      
-    } catch (error) {
-      toast.error('Failed to disconnect')
-    }
-  }
-
-  const handleSaveOpenAIConfig = async () => {
-    const isPlaceholder = openaiConfig.apiKey === MASKED_SECRET
-    const hasUsableKey = (!!openaiConfig.apiKey && !isPlaceholder) || hasOpenaiApiKey
-
-    if (!hasUsableKey) {
-      toast.error('Please enter an API key')
-      return
-    }
-    
-    try {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      
-      // Save configuration
-      const saveResponse = await fetch(`http://${host}:${port}/${base}/config/openai`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          ...openaiConfig,
-          apiKey: isPlaceholder && hasOpenaiApiKey ? MASKED_SECRET : openaiConfig.apiKey
-        })
-      })
-      
-      if (!saveResponse.ok) {
-        throw new Error(`HTTP ${saveResponse.status}`)
-      }
-      
-      // Reload backend to pick up changes
-      toast.loading('Reloading backend...', { id: 'openai-reload' })
-      
-      const reloadResponse = await fetch(`http://${host}:${port}/${base}/config/openai/reload`, {
-        method: 'POST'
-      })
-      
-      if (!reloadResponse.ok) {
-        const errorData = await reloadResponse.json().catch(() => ({}))
-        throw new Error(errorData.detail || `Reload failed: HTTP ${reloadResponse.status}`)
-      }
-      
-      const reloadData = await reloadResponse.json()
-      toast.dismiss('openai-reload')
-      
-      if (reloadData.configured) {
-        toast.success('OpenAI configuration saved and loaded', {
-          description: 'Backend is now ready. Switch to OpenAI Assistants in the provider dropdown.'
-        })
-      } else {
-        toast.success('Configuration saved', {
-          description: 'Backend loaded but check your API key if issues persist.'
-        })
-      }
-      
-      // Refresh available modes to update UI
-      await refreshServiceStatuses()
-      await fetchMode()
-      const keyWasCleared = openaiConfig.apiKey !== MASKED_SECRET && !openaiConfig.apiKey
-      const hasKeyConfigured = keyWasCleared ? false : hasUsableKey
-      setHasOpenaiApiKey(hasKeyConfigured)
-      setOpenaiConfig(prev => ({
-        ...prev,
-        apiKey: hasKeyConfigured ? MASKED_SECRET : '',
-        model: openaiConfig.model,
-        assistantId: openaiConfig.assistantId
-      }))
-      
-    } catch (err) {
-      toast.dismiss('openai-reload')
-      toast.error('Failed to save configuration', {
-        description: err instanceof Error ? err.message : 'Unknown error'
-      })
-    }
-  }
-
-  const handleTestOpenAIConnection = async () => {
-    const isPlaceholder = openaiConfig.apiKey === MASKED_SECRET
+  // --- Effect: Stats Poll ---
+  useEffect(() => {
     const { host, port, base } = getApiBase()
-
-    // If we already have a stored key, allow testing without re-entering it
-    if (isPlaceholder && hasOpenaiApiKey) {
-      toast.loading('Testing OpenAI connection...', { id: 'openai-test' })
+    const checkStats = async () => {
       try {
-        const modelsRes = await fetch(`http://${host}:${port}/${base}/config/openai/models`)
-        if (!modelsRes.ok) {
-          const errorData = await modelsRes.json().catch(() => ({}))
-          throw new Error(errorData.detail || `HTTP ${modelsRes.status}`)
+        const res = await fetch(`http://${host}:${port}/${base}/health`)
+        if (res.ok) {
+          const data = await res.json()
+          setBackendDocs(data.documents)
+          setBackendSize(data.total_size_bytes)
         }
 
-        const modelsData = await modelsRes.json()
-        if (modelsData.warning) {
-          toast.warning('API key valid but limited access', {
-            id: 'openai-test',
-            description: modelsData.message || 'No GPT models available',
-            duration: 10000
-          })
-          setOpenaiModels([])
-          return
+        // Also fetch today's metrics
+        const todayRes = await fetch(`http://${host}:${port}/${base}/metrics/today`)
+        if (todayRes.ok) {
+          const tData = await todayRes.json()
+          setQueriesToday(tData.queries_today || 0)
         }
-
-        if (modelsData.models && Array.isArray(modelsData.models)) {
-          const modelIds = modelsData.models.map((m: any) => m.id || m.name || m)
-          setOpenaiModels(modelIds)
-          toast.success('Connection successful!', {
-            id: 'openai-test',
-            description: `Found ${modelIds.length} available models`
-          })
-          return
-        }
-
-        toast.success('Connection successful!', {
-          id: 'openai-test',
-          description: 'API key is valid'
-        })
-        return
-      } catch (err) {
-        toast.error('Connection failed', {
-          id: 'openai-test',
-          description: err instanceof Error ? err.message : 'Invalid API key'
-        })
-        return
-      }
+      } catch { }
     }
+    const id = setInterval(checkStats, 10000)
+    checkStats()
+    return () => clearInterval(id)
+  }, [getApiBase])
 
-    if (!openaiConfig.apiKey) {
-      toast.error('Please enter an API key first')
-      return
-    }
-    if (isPlaceholder) {
-      toast.error('Enter your API key to test the connection')
-      return
-    }
-
-    toast.loading('Testing OpenAI connection...', { id: 'openai-test' })
-    
-    try {
-      // Test by making a simple API call
-      const response = await fetch('https://api.openai.com/v1/models', {
-        headers: {
-          'Authorization': `Bearer ${openaiConfig.apiKey}`
-        }
-      })
-      
-      if (response.ok) {
-        // Fetch available models from our backend
-        const host = ollamaConfig?.ragHost || '127.0.0.1'
-        const port = ollamaConfig?.ragPort || '8001'
-        const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-        
-        try {
-          const modelsRes = await fetch(`http://${host}:${port}/${base}/config/openai/models`)
-          if (modelsRes.ok) {
-            const modelsData = await modelsRes.json()
-            
-            // Check for warning about missing GPT models
-            if (modelsData.warning) {
-              toast.warning('API key valid but limited access', {
-                id: 'openai-test',
-                description: modelsData.message || 'No GPT models available',
-                duration: 10000
-              })
-              setOpenaiModels([])
-              return
-            }
-            
-            if (modelsData.models && Array.isArray(modelsData.models)) {
-              const modelIds = modelsData.models.map((m: any) => m.id || m.name || m)
-              setOpenaiModels(modelIds)
-              toast.success('Connection successful!', { 
-                id: 'openai-test',
-                description: `Found ${modelIds.length} available models`
-              })
-              return
-            }
-          }
-        } catch (e) {
-          console.error('Failed to fetch models:', e)
-        }
-        
-        toast.success('Connection successful!', { 
-          id: 'openai-test',
-          description: 'API key is valid'
-        })
-      } else {
-        const error = await response.json()
-        toast.error('Connection failed', {
-          id: 'openai-test',
-          description: error.error?.message || 'Invalid API key'
-        })
-      }
-    } catch (err) {
-      toast.error('Connection failed', {
-        id: 'openai-test',
-        description: err instanceof Error ? err.message : 'Network error'
-      })
-    }
-  }
-
-  const handleSwitchBackend = async (mode: string) => {
-    try {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      
-      const response = await fetch(`http://${host}:${port}/${base}/config/mode`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ mode })
-      })
-      
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || `HTTP ${response.status}`)
-      }
-      
-      const result = await response.json()
-      setActiveMode(result.mode)
-      await fetchMode()
-      
-      const modeNames: Record<string, string> = {
-        'ollama': 'Ollama',
-        'openai_assistants': 'OpenAI Assistants',
-        'google_gemini': 'Google Gemini + Drive',
-        'vertex_ai_search': 'Google Vertex AI'
-      }
-      
-      toast.success(`Switched to ${modeNames[mode] || mode}`, {
-        description: 'Backend is now active'
-      })
-    } catch (err) {
-      toast.error('Failed to switch backend', {
-        description: err instanceof Error ? err.message : 'Unknown error'
-      })
-    }
-  }
-
-  const handleSetOllamaMode = async (mode: 'local' | 'cloud' | 'auto') => {
-    try {
-      const { host, port, base } = getApiBase()
-      const response = await fetch(`http://${host}:${port}/${base}/ollama/mode`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ mode })
-      })
-      
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || `HTTP ${response.status}`)
-      }
-      
-      const result = await response.json()
-      
-      // Update local config
-      setOllamaConfig(prev => ({
-        ...prev,
-        ollamaMode: mode
-      }))
-      
-      // Refresh status
-      await fetchOllamaStatus()
-      
-      toast.success(`Ollama mode set to ${mode}`, {
-        description: 'Configuration updated'
-      })
-    } catch (err) {
-      toast.error('Failed to set Ollama mode', {
-        description: err instanceof Error ? err.message : 'Unknown error'
-      })
-      throw err
-    }
-  }
-
-  const handleTestOllamaCloudConnection = async (apiKey: string, endpoint?: string) => {
-    try {
-      const { host, port, base } = getApiBase()
-      const response = await fetch(`http://${host}:${port}/${base}/ollama/test-connection`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          api_key: apiKey,
-          endpoint: endpoint,
-          proxy: ollamaConfig?.ollamaCloudProxy,
-          ca_bundle: ollamaConfig?.ollamaCloudCABundle
-        })
-      })
-      
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || `HTTP ${response.status}`)
-      }
-      
-      const result = await response.json()
-      
-      // If successful, update local config with saved API key
-      if (result.success) {
-        const normalizedEndpoint = endpoint || ollamaConfig?.ollamaCloudEndpoint || ''
-        setOllamaCloudTestPassed(true)
-        const useStoredKey = apiKey === MASKED_SECRET && hasOllamaCloudApiKey
-        const hasKey = useStoredKey || Boolean(apiKey)
-        setHasOllamaCloudApiKey(hasKey)
-        const nextConfig = {
-          ...ollamaConfig,
-          ollamaCloudApiKey: hasKey ? MASKED_SECRET : '',
-          ollamaCloudEndpoint: normalizedEndpoint,
-          ollamaMode: 'cloud'
-        }
-        setOllamaConfig(nextConfig)
-        // Optimistically update cloud status without waiting for the next poll
-        setOllamaStatus(prev => ({
-          mode: 'cloud',
-          endpoint: normalizedEndpoint || prev?.endpoint || '',
-          cloud_available: true,
-          local_available: prev?.local_available ?? false,
-          cloud_status: 'connected',
-          local_status: prev?.local_status ?? null
-        }))
-        // Persist mode switch if not already cloud to keep status stable
-        if (ollamaConfig?.ollamaMode !== 'cloud') {
-          try {
-            await handleSetOllamaMode('cloud')
-          } catch (modeErr) {
-            console.error('Failed to set Ollama mode to cloud after test', modeErr)
-          }
-        }
-        // Refresh status
-        await fetchOllamaStatus()
-        // Ensure the UI enables the Ollama backend immediately after a successful test
-        setAvailableModes(prev => prev.includes('ollama') ? prev : [...prev, 'ollama'])
-        const overrideKey = useStoredKey ? undefined : apiKey
-        try {
-          await handleSaveConfig(nextConfig, overrideKey)
-        } catch (saveErr) {
-          console.error('Failed to persist Ollama Cloud config after test', saveErr)
-          toast.error('Connection succeeded but settings were not saved', {
-            description: saveErr instanceof Error ? saveErr.message : 'Unknown error'
-          })
-        }
-        await fetchMode()
-        try {
-          if (activeMode !== 'ollama') {
-            await handleSwitchBackend('ollama')
-          }
-        } catch (switchErr) {
-          console.error('Failed to activate Ollama backend after cloud test', switchErr)
-          toast.error('Connection saved but backend is not active', {
-            description: switchErr instanceof Error ? switchErr.message : 'Switch failed'
-          })
-        }
-      }
-      if (!result.success) {
-        setOllamaCloudTestPassed(false)
-      }
-      
-      return {
-        success: result.success,
-        message: result.message || (result.success ? 'Connection successful' : 'Connection failed')
-      }
-    } catch (err) {
-      return {
-        success: false,
-        message: err instanceof Error ? err.message : 'Unknown error'
-      }
-    }
-  }
-
+  // --- Handlers: Search ---
   const handleSearch = async () => {
-    // cancel any in-flight search before starting a new one
-    if (searchAbortRef.current) {
-      searchAbortRef.current.abort()
-    }
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    const url = `http://${host}:${port}/${base}/search`
+    if (searchAbortRef.current) searchAbortRef.current.abort()
+    const { host, port, base } = getApiBase()
+    if (!queryText.trim()) return
 
-    if (!queryText.trim()) {
-      setSearchError('Enter a question to search')
-      return
-    }
-
-    setSearching(true)
-    setSearchError(null)
-    setStatusMessage('Searching...')
-    setSearchJobId(null)
-    setSearchMessage(null)
-    setSearchAnswer(null)
-    setSearchSources([])
+    setSearching(true); setSearchError(null); setSearchAnswer(null); setSearchSources([])
     const controller = new AbortController()
     searchAbortRef.current = controller
 
     try {
-      // Kick off async search
-      const kickRes = await fetch(url, {
+      const kickRes = await fetch(`http://${host}:${port}/${base}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({ query: queryText, async: true, timeout_seconds: 300 }),
+        body: JSON.stringify({ query: queryText, async: true }),
+        signal: controller.signal
       })
+      if (!kickRes.ok) throw new Error('Failed to start')
+      const { job_id } = await kickRes.json()
 
-      if (!kickRes.ok) {
-        throw new Error(`HTTP ${kickRes.status}`)
-      }
-
-      const kick = await kickRes.json()
-      const jobId = kick?.job_id
-      if (!jobId) {
-        throw new Error(kick?.error || 'Failed to start search')
-      }
-
-      setSearchJobId(jobId)
-
-      const pollUrl = `http://${host}:${port}/${base}/search/jobs/${jobId}`
       let done = false
       while (!done) {
-        const pollRes = await fetch(pollUrl, { signal: controller.signal })
-        if (!pollRes.ok) {
-          throw new Error(`HTTP ${pollRes.status}`)
-        }
+        const pollRes = await fetch(`http://${host}:${port}/${base}/search/jobs/${job_id}`, { signal: controller.signal })
         const status = await pollRes.json()
-        if (status?.message) {
-          setSearchMessage(status.message)
-        }
-        const st = status?.status
-        if (st === 'completed' || st === 'timeout' || st === 'failed') {
+        setSearchMessage(status.message)
+
+        if (['completed', 'failed', 'timeout'].includes(status.status)) {
           done = true
-          const data = status?.result || status
-
-          let answer = ''
-          if (typeof data?.error === 'string') {
-            setSearchError(data.error)
-          } else if (Array.isArray(data?.choices) && data.choices[0]?.message?.content) {
-            answer = data.choices[0].message.content
-          } else if (typeof data?.answer === 'string') {
-            answer = data.answer
-          } else if (typeof data === 'string') {
-            answer = data
+          const res = status.result
+          if (!res) {
+            setSearchError(status.error || 'Unknown error')
+          } else if (res.error) {
+            setSearchError(res.error)
           } else {
-            setSearchError('No answer returned from service')
-          }
-
-          if (answer) {
-            setSearchAnswer(answer)
-          }
-
-          if (Array.isArray(data?.sources)) {
-            setSearchSources(data.sources.filter((s: unknown) => typeof s === 'string'))
+            setSearchAnswer(res.answer || res)
+            setSearchSources(res.sources || [])
           }
         } else {
-          await new Promise(res => setTimeout(res, 3000))
+          await new Promise(r => setTimeout(r, 1000))
         }
       }
-    } catch (error: unknown) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        setSearchError('Search cancelled')
-      } else {
-        setSearchError(error instanceof Error ? error.message : 'Search failed')
-      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') setSearchError(e.message)
     } finally {
-      searchAbortRef.current = null
       setSearching(false)
-      setStatusMessage(jobProgress.visible ? `Indexing ${jobProgress.total - jobProgress.completed - jobProgress.failed} job(s)` : 'Idle')
+      searchAbortRef.current = null
     }
   }
 
-  const handleCancelSearch = () => {
-    if (searchAbortRef.current) {
-      searchAbortRef.current.abort()
-    }
-    setStatusMessage(jobProgress.visible ? `Indexing ${jobProgress.total - jobProgress.completed - jobProgress.failed} job(s)` : 'Idle')
-  }
 
-  // Periodically ping REST health endpoint for document stats
-  // System status is primarily managed by the /api/services endpoint
-  useEffect(() => {
-    const controller = new AbortController()
 
-    const checkHealth = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      const url = `http://${host}:${port}/${base}/health`
-
-      try {
-        const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
-        if (!res.ok) throw new Error(`Status ${res.status}`)
-        const data = await res.json()
-        if (typeof data?.documents === 'number') {
-          setBackendDocs(data.documents)
-        }
-        if (typeof data?.total_size_bytes === 'number') {
-          setBackendSize(data.total_size_bytes)
-        }
-        // Don't override system status here - let /api/services be the source of truth
-      } catch (error) {
-        // Only update docs/size on error
-        setBackendDocs(null)
-        setBackendSize(null)
-        // If we can't reach the API at all, mark as error (unless manually stopped)
-        setSystemStatus(prev => (prev === 'stopped' ? 'stopped' : 'error'))
-      }
-    }
-
-    checkHealth()
-    const interval = setInterval(checkHealth, 15000)
-    return () => {
-      controller.abort()
-      clearInterval(interval)
-    }
-  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
-
-  // Fetch indexed documents from REST
-  useEffect(() => {
-    const controller = new AbortController()
-    const fetchDocs = async () => {
-      const host = ollamaConfig?.ragHost || '127.0.0.1'
-      const port = ollamaConfig?.ragPort || '8001'
-      const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-      const url = `http://${host}:${port}/${base}/documents`
-      try {
-        const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = await res.json()
-        if (Array.isArray(data?.documents)) {
-          const mapped: IndexedItem[] = data.documents.map((d: any) => ({
-            id: d.uri,
-            name: d.uri.split('/').pop() || d.uri,
-            path: d.uri,
-            type: 'file',
-            size: typeof d.size_bytes === 'number' ? d.size_bytes : undefined,
-            addedAt: new Date().toISOString(),
-          }))
-          setBackendDocumentList(mapped)
-        }
-      } catch (error) {
-        setBackendDocumentList([])
-      }
-    }
-    fetchDocs()
-    const id = setInterval(fetchDocs, 20000)
-    return () => {
-      controller.abort()
-      clearInterval(id)
-    }
-  }, [ollamaConfig?.ragHost, ollamaConfig?.ragPort, ollamaConfig?.ragPath])
-
-  useEffect(() => {
-    refreshServiceStatuses()
-    const id = setInterval(refreshServiceStatuses, 15000)
-    return () => clearInterval(id)
-  }, [refreshServiceStatuses])
-
-  const handleTestConnection = async () => {
-    toast.loading('Testing connection...', { id: 'test-connection' })
-
-    const host = ollamaConfig?.ragHost || '127.0.0.1'
-    const port = ollamaConfig?.ragPort || '8001'
-    const base = (ollamaConfig?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-
+  // --- Handlers: Configuration ---
+  const handleSaveConfig = async () => {
+    const { host, port, base } = getApiBase()
     try {
-      const res = await fetch(`http://${host}:${port}/${base}/ollama/status`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
+      const { ollamaCloudApiKey, ...safe } = ollamaConfig
+      await fetch(`http://${host}:${port}/${base}/config/app`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(safe)
+      })
 
-      const localOk = data?.local_available
-      const cloudOk = data?.cloud_available
-      const endpoint = data?.endpoint || ollamaConfig?.apiEndpoint || 'unknown'
-
-      if (localOk || cloudOk) {
-        toast.success('Connection successful', {
-          id: 'test-connection',
-          description: cloudOk ? `Cloud reachable (${endpoint})` : `Local reachable (${endpoint})`
-        })
-      } else {
-        toast.error('Connection failed', {
-          id: 'test-connection',
-          description: 'No Ollama endpoint responded'
+      // If cloud key provided, save it separately
+      if (ollamaCloudApiKey && ollamaCloudApiKey !== MASKED_SECRET) {
+        await fetch(`http://${host}:${port}/${base}/ollama/cloud-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiKey: ollamaCloudApiKey,
+            endpoint: ollamaConfig.ollamaCloudEndpoint
+          })
         })
       }
-    } catch (err) {
-      toast.error('Connection failed', {
-        id: 'test-connection',
-        description: err instanceof Error ? err.message : 'Unknown error'
+
+      // Switch mode to ollama implicitly
+      await fetch(`http://${host}:${port}/${base}/config/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'ollama' })
       })
+
+      toast.success('Configuration saved & activated')
+      setTimeout(() => window.location.reload(), 1000)
+    } catch { toast.error('Failed to save') }
+  }
+
+  const handleSaveOpenaiConfig = async () => {
+    const { host, port, base } = getApiBase()
+    try {
+      await fetch(`http://${host}:${port}/${base}/config/openai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(openaiConfig)
+      })
+      toast.success('OpenAI settings saved')
+      setHasOpenaiApiKey(true)
+      // Switch mode to openai automatically
+      await fetch(`http://${host}:${port}/${base}/config/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'openai_assistants' })
+      })
+      setTimeout(() => window.location.reload(), 1000)
+    } catch { toast.error('Failed to save OpenAI settings') }
+  }
+
+  const handleSaveVertexConfig = async () => {
+    const { host, port, base } = getApiBase()
+    try {
+      await fetch(`http://${host}:${port}/${base}/config/vertex`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(vertexConfig)
+      })
+      toast.success('Vertex AI settings saved')
+      // Switch mode
+      await fetch(`http://${host}:${port}/${base}/config/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'vertex_ai_search' })
+      })
+      setTimeout(() => window.location.reload(), 1000)
+    } catch { toast.error('Failed to save Vertex settings') }
+  }
+
+  const handleDisconnect = async (provider?: string) => {
+    const { host, port, base } = getApiBase()
+    if (!provider) return
+
+    // Default to local mode
+    try {
+      if (provider === 'openai_assistants') {
+        setOpenaiConfig(p => ({ ...p, apiKey: '' }))
+        setHasOpenaiApiKey(false)
+      }
+
+      await fetch(`http://${host}:${port}/${base}/config/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'ollama' })
+      })
+      toast.success(`Disconnected ${provider}. Switched to Ollama mode.`)
+      setTimeout(() => window.location.reload(), 1000)
+    } catch { toast.error('Failed to disconnect') }
+  }
+
+  const testOpenAI = async () => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/config/openai/models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: openaiConfig.apiKey })
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        if (data.models && data.models.length > 0) {
+          setOpenaiModels(data.models.map((m: any) => m.id))
+          toast.success(`Success! Found ${data.models.length} models.`)
+        } else if (data.warning) {
+          toast.warning(data.warning, { description: data.message })
+        } else {
+          toast.error('No models found')
+        }
+      } else {
+        const err = await res.json()
+        toast.error(err.detail || 'Connection failed')
+      }
+    } catch (e) {
+      toast.error('Connection test failed')
     }
   }
 
-  const items = indexedItems || []
-  const remoteItems = backendDocumentList.length > 0 ? backendDocumentList : items
-  const totalFiles = backendDocs !== null ? backendDocs : remoteItems.length
-  const totalSize = backendSize !== null ? backendSize : remoteItems.reduce((acc, item) => acc + (item.size || 0), 0)
-  const effectiveActiveMode = useMemo(() => {
-    if (activeMode && availableModes.includes(activeMode)) {
-      return activeMode
+  const testOllamaCloud = async (key: string, endpoint?: string) => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/ollama/test-connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key, endpoint })
+      })
+      const data = await res.json()
+      return { success: data.success, message: data.message || (data.success ? 'Connection successful' : 'Failed') }
+    } catch (e: any) {
+      return { success: false, message: e.message }
     }
-    return null
-  }, [activeMode, availableModes])
+  }
+
+  const handleFetchOllamaModels = async (key: string, endpoint?: string) => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/ollama/models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key, endpoint })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const models = data.models || []
+        setOllamaConfig(prev => ({ ...prev, availableModels: models }))
+        return models
+      }
+      return []
+    } catch { return [] }
+  }
+
+  const handleGoogleLogin = () => {
+    // Redirect to login endpoint
+    const { host, port, base } = getApiBase()
+    window.location.href = `http://${host}:${port}/${base}/auth/login`
+  }
 
   return (
-    <TooltipProvider>
-      <div className="min-h-screen bg-background">
-        <header className="border-b border-border bg-card">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
-                        <Lightning className="h-6 w-6 text-primary-foreground" />
-                      </div>
-                      <div>
-                        <h1 className="text-xl font-bold tracking-tight">Lauren AI</h1>
-                        <p className="text-sm text-muted-foreground">Document Search System</p>
-                        <p className="text-xs text-muted-foreground">Status: {searchMessage || statusMessage}</p>
-                      </div>
-                    </div>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">System:</span>
-                <Badge 
-                  variant={systemStatus === 'running' ? 'default' : systemStatus === 'error' ? 'destructive' : systemStatus === 'warning' ? 'secondary' : 'secondary'}
-                  className={`gap-1 ${systemStatus === 'warning' ? 'bg-yellow-500/15 text-yellow-600 hover:bg-yellow-500/25 border-yellow-500/50' : ''}`}
-                >
-                  {systemStatus === 'running' && <CheckCircle className="h-3 w-3" />}
-                  {systemStatus === 'error' && <WarningCircle className="h-3 w-3" />}
-                  {systemStatus === 'warning' && <WarningCircle className="h-3 w-3" />}
-                  {systemStatus === 'stopped' && <Pause className="h-3 w-3" />}
-                  {systemStatus.charAt(0).toUpperCase() + systemStatus.slice(1)}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">Service</span>
-                <select
-                  className="border rounded-md px-2 py-1 text-sm bg-background"
-                  value={selectedService}
-                  onChange={(e) => setSelectedService(e.target.value as 'rest' | 'mcp' | 'ui' | 'ollama')}
-                >
-                  <option value="rest">REST</option>
-                  <option value="mcp">MCP</option>
-                  <option value="ui">UI</option>
-                  <option value="ollama">Ollama</option>
-                </select>
-              </div>
-              <Button
-                variant={systemStatus === 'running' ? 'outline' : 'default'}
-                size="sm"
-                onClick={() => performServiceAction(systemStatus === 'running' ? 'stop' : 'start')}
-              >
-                {systemStatus === 'running' ? (
-                  <>
-                    <Pause className="h-4 w-4 mr-2" />
-                    Stop Service
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-4 w-4 mr-2" />
-                    Start Service
-                  </>
-                )}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => performServiceAction('restart')}>
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Restart
-              </Button>
-            </div>
-          </div>
-        </div>
-      </header>
+    <>
+      <Toaster theme="dark" position="top-right" />
+      <MainLayout
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        systemStatus={systemStatus}
+        config={ollamaConfig}
+        activeMode={activeMode}
+        onModeChange={setActiveMode}
+      >
+        {activeTab === 'dashboard' && (
+          <DashboardView
+            systemStatus={systemStatus}
+            serviceStatuses={serviceStatuses}
+            stats={{
+              documents: backendDocs || 0,
+              queriesToday: queriesToday,
+              avgLatency: 350 // We could fetch this too if available in /metrics/today
+            }}
+            jobProgress={jobProgress}
+            onNavigate={setActiveTab}
+            config={ollamaConfig}
+          />
+        )}
 
-      <main className="container mx-auto px-6 py-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
-          <TabsList className="grid w-full max-w-3xl grid-cols-6">
-            <TabsTrigger value="dashboard" className="gap-2">
-              <Database className="h-4 w-4" />
-              Dashboard
-            </TabsTrigger>
-            <TabsTrigger value="index" className="gap-2">
-              <FolderOpen className="h-4 w-4" />
-              Index
-            </TabsTrigger>
-            <TabsTrigger value="search" className="gap-2">
-              <ChatCircle className="h-4 w-4" />
-              Search
-            </TabsTrigger>
-            <TabsTrigger value="metrics" className="gap-2">
-              <ChartLine className="h-4 w-4" />
-              Metrics
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="gap-2">
-              <ListBullets className="h-4 w-4" />
-              Logs
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="gap-2">
-              <GearSix className="h-4 w-4" />
-              Settings
-            </TabsTrigger>
-          </TabsList>
+        {activeTab === 'search' && (
+          <SearchView
+            queryText={queryText}
+            onQueryTextChange={setQueryText}
+            onSearch={handleSearch}
+            onCancelSearch={() => searchAbortRef.current?.abort()}
+            searching={searching}
+            searchError={searchError}
+            searchAnswer={searchAnswer}
+            searchSources={searchSources}
+            searchMessage={searchMessage}
 
-          <TabsContent value="dashboard" className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-2">System Overview</h2>
-              <p className="text-muted-foreground">Monitor your AI document search system status and metrics</p>
-            </div>
+            config={ollamaConfig}
+            chatMessages={chatMessages}
+            setMessages={setChatMessages}
+            activeConversationId={activeConversationId}
+            conversations={conversations}
+            onSelectConversation={setActiveConversationId}
+            onNewConversation={() => {
+              setActiveConversationId(crypto.randomUUID())
+              setChatMessages([])
+            }}
+            onDeleteConversation={() => { }}
+            isSidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          />
+        )}
 
-            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardDescription>Indexed Items</CardDescription>
-                  <CardTitle className="text-3xl">{totalFiles}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground">
-                    {backendDocs !== null
-                      ? (totalFiles === 0 ? 'No items indexed yet (server)' : 'Count from server health')
-                      : (totalFiles === 0 ? 'No items indexed yet' : `${items.filter(i => i.type === 'file').length} files, ${items.filter(i => i.type === 'directory').length} directories`)}
-                  </p>
-                </CardContent>
-              </Card>
+        {activeTab === 'files' && (
+          <FileManager
+            config={ollamaConfig}
+            activeMode={activeMode}
+          />
+        )}
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardDescription>Storage Used</CardDescription>
-                  <CardTitle className="text-3xl">{formatFileSize(totalSize)}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground">
-                    {backendSize !== null ? 'From server health' : 'Local estimate'}
-                  </p>
-                </CardContent>
-              </Card>
+        {activeTab === 'settings' && (
+          <SettingsView
+            config={ollamaConfig}
+            onConfigChange={(k, v) => setOllamaConfig(p => ({ ...p, [k]: v }))}
+            onSaveConfig={handleSaveConfig}
+            onGoogleLogin={handleGoogleLogin}
+            onDisconnect={handleDisconnect}
+            vertexConfig={vertexConfig}
+            onVertexConfigChange={setVertexConfig}
+            onSaveVertexConfig={handleSaveVertexConfig}
+            openaiConfig={openaiConfig}
+            onOpenaiConfigChange={setOpenaiConfig}
+            onSaveOpenaiConfig={handleSaveOpenaiConfig}
+            hasOpenaiApiKey={hasOpenaiApiKey}
+            openaiModels={openaiModels}
+            onTestOpenAI={testOpenAI}
+            onTestOllamaCloud={testOllamaCloud}
+            onFetchOllamaModels={handleFetchOllamaModels}
+            ollamaStatus={ollamaStatus}
+          />
+        )}
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardDescription>Active Provider</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ProviderSelector config={ollamaConfig} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardDescription>Queries Today</CardDescription>
-                  <CardTitle className="text-3xl">0</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground">Conversational searches</p>
-                </CardContent>
-              </Card>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Getting Started</CardTitle>
-                <CardDescription>Start using your AI document search system</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-start gap-4 rounded-lg border border-border p-4">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                    <Database className="h-5 w-5 text-primary" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold mb-1">1. Start Backend Services</h3>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Launch the Python backend and Ollama to enable AI processing
-                    </p>
-                    <Button size="sm">
-                      <Play className="h-4 w-4 mr-2" />
-                      Start Services
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-4 rounded-lg border border-border p-4">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                    <FolderOpen className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold mb-1">2. Index Your Documents</h3>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Select files or directories to make them searchable
-                    </p>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={handleAddFile}>
-                        <File className="h-4 w-4 mr-2" />
-                        Add Files
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={handleAddDirectory}>
-                        <FolderOpen className="h-4 w-4 mr-2" />
-                        Add Directory
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-4 rounded-lg border border-border p-4">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                    <ChatCircle className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="font-semibold mb-1">3. Start Searching</h3>
-                    <p className="text-sm text-muted-foreground mb-3">
-                      Ask questions in natural language about your documents
-                    </p>
-                    <Button size="sm" variant="outline" disabled>
-                      <ChatCircle className="h-4 w-4 mr-2" />
-                      Open Search
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="index" className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight mb-2">File Indexing</h2>
-              <p className="text-muted-foreground">Manage your indexed files and directories</p>
-            </div>
-            <FileManager config={ollamaConfig} activeMode={activeMode} />
-          </TabsContent>
-
-          <TabsContent value="search" className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-semibold tracking-tight mb-2">Conversational Search</h2>
-                <p className="text-muted-foreground">Ask questions about your indexed documents</p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="md:hidden"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-              >
-                <ListBullets className="h-4 w-4 mr-2" />
-                Conversations
-              </Button>
-            </div>
-            <div className="flex gap-4 relative">
-              <div className={sidebarOpen ? 'block md:block' : 'hidden md:block'}>
-                <ConversationSidebar
-                  conversations={conversations}
-                  activeConversationId={activeConversationId}
-                  onSelectConversation={selectConversation}
-                  onDeleteConversation={deleteConversation}
-                  onNewConversation={createNewConversation}
-                  onClose={() => setSidebarOpen(false)}
-                  isOpen={sidebarOpen}
-                />
-              </div>
-              {sidebarOpen && (
-                <div
-                  className="fixed inset-0 bg-black/50 z-40 md:hidden"
-                  onClick={() => setSidebarOpen(false)}
-                />
-              )}
-              <div className="flex-1">
-                {activeConversationId === null && conversations.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center p-12 border rounded-lg bg-muted/20">
-                    <ChatCircle className="h-12 w-12 mb-4 text-muted-foreground opacity-50" />
-                    <p className="text-muted-foreground mb-4">No conversations yet</p>
-                    <Button onClick={createNewConversation}>
-                      <Plus className="h-4 w-4 mr-2" />
-                      Start New Conversation
-                    </Button>
-                  </div>
-                ) : (
-                  <ChatInterface
-                    config={ollamaConfig}
-                    messages={chatMessages}
-                    setMessages={setChatMessages}
-                    onNewConversation={createNewConversation}
-                    onDeleteConversation={deleteConversation}
-                    activeConversationId={activeConversationId}
-                  />
-                )}
-              </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="metrics" className="space-y-6">
-            <MetricsDashboard config={ollamaConfig} />
-          </TabsContent>
-
-          <TabsContent value="logs" className="space-y-6">
-            <LogsViewer config={ollamaConfig} />
-          </TabsContent>
-
-          <TabsContent value="settings" className="space-y-6">
-            <SettingsDashboard
-              config={ollamaConfig}
-              onConfigChange={handleConfigChange}
-              onSaveConfig={handleSaveConfig}
-              onTestConnection={handleTestConnection}
-              vertexConfig={vertexConfig}
-              onVertexConfigChange={setVertexConfig}
-              onSaveVertexConfig={handleSaveVertexConfig}
-              onGoogleLogin={handleGoogleLogin}
-              onDisconnect={handleDisconnect}
-              openaiConfig={openaiConfig}
-              openaiModels={openaiModels}
-              onOpenaiConfigChange={setOpenaiConfig}
-              onSaveOpenAIConfig={handleSaveOpenAIConfig}
-              onTestOpenAIConnection={handleTestOpenAIConnection}
-              onSwitchBackend={handleSwitchBackend}
-              activeMode={effectiveActiveMode}
-              availableModes={availableModes}
-              onSetOllamaMode={handleSetOllamaMode}
-              onTestOllamaCloudConnection={handleTestOllamaCloudConnection}
-              ollamaStatus={ollamaStatus}
-              ollamaCloudTestPassed={ollamaCloudTestPassed}
-            />
-          </TabsContent>
-        </Tabs>
-      </main>
-      {jobProgress.visible && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[min(520px,90vw)] pointer-events-none">
-          <div className="pointer-events-auto rounded-lg border border-border bg-card/90 backdrop-blur shadow-xl p-3 space-y-2">
-            <div className="flex items-center justify-between text-sm text-foreground">
-              <span>Indexing in progress</span>
-              <span className="text-xs text-muted-foreground">
-                {jobProgress.completed}/{jobProgress.total} done
-                {jobProgress.failed > 0 ? ` · ${jobProgress.failed} failed` : ''}
-              </span>
-            </div>
-            <Progress value={jobProgress.total ? (jobProgress.completed / jobProgress.total) * 100 : 0} />
-          </div>
-        </div>
-      )}
-      <DeletionStatusBar config={ollamaConfig} />
-    </div>
-    </TooltipProvider>
+        {activeTab === 'logs' && <LogsViewer config={ollamaConfig} />}
+        {activeTab === 'help' && <HelpView />}
+      </MainLayout>
+    </>
   )
 }
 

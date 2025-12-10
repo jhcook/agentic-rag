@@ -88,7 +88,7 @@ export function DraggableCard({
   }
 
   const handleRef = useRef<HTMLDivElement>(null)
-  const { elementRef, containerRef, position, isDragging, handlers } = useDraggable(handlePositionChange, handleRef)
+  const { elementRef, containerRef, position, isDragging, handlers } = useDraggable(handlePositionChange, handleRef as React.RefObject<HTMLElement>)
   const [calculatedWidth, setCalculatedWidth] = useState(cardWidth)
 
   // Calculate responsive width based on container
@@ -97,26 +97,26 @@ export function DraggableCard({
       // Find the DraggableCardContainer - it has 'relative' class and contains this card
       const element = elementRef.current
       if (!element) return
-      
+
       // Traverse up to find the container with 'relative' class (DraggableCardContainer)
       let container: HTMLElement | null = element.parentElement
       while (container && !container.classList.contains('relative')) {
         container = container.parentElement
       }
-      
+
       if (container) {
         // Set container ref for drag constraints
         if (containerRef) {
           containerRef.current = container as HTMLDivElement
         }
-        
+
         // Calculate card width based on container's actual width
         const containerWidth = container.getBoundingClientRect().width
         const containerPadding = gap * 2
         const availableWidth = containerWidth - containerPadding
         const calculated = Math.floor((availableWidth - (gap * (columns - 1))) / columns)
         const newWidth = Math.max(calculated, 200) // Minimum 200px
-        
+
         setCalculatedWidth(newWidth)
       }
     }
@@ -128,19 +128,19 @@ export function DraggableCard({
       while (container && !container.classList.contains('relative')) {
         container = container.parentElement
       }
-      
+
       if (container) {
         const resizeObserver = new ResizeObserver(() => {
           updateWidth()
         })
         resizeObserver.observe(container)
-        
+
         // Initial update with a small delay to ensure layout is complete
         const timeoutId = setTimeout(updateWidth, 50)
-        
+
         // Also listen to window resize
         window.addEventListener('resize', updateWidth)
-        
+
         return () => {
           clearTimeout(timeoutId)
           resizeObserver.disconnect()
@@ -148,7 +148,7 @@ export function DraggableCard({
         }
       }
     }
-    
+
     // Fallback to window resize listener
     const timeoutId = setTimeout(updateWidth, 50)
     window.addEventListener('resize', updateWidth)

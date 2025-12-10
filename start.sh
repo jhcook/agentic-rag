@@ -700,7 +700,7 @@ find . -type f -name "*.pyc" -delete 2>/dev/null || true
 echo -e "${GREEN}Bytecode cache cleared${NC}"
 
 # Ensure PyTorch enables the NumPy array API so the `_ARRAY_API` warning disappears when torch loads NumPy.
-export PYTORCH_ENABLE_NUMPY_ARRAY_API=1
+# export PYTORCH_ENABLE_NUMPY_ARRAY_API=1
 
 # Optional torch pinning based on platform
 TORCH_VERSION=${TORCH_VERSION:-}

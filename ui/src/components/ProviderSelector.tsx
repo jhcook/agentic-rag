@@ -22,9 +22,15 @@ type ConfigMode = {
   available_modes: string[]
 }
 
-export function ProviderSelector({ config }: { config: any }) {
+interface ProviderSelectorProps {
+  config: any
+  activeMode: string
+  onModeChange: (mode: string) => void
+}
+
+export function ProviderSelector({ config, activeMode, onModeChange }: ProviderSelectorProps) {
   const [open, setOpen] = useState(false)
-  const [modeData, setModeData] = useState<ConfigMode>({ mode: 'none', available_modes: [] })
+  const [availableModes, setAvailableModes] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
   const fetchMode = async () => {
@@ -35,7 +41,11 @@ export function ProviderSelector({ config }: { config: any }) {
       const res = await fetch(`http://${host}:${port}/${base}/config/mode`)
       if (res.ok) {
         const data = await res.json()
-        setModeData(data)
+        setAvailableModes(data.available_modes || [])
+        // Sync if backend reports different mode
+        if (data.mode && data.mode !== activeMode) {
+          onModeChange(data.mode)
+        }
       }
     } catch (e) {
       console.error("Failed to fetch mode", e)
@@ -48,29 +58,27 @@ export function ProviderSelector({ config }: { config: any }) {
     // Poll for mode changes more frequently initially, then less frequently
     const interval = setInterval(fetchMode, 2000) // Poll every 2 seconds
     return () => clearInterval(interval)
-  }, [config])
+  }, [config, activeMode])
 
   const handleSelect = async (newMode: string) => {
     setLoading(true)
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/config/mode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: newMode })
       })
-      
+
       if (!res.ok) throw new Error('Failed to switch mode')
-      
-      setModeData(prev => ({ ...prev, mode: newMode }))
+
+      onModeChange(newMode)
       toast.success(`Switched to ${newMode} mode`)
       setOpen(false)
-      
-      // Reload page to refresh context if needed, or just let state propagate
-      // window.location.reload() 
+
     } catch (e) {
       toast.error('Failed to switch provider')
     } finally {
@@ -85,14 +93,14 @@ export function ProviderSelector({ config }: { config: any }) {
     { value: 'vertex_ai_search', label: 'Vertex AI Agent', icon: Cloud },
   ]
 
-  const currentProvider = providers.find(p => p.value === modeData.mode) ||
-    { value: modeData.mode || 'none', label: modeData.mode === 'none' ? 'No Provider' : (modeData.mode || 'No Provider'), icon: Server }
+  const currentProvider = providers.find(p => p.value === activeMode) ||
+    { value: activeMode || 'none', label: activeMode === 'none' ? 'No Provider' : (activeMode || 'No Provider'), icon: Server }
 
   // Filter providers based on available modes from backend
-  const availableProviders = providers.filter(p => modeData.available_modes.includes(p.value))
-  
+  const availableProviderList = providers.filter(p => availableModes.includes(p.value))
+
   // Check if current mode is actually available
-  const isCurrentModeAvailable = modeData.available_modes.includes(modeData.mode)
+  const isCurrentModeAvailable = availableModes.includes(activeMode)
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -105,7 +113,7 @@ export function ProviderSelector({ config }: { config: any }) {
             "w-full justify-between",
             !isCurrentModeAvailable && "border-destructive/50 bg-destructive/10"
           )}
-          disabled={loading || availableProviders.length === 0}
+          disabled={loading || availableProviderList.length === 0}
         >
           <div className="flex items-center gap-2 truncate">
             <currentProvider.icon className={cn(
@@ -113,8 +121,8 @@ export function ProviderSelector({ config }: { config: any }) {
               !isCurrentModeAvailable && "text-destructive"
             )} />
             <span className={cn(!isCurrentModeAvailable && "text-destructive")}>
-              {availableProviders.length === 0 ? "No Providers Available" : currentProvider.label}
-              {!isCurrentModeAvailable && availableProviders.length > 0 && " (Unavailable)"}
+              {availableProviderList.length === 0 ? "No Providers Available" : currentProvider.label}
+              {!isCurrentModeAvailable && availableProviderList.length > 0 && " (Unavailable)"}
             </span>
           </div>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -126,7 +134,7 @@ export function ProviderSelector({ config }: { config: any }) {
           <CommandList>
             <CommandEmpty>No provider found.</CommandEmpty>
             <CommandGroup>
-              {availableProviders.map((provider) => (
+              {availableProviderList.map((provider) => (
                 <CommandItem
                   key={provider.value}
                   value={provider.value}
@@ -135,7 +143,7 @@ export function ProviderSelector({ config }: { config: any }) {
                   <Check
                     className={cn(
                       "mr-2 h-4 w-4",
-                      modeData.mode === provider.value ? "opacity-100" : "opacity-0"
+                      activeMode === provider.value ? "opacity-100" : "opacity-0"
                     )}
                   />
                   <div className="flex items-center gap-2">

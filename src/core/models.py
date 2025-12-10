@@ -111,6 +111,7 @@ class ChatMessage(BaseModel):
 class ChatReq(BaseModel):
     """Request model for chat completion."""
     messages: List[ChatMessage]
+    session_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -147,6 +148,20 @@ class OllamaTestConnectionReq(BaseModel):
     endpoint: Optional[str] = Field(default=None, description="Endpoint to test (optional, uses configured endpoint if not provided)")
     proxy: Optional[str] = Field(default=None, description="HTTPS proxy to use when testing (optional)")
     ca_bundle: Optional[str] = Field(default=None, description="Path to CA bundle PEM file (optional)")
+
+class OllamaModelsReq(BaseModel):
+    """Request model for fetching Ollama models dynamically."""
+    api_key: Optional[str] = Field(default=None, description="API key to use (optional, uses configured key if not provided)", alias="apiKey")
+    endpoint: Optional[str] = Field(default=None, description="Endpoint to use (optional, uses configured endpoint if not provided)")
+    proxy: Optional[str] = Field(default=None, description="HTTPS proxy URL (optional)")
+    ca_bundle: Optional[str] = Field(default=None, description="Path to CA bundle PEM file (optional)", alias="caBundle")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+class OpenAIModelsReq(BaseModel):
+    """Request model for fetching OpenAI models with a new API key."""
+    api_key: str = Field(description="OpenAI API key (sk-...)", alias="apiKey")
+    model_config = ConfigDict(populate_by_name=True)
 
 class OllamaCloudConfigReq(BaseModel):
     """Request model for persisting Ollama Cloud secrets/config."""
@@ -192,6 +207,8 @@ class AppConfigReq(BaseModel):
     ollama_cloud_proxy: Optional[str] = Field(default=None, alias="ollamaCloudProxy")
     ollama_cloud_endpoint: Optional[str] = Field(default=None, alias="ollamaCloudEndpoint")
     ollama_mode: Optional[str] = Field(default=None, alias="ollamaMode")
+    ollama_cloud_api_key: Optional[str] = Field(default=None, alias="ollamaCloudApiKey")
+    ollama_cloud_ca_bundle: Optional[str] = Field(default=None, alias="ollamaCloudCABundle")
 
     model_config = ConfigDict(populate_by_name=True)
 

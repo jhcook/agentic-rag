@@ -1,9 +1,9 @@
 fastapi>=0.115.0
 faiss-cpu>=1.9.0
-litellm>=1.52.0
+langgraph>=0.0.10
+langchain-ollama>=0.0.1
 mcp>=1.1.0
-numpy>=1.26.4
-ollama>=0.4.0
+numpy<2.0
 openai>=1.55.0
 psutil>=6.1.0
 pypdf>=5.1.0
@@ -20,3 +20,7 @@ google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.150.0
 google-cloud-aiplatform>=1.70.0
 tqdm>=4.66.0
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-core>=0.1.10
+unstructured>=0.10.0

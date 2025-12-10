@@ -28,10 +28,13 @@ from contextlib import asynccontextmanager
 
 import psutil
 import requests
-from fastapi import FastAPI, Request, Response, HTTPException, Form, UploadFile, File
-from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel
+
+from src.core.exceptions import ConfigurationError, AuthenticationError, ProviderError
+from pydantic import ConfigDict, Field
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -48,7 +51,8 @@ from src.core.models import (
     ConfigModeReq, QualityMetricsResp, Job, OpenAIConfigModel,
     ChatMessage, ChatReq, VertexConfigReq, AppConfigReq,
     OllamaModeReq, OllamaTestConnectionReq, OllamaCloudConfigReq,
-    OllamaStatusResp, OllamaTestConnectionResp
+    OllamaStatusResp, OllamaTestConnectionResp, OllamaModelsReq,
+    OpenAIModelsReq
 )
 from src.core.interfaces import RAGBackend
 from src.core.google_auth import GoogleAuthManager
@@ -59,7 +63,6 @@ from src.core.config_paths import (
     CONFIG_DIR,
     SETTINGS_PATH,
     VERTEX_CONFIG_PATH,
-    LEGACY_VERTEX_CONFIG_PATH,
 )
 from src.core.ollama_config import _redact_api_key  # pylint: disable=protected-access
 
@@ -190,15 +193,10 @@ def load_app_config():
             # Map settings.json keys to rag_core variables
             if "apiEndpoint" in config:
                 rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
-            elif "ollamaApiUrl" in config:  # Legacy fallback
-                rag_core.OLLAMA_API_BASE = config["ollamaApiUrl"]
 
             if "model" in config:
                 rag_core.LLM_MODEL_NAME = config["model"]
                 rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
-            elif "ollamaModel" in config:  # Legacy fallback
-                rag_core.LLM_MODEL_NAME = config["ollamaModel"]
-                rag_core.ASYNC_LLM_MODEL_NAME = config["ollamaModel"].split("/")[-1]
 
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
@@ -228,6 +226,15 @@ MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = os.getenv("MCP_PORT", "8000")
 MCP_PATH = os.getenv("MCP_PATH", "/mcp")
 MASKED_SECRET = "***MASKED***"
+
+# Chat persistence
+try:
+    from src.core.chat_store import ChatStore
+    chat_store = ChatStore(LOG_DIR.parent / "cache" / "chat_history.db")
+    logger.info("ChatStore initialized")
+except Exception as exc:
+    logger.error("Failed to initialize ChatStore: %s", exc)
+    chat_store = None
 
 def _mcp_base() -> str:
     """Get the base URL for MCP server."""
@@ -539,6 +546,30 @@ async def lifespan(_fastapi_app: FastAPI):
 
 app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
 
+@app.exception_handler(ConfigurationError)
+async def configuration_exception_handler(request: Request, exc: ConfigurationError):
+    logger.error(f"Configuration error: {exc}")
+    return JSONResponse(
+        status_code=409,
+        content={"error": "configuration_error", "message": str(exc)},
+    )
+
+@app.exception_handler(AuthenticationError)
+async def authentication_exception_handler(request: Request, exc: AuthenticationError):
+    logger.error(f"Authentication error: {exc}")
+    return JSONResponse(
+        status_code=401,
+        content={"error": "authentication_error", "message": str(exc)},
+    )
+
+@app.exception_handler(ProviderError)
+async def provider_exception_handler(request: Request, exc: ProviderError):
+    logger.error(f"Provider error: {exc}")
+    return JSONResponse(
+        status_code=502,
+        content={"error": "provider_error", "message": str(exc)},
+    )
+
 # Allow cross-origin calls from mobile/web clients (permissive by default)
 app.add_middleware(
     CORSMiddleware,
@@ -618,6 +649,8 @@ def _start_search_worker():
                     kwargs['max_tokens'] = job["max_tokens"]
                 
                 result = backend.search(job["query"], **kwargs)
+                if result is None:
+                    raise RuntimeError("Backend returned None")
                 status = "completed"
                 error = None
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -856,6 +889,9 @@ def api_search(req: SearchReq):
             kwargs['max_tokens'] = req.max_tokens
         
         result = backend.search(req.query, **kwargs)
+        if result is None:
+            logger.error("Backend.search returned None! Backend type: %s", type(backend))
+            raise HTTPException(status_code=500, detail="Backend returned None")
         _record_quality_metrics(result)
         # Ensure result is JSON-serializable (already normalized by _normalize_llm_response)
         if hasattr(result, 'model_dump'):
@@ -906,12 +942,12 @@ def metrics_endpoint():
 @app.post(f"/{pth}/grounded_answer")
 def api_grounded_answer(req: GroundedAnswerReq):
     """Return a grounded answer using vector search + synthesis."""
-    logger.info("Grounded answer requested: %s", req.question)
+    logger.info("Processing grounded answer request: %s", req.question)
     try:
-        # Pass model if supported by backend
-        kwargs = {"k": req.k or 3}
+        # Build kwargs
+        kwargs = {}
         if req.model:
-             kwargs["model"] = req.model
+            kwargs["model"] = req.model
         if req.temperature is not None:
             kwargs["temperature"] = req.temperature
         if req.max_tokens is not None:
@@ -919,11 +955,106 @@ def api_grounded_answer(req: GroundedAnswerReq):
         if req.config:
             kwargs.update(req.config)
              
-        answer = backend.grounded_answer(req.question, **kwargs)
-        return answer
+        result = backend.grounded_answer(req.question, k=req.k or 5, **kwargs)
+        if result is None:
+            logger.error("Backend.grounded_answer returned None! Backend type: %s", type(backend))
+            raise HTTPException(status_code=500, detail="Backend returned None")
+        return result
+    except HTTPException:
+        raise
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer failed: %s", exc)
         raise
+
+@app.post(f"/{pth}/chat")
+def api_chat(req: ChatReq):
+    """Chat with the RAG backend, optionally maintaining history."""
+    logger.info("Chat request received. Backend type: %s", type(backend))
+    
+    session_id = req.session_id
+    if chat_store:
+        # If new session needed
+        if not session_id:
+            try:
+                # Use first few words of query as title
+                # req.messages is List[ChatMessage]
+                last_content = req.messages[-1].content if req.messages else "New Chat"
+                title = last_content[:50] + "..."
+                session_id = chat_store.create_session(title=title, metadata={"mode": backend.get_mode()})
+            except Exception as e:
+                logger.error("Failed to create chat session: %s", e)
+        
+        # Save user message
+        if req.messages:
+            last_msg = req.messages[-1]
+            try:
+                chat_store.add_message(session_id, last_msg.role, last_msg.content)
+            except Exception as e:
+                logger.error("Failed to save user message: %s", e)
+
+    try:
+        # Build kwargs
+        kwargs = {}
+        if req.model:
+            kwargs["model"] = req.model
+        if req.temperature is not None:
+            kwargs["temperature"] = req.temperature
+        if req.max_tokens is not None:
+            kwargs["max_tokens"] = req.max_tokens
+            
+        # Convert Pydantic models to dicts for backend
+        messages_dicts = [m.model_dump() for m in req.messages]
+        result = backend.chat(messages_dicts, **kwargs)
+        
+        if result is None:
+             raise ProviderError("Backend returned None")
+        
+        # Save AI response
+        if chat_store and session_id and result.get("answer"):
+            try:
+                chat_store.add_message(session_id, "assistant", result["answer"])
+            except Exception as e:
+                logger.error("Failed to save AI message: %s", e)
+        
+        # Include session_id in response
+        result["session_id"] = session_id
+        return result
+
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Chat failed: %s", exc)
+        if "401" in str(exc) or "403" in str(exc) or "unauthorized" in str(exc).lower():
+             raise AuthenticationError(f"Chat access denied: {exc}") from exc
+        raise ProviderError(f"Chat failed: {exc}") from exc
+
+@app.get(f"/{pth}/chat/history")
+def api_chat_history_list(limit: int = 50, offset: int = 0):
+    """List recent chat sessions."""
+    if not chat_store:
+        return []
+    try:
+        return chat_store.list_sessions(limit=limit, offset=offset)
+    except Exception as e:
+        logger.error("Failed to list chat history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get(f"/{pth}/chat/history/{{session_id}}")
+def api_chat_history_get(session_id: str):
+    """Get messages for a specific session."""
+    if not chat_store:
+        raise HTTPException(status_code=503, detail="Chat storage usage not available")
+    try:
+        messages = chat_store.get_messages(session_id)
+        if not messages:
+             # Check if session exists at all
+             session = chat_store.get_session(session_id)
+             if not session:
+                 raise HTTPException(status_code=404, detail="Session not found")
+        return messages
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get session history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post(f"/{pth}/rerank")
 def api_rerank(req: RerankReq):
@@ -1591,10 +1722,67 @@ def get_openai_models(_request: Request):
         logger.error("Failed to fetch OpenAI models: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+@app.post(f"/{pth}/config/openai/models")
+def get_openai_models_post(req: OpenAIModelsReq):
+    """Get list of available OpenAI models using the provided API key."""
+    try:
+        api_key = req.api_key
+        # If masked, try to use stored key
+        if api_key == MASKED_SECRET:
+            if not os.path.exists("secrets/openai_config.json"):
+                raise HTTPException(status_code=400, detail="OpenAI not configured and key masked")
+            
+            with open("secrets/openai_config.json", "r", encoding="utf-8") as f:
+                config = json.load(f)
+            api_key = config.get("api_key", "")
+            
+        if not api_key or not api_key.strip():
+            raise HTTPException(status_code=400, detail="API key is required")
+        
+        # Fetch models from OpenAI API
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        models_response = client.models.list()
+        
+        all_model_ids = [m.id for m in models_response.data]
+        
+        # Filter for models suitable for assistants (GPT, o1, and text models)
+        suitable_models = []
+        for model in models_response.data:
+            model_id = model.id
+            if any(prefix in model_id for prefix in ['gpt-4', 'gpt-3.5', 'o1', 'text-davinci']):
+                suitable_models.append({
+                    "id": model_id,
+                    "name": model_id,
+                    "created": model.created
+                })
+        
+        # If no GPT models found, return warning
+        if not suitable_models:
+            logger.warning("No GPT models found. Available models: %s", all_model_ids)
+            return JSONResponse({
+                "models": [],
+                "warning": "No GPT models available",
+                "message": f"Your OpenAI account only has access to: {', '.join(all_model_ids)}. The Assistants API requires GPT-4, GPT-3.5-turbo, or o1 models.",
+                "available_models": all_model_ids
+            })
+        
+        # Sort by creation date (newest first)
+        suitable_models.sort(key=lambda x: x["created"], reverse=True)
+        
+        logger.info("Retrieved %d OpenAI models (from %d total) using provided key", len(suitable_models), len(models_response.data))
+        return JSONResponse({"models": suitable_models})
+        
+    except HTTPException:
+        raise
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to fetch OpenAI models (POST): %s", e)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
 @app.post(f"/{pth}/chat")
 def api_chat(req: ChatReq):
     """Conversational chat."""
-    logger.info("Chat request received")
+    logger.info("Chat request received. Backend type: %s", type(backend))
     if hasattr(backend, "chat"):
         # Prepare kwargs
         kwargs = {}
@@ -1607,7 +1795,11 @@ def api_chat(req: ChatReq):
         if req.config:
             kwargs.update(req.config)
 
-        return backend.chat([m.model_dump() for m in req.messages], **kwargs)
+        result = backend.chat([m.model_dump() for m in req.messages], **kwargs)
+        if result is None:
+            logger.error("Backend.chat returned None! Backend type: %s", type(backend))
+            return {"error": "Internal Error: Backend returned None"}
+        return result
     raise HTTPException(status_code=501, detail="Backend does not support chat")
 
 @app.get(f"/{pth}/drive/files")
@@ -1666,8 +1858,19 @@ async def api_extract(file: UploadFile = File(...)):
         logger.error("Extraction failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+@app.get(f"/{pth}/config/autotune")
+async def get_autotune_params(query: str, default_k: int = 12):
+    """Peek at what parameters would be used for a given query."""
+    top_k, max_context = rag_core._autotune_rag_params(query, default_k)
+    return {
+        "query": query,
+        "predicted_k": top_k,
+        "predicted_context": max_context,
+        "mode": "Technical/Fact" if top_k <= 3 else ("Complex/Research" if top_k >= 8 else "Balanced")
+    }
+
 @app.post(f"/{pth}/config/app")
-def api_save_app_config(req: AppConfigReq):
+async def update_app_config(req: AppConfigReq):
     """Save application configuration."""
     config_dir = CONFIG_DIR
     config_dir.mkdir(exist_ok=True)
@@ -1764,11 +1967,6 @@ def api_save_vertex_config(req: VertexConfigReq):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
-        if LEGACY_VERTEX_CONFIG_PATH.exists():
-            try:
-                LEGACY_VERTEX_CONFIG_PATH.unlink()
-            except OSError as legacy_err:
-                logger.warning("Failed to remove legacy vertex config: %s", legacy_err)
         
         # Update current process env vars so it works immediately
         os.environ.update(config)
@@ -1785,16 +1983,6 @@ def api_get_vertex_config():
         if VERTEX_CONFIG_PATH.exists():
             with open(VERTEX_CONFIG_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
-        if LEGACY_VERTEX_CONFIG_PATH.exists():
-            try:
-                with open(LEGACY_VERTEX_CONFIG_PATH, "r", encoding="utf-8") as f:
-                    legacy_data = json.load(f)
-                with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(legacy_data, f, indent=2)
-                LEGACY_VERTEX_CONFIG_PATH.unlink(missing_ok=True)
-                return legacy_data
-            except Exception as legacy_err:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to migrate legacy vertex config: %s", legacy_err)
         return {
             "VERTEX_PROJECT_ID": os.getenv("VERTEX_PROJECT_ID", ""),
             "VERTEX_LOCATION": os.getenv("VERTEX_LOCATION", "us-central1"),
@@ -1914,8 +2102,8 @@ def api_get_ollama_status():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/ollama/models")
-def api_list_ollama_models():
-    """List available models from current Ollama endpoint."""
+def api_list_ollama_models_get():
+    """List available models from current Ollama endpoint (configured)."""
     try:
         backend_instance = get_rag_backend()
         if hasattr(backend_instance, 'list_models'):
@@ -1924,6 +2112,68 @@ def api_list_ollama_models():
         return {"models": []}
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to list Ollama models: %s", e)
+        return {"models": []}
+
+@app.post(f"/{pth}/ollama/models")
+def api_list_ollama_models_post(req: OllamaModelsReq):
+    """List available models from Ollama endpoint with provided credentials."""
+    try:
+        from src.core.ollama_config import (
+            get_ollama_endpoint,
+            get_ollama_client_headers,
+            get_requests_ca_bundle,
+            get_ollama_cloud_proxy,
+            get_ollama_api_key
+        )
+        import requests
+
+        # Determine credentials to use (provided > configured)
+        api_key = req.api_key if req.api_key else get_ollama_api_key()
+        if req.api_key == MASKED_SECRET:
+             api_key = get_ollama_api_key()
+
+        endpoint = req.endpoint if req.endpoint else get_ollama_endpoint()
+        proxy = req.proxy if req.proxy else get_ollama_cloud_proxy()
+        ca_bundle = req.ca_bundle if req.ca_bundle else get_requests_ca_bundle()
+
+        # Build headers
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        # Build proxies dict
+        proxies = None
+        if proxy:
+            proxies = {"http": proxy, "https": proxy}
+
+        # Build verify arg
+        verify = True
+        if ca_bundle and os.path.exists(ca_bundle):
+            verify = ca_bundle
+
+        # Make request
+        # Convert http to https if cloud
+        if endpoint.startswith("http://") and "ollama.com" in endpoint:
+            endpoint = endpoint.replace("http://", "https://")
+
+        resp = requests.get(
+            f"{endpoint.rstrip('/')}/api/tags",
+            headers=headers,
+            timeout=10,
+            verify=verify,
+            proxies=proxies
+        )
+        
+        if resp.ok:
+            data = resp.json()
+            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            return {"models": models}
+        
+        logger.warning(f"Failed to fetch models: {resp.status_code} {resp.text}")
+        return {"models": []}
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to list Ollama models (POST): %s", e)
         return {"models": []}
 
 @app.post(f"/{pth}/ollama/test-connection")

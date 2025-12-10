@@ -11,11 +11,6 @@ import shutil
 
 from sentence_transformers import SentenceTransformer  # type: ignore
 
-try:
-    from litellm import embedding as litellm_embedding  # type: ignore
-except ImportError:
-    litellm_embedding = None
-
 # Torch/env safety knobs
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ['OMP_NUM_THREADS'] = '1'
@@ -94,35 +89,6 @@ def _clear_sentence_transformer_cache(model_name: str, logger: logging.Logger) -
             logger.warning("Failed to clear cached model files at %s: %s", path, exc)
     return cleared
 
-
-class LiteLLMEmbedder:
-    """Minimal adapter to expose a SentenceTransformer-like interface for LiteLLM embeddings."""
-
-    def __init__(self, model_name: str, api_base: Optional[str] = None):
-        if litellm_embedding is None:
-            raise ImportError("litellm is required for OpenAI embedding models")
-        self.model_name = model_name
-        self.api_base = api_base
-        self._dim = OPENAI_EMBED_DIMS.get(model_name, 1536)
-
-    def encode(self, inputs, **_: Any):
-        """Encode inputs using LiteLLM."""
-        if litellm_embedding is None:
-            raise ImportError("litellm is required for OpenAI embedding models")
-        if isinstance(inputs, str):
-            payload = [inputs]
-        else:
-            payload = list(inputs)
-        resp = litellm_embedding(model=self.model_name, input=payload, api_base=self.api_base)
-        # litellm returns {"data": [{"embedding": ..., "index": 0}, ...]}
-        # pylint: disable=no-member
-        return [item["embedding"] for item in getattr(resp, "data", resp.get("data", []))]
-
-    def get_sentence_embedding_dimension(self) -> int:
-        """Get the embedding dimension."""
-        return self._dim
-
-
 def _is_meta_tensor_error(exc: Exception) -> bool:
     """Check if exception is related to meta tensor device issues."""
     error_msg = str(exc).lower()
@@ -191,11 +157,9 @@ def get_embedder(
 
     # Handle OpenAI/API-based models
     if model_name in OPENAI_EMBED_DIMS:
-        logger.info("Loading API-based embedding model: %s", model_name)
-        api_base = os.getenv("OPENAI_API_BASE")
-        _EMBEDDER = LiteLLMEmbedder(model_name, api_base=api_base)
-        _EMBEDDER_NAME = model_name
-        return _EMBEDDER
+        logger.warning("OpenAI embeddings temporarily unavailable after LangGraph migration. Falling back to default.")
+        # Fallthrough to default strategies
+
 
     # Configure torch before loading
     try:

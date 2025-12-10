@@ -47,8 +47,8 @@ from src.core.interfaces import RAGBackend
 from src.core.config_paths import (
     CONFIG_DIR,
     VERTEX_CONFIG_PATH,
-    LEGACY_VERTEX_CONFIG_PATH,
 )
+from src.core.exceptions import ConfigurationError, AuthenticationError, ProviderError
 try:
     from src.core.google_auth import GoogleAuthManager
 except ImportError:
@@ -191,17 +191,7 @@ class GoogleGeminiBackend(RAGBackend):
             if VERTEX_CONFIG_PATH.exists():
                 with open(VERTEX_CONFIG_PATH, "r", encoding="utf-8") as handle:
                     return json.load(handle)
-            if LEGACY_VERTEX_CONFIG_PATH.exists():
-                with open(LEGACY_VERTEX_CONFIG_PATH, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                with open(VERTEX_CONFIG_PATH, "w", encoding="utf-8") as handle:
-                    json.dump(data, handle, indent=2)
-                try:
-                    LEGACY_VERTEX_CONFIG_PATH.unlink()
-                except OSError as exc:
-                    logger.warning("Failed to remove legacy vertex config: %s", exc)
-                return data
+            # Migrated: Legacy vertex config path removal logic deleted
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to load vertex config: %s", exc)
         return None
@@ -319,7 +309,7 @@ class GoogleGeminiBackend(RAGBackend):
             # Try to reload if not initialized
             self.reload_auth()
             if not self.drive_service:
-                return {"error": "Not authenticated"}
+                raise AuthenticationError("Google Drive not authenticated. Please login via settings.")
 
         # Construct a better query
         q = self._construct_drive_query(query)
@@ -341,7 +331,9 @@ class GoogleGeminiBackend(RAGBackend):
             }
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Drive search failed: %s", e)
-            return {"error": str(e)}
+            if "401" in str(e) or "403" in str(e):
+                raise AuthenticationError(f"Drive access denied: {e}") from e
+            raise ProviderError(f"Drive search failed: {e}") from e
 
     def _download_attachment(self, message_id: str, attachment_id: str) -> Optional[bytes]:
         """Download an attachment from a Gmail message."""
@@ -427,7 +419,7 @@ class GoogleGeminiBackend(RAGBackend):
         if not self.gmail_service:
             self.reload_auth()
             if not self.gmail_service:
-                return {"error": "Not authenticated"}
+                raise AuthenticationError("Gmail not authenticated.")
 
         # Try to generate a smart query first
         smart_query = self._generate_smart_query(query)
@@ -611,7 +603,9 @@ class GoogleGeminiBackend(RAGBackend):
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Gmail search failed: %s", e)
-            return {"error": str(e)}
+            if "401" in str(e) or "403" in str(e):
+                raise AuthenticationError(f"Gmail access denied: {e}") from e
+            raise ProviderError(f"Gmail search failed: {e}") from e
 
     def grounded_answer(self, question: str, k: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """
@@ -918,7 +912,7 @@ class GoogleGeminiBackend(RAGBackend):
         if not self.gen_service or not self.drive_service:
             self.reload_auth()
             if not self.gen_service or not self.drive_service:
-                return {"error": "Not authenticated"}
+                raise AuthenticationError("Google services not authenticated.")
 
         model = kwargs.get("model")
         temperature = kwargs.get("temperature", 0.7)
@@ -951,19 +945,15 @@ class GoogleGeminiBackend(RAGBackend):
                 elif "drive" in url:
                     api_name = "Google Drive API"
                 api_error_msg += (
-                    f"\n\n⚠️ **Action Required**: The {api_name} is not enabled. "
-                    f"[Click here to enable it]({url})."
+                    f" The {api_name} is not enabled. Please enable it at {url}."
                 )
+        
+        if api_error_msg:
+             raise ConfigurationError(f"Google API Config Error:{api_error_msg}")
 
         if not context_parts and not api_error_msg:
-            return {"answer": "No relevant documents or emails found.", "sources": []}
-
-        if not context_parts and api_error_msg:
-            return {
-                "answer": f"I couldn't search your data because of a missing permission."
-                          f"{api_error_msg}",
-                "sources": []
-            }
+             # Just return empty result if truly no docs found
+             return {"answer": "No relevant documents or emails found.", "sources": []}
 
         # 5. Call Gemini via REST API (v1beta)
         system_instruction = """
@@ -995,19 +985,19 @@ class GoogleGeminiBackend(RAGBackend):
             candidates = response.get('candidates', [])
             if candidates:
                 answer_text = candidates[0]['content']['parts'][0]['text']
-                if api_error_msg:
-                    answer_text += api_error_msg
                 return {
                     "answer": answer_text,
                     "sources": sources,
                     "mode": "google_gemini"
                 }
             # pylint: disable=no-else-return
-            return {"answer": "No answer generated." + api_error_msg, "sources": []}
+            return {"answer": "No answer generated by model.", "sources": sources}
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Gemini generation failed: %s", e)
-            return {"error": str(e)}
+            if "401" in str(e) or "403" in str(e):
+                raise AuthenticationError(f"Gemini API refused access: {e}") from e
+            raise ProviderError(f"Gemini generation failed: {e}") from e
 
     # pylint: disable=too-many-locals
     def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:

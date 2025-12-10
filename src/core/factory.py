@@ -801,6 +801,34 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         """Search for documents."""
         return self._backend.search(query, top_k, **kwargs)
 
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
+        """
+        Chat with the backend.
+        checks if the requested model belongs to a differnt backend and switches mode if necessary.
+        """
+        model = kwargs.get("model")
+        if model:
+            target_mode = None
+            if model.startswith("gemini"):
+                target_mode = "google"
+            elif model.startswith("gpt-"):
+                target_mode = "openai_assistants"
+            
+            # If target mode detected and different from current, try to switch
+            if target_mode and target_mode != self.current_mode:
+                if self.set_mode(target_mode):
+                    logger.info("Auto-switched to %s for model %s", target_mode, model)
+                else:
+                    logger.warning("Could not auto-switch to %s for model %s", target_mode, model)
+
+            # Special case: If we are in "none" mode but requesting an Ollama model (not gemini/gpt),
+            # try to switch to ollama if configured.
+            if self.current_mode == "none" and not target_mode:
+                 if self.set_mode("ollama"):
+                     logger.info("Auto-switched to ollama for model %s", model)
+        
+        return self._backend.chat(messages, **kwargs)
+
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""
         return self._backend.upsert_document(uri, text)
