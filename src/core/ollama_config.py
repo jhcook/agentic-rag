@@ -224,6 +224,8 @@ def get_requests_ca_bundle() -> Optional[str]:
     1. settings.json (ollamaCloudCABundle)
     2. secrets/ollama_cloud_config.json (ca_bundle)
     3. REQUESTS_CA_BUNDLE environment variable
+    
+    Resolves relative paths relative to BASE_DIR (repository root).
     """
     settings = _read_settings_file()
     ca_bundle = settings.get("ollamaCloudCABundle")
@@ -236,6 +238,16 @@ def get_requests_ca_bundle() -> Optional[str]:
         ca_bundle = os.getenv("REQUESTS_CA_BUNDLE")
     
     ca_bundle = ca_bundle.strip() if ca_bundle else None
+    
+    # Resolve relative paths relative to BASE_DIR
+    if ca_bundle and not os.path.isabs(ca_bundle):
+        ca_bundle = str(BASE_DIR / ca_bundle)
+    
+    # Verify the file exists
+    if ca_bundle and not os.path.exists(ca_bundle):
+        logger.warning(f"CA bundle file not found: {ca_bundle}")
+        return None
+    
     return ca_bundle or None
 
 
@@ -472,6 +484,7 @@ def test_cloud_connection(
     
     try:
         headers = {"Authorization": f"Bearer {test_api_key}"}
+        logger.debug(f"Testing Ollama Cloud connection to {test_endpoint}")
         response = requests.get(
             f"{test_endpoint}/api/tags",
             headers=headers,
@@ -481,13 +494,20 @@ def test_cloud_connection(
         )
         
         if response.status_code == 200:
+            logger.debug("Ollama Cloud connection successful")
             return True, "Connection successful"
         elif response.status_code == 401:
-            return False, "Invalid API key"
+            error_msg = _redact_api_key(response.text, test_api_key)
+            logger.error(f"Ollama Cloud authentication failed (401): {error_msg}")
+            return False, f"Invalid API key. Details: {error_msg}"
         elif response.status_code == 403:
-            return False, "API key lacks required permissions"
+            error_msg = _redact_api_key(response.text, test_api_key)
+            logger.error(f"Ollama Cloud permission denied (403): {error_msg}")
+            return False, f"API key lacks required permissions. Details: {error_msg}"
         else:
-            return False, f"Connection failed: HTTP {response.status_code}"
+            error_msg = _redact_api_key(response.text, test_api_key)
+            logger.error(f"Ollama Cloud connection failed ({response.status_code}): {error_msg}")
+            return False, f"Connection failed: HTTP {response.status_code} - {error_msg}"
     except requests.exceptions.Timeout:
         return False, "Connection timeout"
     except requests.exceptions.ConnectionError:

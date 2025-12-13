@@ -209,6 +209,7 @@ class AppConfigReq(BaseModel):
     ollama_mode: Optional[str] = Field(default=None, alias="ollamaMode")
     ollama_cloud_api_key: Optional[str] = Field(default=None, alias="ollamaCloudApiKey")
     ollama_cloud_ca_bundle: Optional[str] = Field(default=None, alias="ollamaCloudCABundle")
+    ca_bundle_path: Optional[str] = Field(default=None, alias="caBundlePath")
 
     model_config = ConfigDict(populate_by_name=True)
 

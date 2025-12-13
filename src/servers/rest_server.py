@@ -30,7 +30,7 @@ import psutil
 import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from src.core.exceptions import ConfigurationError, AuthenticationError, ProviderError
@@ -63,8 +63,13 @@ from src.core.config_paths import (
     CONFIG_DIR,
     SETTINGS_PATH,
     VERTEX_CONFIG_PATH,
+    get_ca_bundle_path,
 )
-from src.core.ollama_config import _redact_api_key  # pylint: disable=protected-access
+from src.core.ollama_config import (
+    _redact_api_key,  # pylint: disable=protected-access
+    get_ollama_mode,
+    get_ollama_api_key,
+)
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -295,7 +300,9 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
 
     for url in urls:
         try:
-            resp = requests.request(method, url, json=json_payload, timeout=timeout)
+            # Use configured CA bundle if available
+            verify_ssl = get_ca_bundle_path() or True
+            resp = requests.request(method, url, json=json_payload, timeout=timeout, verify=verify_ssl)
             if resp.status_code == 404:
                 continue
             resp.raise_for_status()
@@ -379,7 +386,8 @@ def _fetch_mcp_memory_mb() -> Optional[float]:
 
     for url in urls:
         try:
-            resp = requests.get(url, timeout=3)
+            verify_ssl = get_ca_bundle_path() or True
+            resp = requests.get(url, timeout=3, verify=verify_ssl)
             if resp.status_code == 404:
                 continue
             resp.raise_for_status()
@@ -1298,6 +1306,21 @@ def api_service_status():
             # Service is running if either the controller knows about it OR the port is in use
             is_running = controller_alive or port_alive
             
+            # Special handling for Ollama Cloud
+            if service == "ollama":
+                try:
+                    mode = get_ollama_mode()
+                    if mode == "cloud":
+                        # In cloud mode, consider running if configured (API key present)
+                        if get_ollama_api_key():
+                            is_running = True
+                    elif mode == "auto":
+                        # In auto mode, running if local is running OR cloud is configured
+                        if get_ollama_api_key():
+                            is_running = True
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+            
             if info and not controller_alive:
                 SERVICE_CONTROLLERS.pop(service, None)
             
@@ -1513,10 +1536,28 @@ def auth_callback(request: Request, code: str, _oauth_state: Optional[str] = Non
         
         return HTMLResponse(content="""
             <html>
-                <head><title>Auth Success</title
+                <head>
+                    <title>Auth Success</title>
+                    <style>
+                        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; text-align: center; padding-top: 50px; background-color: #f5f5f7; }
+                        h1 { color: #1d1d1f; }
+                        p { color: #86868b; }
+                    </style>
+                </head>
+                <body>
                     <h1 style="color: green;">Authentication Successful</h1>
                     <p>You have successfully connected your Google account.</p>
-                    <p>You can close this window and return to the app.</p>
+                    <p>This window will close automatically...</p>
+                    <script>
+                        // Notify opener if it exists
+                        if (window.opener) {
+                            window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, '*');
+                        }
+                        // Close window after a short delay
+                        setTimeout(() => {
+                            window.close();
+                        }, 2000);
+                    </script>
                 </body>
             </html>
         """)
@@ -1935,6 +1976,15 @@ async def update_app_config(req: AppConfigReq):
         except Exception as backend_err:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to update backend Ollama configuration state: %s", backend_err)
         
+        # Reload backends to pick up CA bundle changes
+        if hasattr(backend, "reload_backend"):
+            try:
+                backend.reload_backend("google")
+                backend.reload_backend("openai_assistants")
+                logger.info("Reloaded Google and OpenAI backends to apply new configuration")
+            except Exception as reload_backend_err:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to reload backends: %s", reload_backend_err)
+
         return {"status": "saved"}
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to save app config: %s", e)

@@ -15,10 +15,12 @@ from typing import List, Dict, Any
 
 from openai import OpenAI, OpenAIError
 from openai.types.beta.threads import Run
+import httpx
 
 # Import local RAG core for search
 # pylint: disable=cyclic-import,protected-access
 import src.core.rag_core as local_core
+from src.core.config_paths import get_ca_bundle_path
 
 logger = logging.getLogger(__name__)
 # pylint: disable=protected-access
@@ -66,8 +68,17 @@ class OpenAIAssistantsBackend:
         
         if self.api_key and self.api_key.strip():
             try:
+                # Configure HTTP client with CA bundle if needed
+                http_client = None
+                ca_bundle = get_ca_bundle_path()
+                if ca_bundle:
+                    http_client = httpx.Client(verify=ca_bundle)
+
                 # Just validate API key by creating client, don't create assistant yet
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    http_client=http_client
+                )
                 
                 # Test that the key works with a simple call
                 self.client.models.list()

@@ -19,12 +19,36 @@ from src.core.exceptions import ConfigurationError, AuthenticationError, Provide
 from src.core.ollama_config import (
     get_ollama_endpoint,
     get_ollama_client_headers,
+    get_ollama_api_key,
 )
+from src.core.config_paths import get_ca_bundle_path
 
 # Load .env early
 load_dotenv()
 
+# Apply CA Bundle to environment for libraries that respect SSL_CERT_FILE (like httpx)
+def reload_llm_config():
+    """Reload LLM configuration, including CA bundle and API key."""
+    _ca_bundle = get_ca_bundle_path()
+    if _ca_bundle:
+        os.environ["SSL_CERT_FILE"] = _ca_bundle
+        os.environ["REQUESTS_CA_BUNDLE"] = _ca_bundle
+    
+    # Set Ollama API key as environment variable for ollama library
+    _api_key = get_ollama_api_key()
+    if _api_key:
+        os.environ["OLLAMA_API_KEY"] = _api_key
+
+reload_llm_config()
+
 logger = logging.getLogger(__name__)
+
+def _redact_text(text: str) -> str:
+    """Redact API key from text."""
+    api_key = get_ollama_api_key()
+    if not api_key or not text:
+        return text
+    return text.replace(api_key, "***REDACTED***")
 
 # -------- Configuration --------
 # Use dynamic endpoint resolution from ollama_config
@@ -88,6 +112,25 @@ def _get_chat_model(
     if headers:
         extra_headers.update(headers)
 
+    if headers:
+        # Redact for logging
+        safe_headers = headers.copy()
+        if "Authorization" in safe_headers:
+            safe_headers["Authorization"] = "Bearer ***REDACTED***"
+        logger.debug(f"Initializing ChatOllama with headers: {safe_headers}")
+
+    # Ensure api_base doesn't have trailing slash as ChatOllama might append /api/chat
+    if api_base and api_base.endswith("/"):
+        api_base = api_base[:-1]
+
+    # Configure httpx to use CA bundle via environment variable
+    # httpx respects SSL_CERT_FILE which we set in reload_llm_config()
+    ca_bundle = get_ca_bundle_path()
+    if ca_bundle:
+        logger.debug(f"Using CA bundle from environment: {ca_bundle}")
+        # SSL_CERT_FILE is already set in reload_llm_config()
+        # httpx will use it automatically
+
     return ChatOllama(
         model=model,
         base_url=api_base,
@@ -130,8 +173,12 @@ async def safe_completion(
             return await chat.ainvoke(lc_messages)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
+                error_detail = exc.response.text or "No response body"
+                # Redact API key
+                error_detail = _redact_text(error_detail)
+                logger.error(f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}")
                 raise AuthenticationError(
-                    f"Authentication failed for LLM provider: {exc.response.text}"
+                    f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}"
                 ) from exc
             else:
                 raise ProviderError(
@@ -172,8 +219,12 @@ async def safe_chat(
             return await chat.ainvoke(lc_messages)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
+                error_detail = exc.response.text or "No response body"
+                # Redact API key
+                error_detail = _redact_text(error_detail)
+                logger.error(f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}")
                 raise AuthenticationError(
-                    f"Authentication failed for LLM provider: {exc.response.text}"
+                    f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}"
                 ) from exc
             else:
                 raise ProviderError(
@@ -212,8 +263,12 @@ def sync_completion(
             return chat.invoke(lc_messages)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
+                error_detail = exc.response.text or "No response body"
+                # Redact API key
+                error_detail = _redact_text(error_detail)
+                logger.error(f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}")
                 raise AuthenticationError(
-                    f"Authentication failed for LLM provider: {exc.response.text}"
+                    f"Authentication failed for LLM provider ({exc.response.status_code}): {error_detail}"
                 ) from exc
             else:
                 raise ProviderError(

@@ -31,6 +31,7 @@ export type OllamaConfig = {
     ollamaCloudCABundle?: string
     ollamaMode?: 'local' | 'cloud' | 'sub-cloud'
     availableModels?: string[]
+    caBundlePath?: string
 }
 
 interface SettingsViewProps {
@@ -403,6 +404,29 @@ export function SettingsView(props: SettingsViewProps) {
                                     <Input value={config.ragPort} onChange={(e) => onConfigChange('ragPort', e.target.value)} />
                                 </div>
                             </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label>HTTPS Proxy (Optional)</Label>
+                                    <Input 
+                                        value={config.ollamaCloudProxy || ''} 
+                                        onChange={(e) => onConfigChange('ollamaCloudProxy', e.target.value)} 
+                                        placeholder="http://proxy.example.com:8080"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>CA Bundle Path (Optional)</Label>
+                                    <Input 
+                                        value={config.caBundlePath || ''} 
+                                        onChange={(e) => onConfigChange('caBundlePath', e.target.value)} 
+                                        placeholder="/path/to/ca-bundle.pem"
+                                    />
+                                </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Configure proxy and custom CA bundle for outgoing connections (OpenAI, Google, etc.).
+                            </p>
+
                             <div className="flex items-center space-x-2 pt-2">
                                 <input
                                     type="checkbox"

@@ -21,6 +21,7 @@ from src.core.ollama_config import (
     validate_ollama_config,
     _redact_api_key,
     _validate_url,
+    get_requests_ca_bundle,
 )
 # Import test_cloud_connection with alias to avoid pytest treating as test
 from src.core import ollama_config
@@ -547,3 +548,141 @@ class TestValidateUrl:
         assert is_valid is False
         assert "hostname" in error.lower()
 
+
+class TestGetRequestsCABundle:
+    """Tests for get_requests_ca_bundle() path resolution."""
+    
+    def test_get_ca_bundle_from_settings(self, mock_settings_path, tmp_path, monkeypatch):
+        """Test getting CA bundle from settings.json."""
+        # Create a test CA bundle file
+        ca_file = tmp_path / "test-ca-bundle.pem"
+        ca_file.write_text("FAKE CA CERT")
+        
+        # Write settings with CA bundle path
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": str(ca_file)}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result == str(ca_file)
+    
+    def test_get_ca_bundle_from_secrets(self, mock_settings_path, mock_secrets_path, tmp_path):
+        """Test getting CA bundle from secrets file."""
+        # Create a test CA bundle file
+        ca_file = tmp_path / "secret-ca-bundle.pem"
+        ca_file.write_text("FAKE CA CERT")
+        
+        # Write secrets with CA bundle path
+        with open(mock_secrets_path, "w", encoding="utf-8") as f:
+            json.dump({"ca_bundle": str(ca_file)}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result == str(ca_file)
+    
+    def test_get_ca_bundle_from_env(self, mock_settings_path, monkeypatch, tmp_path):
+        """Test getting CA bundle from environment variable."""
+        # Create a test CA bundle file
+        ca_file = tmp_path / "env-ca-bundle.pem"
+        ca_file.write_text("FAKE CA CERT")
+        
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(ca_file))
+        result = get_requests_ca_bundle()
+        assert result == str(ca_file)
+    
+    def test_settings_priority_over_secrets(self, mock_settings_path, mock_secrets_path, tmp_path):
+        """Test settings.json takes priority over secrets file."""
+        # Create two CA bundle files
+        settings_ca_file = tmp_path / "settings-ca.pem"
+        settings_ca_file.write_text("SETTINGS CA")
+        secrets_ca_file = tmp_path / "secrets-ca.pem"
+        secrets_ca_file.write_text("SECRETS CA")
+        
+        # Write both settings and secrets
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": str(settings_ca_file)}, f)
+        with open(mock_secrets_path, "w", encoding="utf-8") as f:
+            json.dump({"ca_bundle": str(secrets_ca_file)}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result == str(settings_ca_file)
+    
+    def test_secrets_priority_over_env(self, mock_settings_path, mock_secrets_path, tmp_path, monkeypatch):
+        """Test secrets file takes priority over environment variable."""
+        # Create two CA bundle files
+        secrets_ca_file = tmp_path / "secrets-ca.pem"
+        secrets_ca_file.write_text("SECRETS CA")
+        env_ca_file = tmp_path / "env-ca.pem"
+        env_ca_file.write_text("ENV CA")
+        
+        # Write secrets and set env var
+        with open(mock_secrets_path, "w", encoding="utf-8") as f:
+            json.dump({"ca_bundle": str(secrets_ca_file)}, f)
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(env_ca_file))
+        
+        result = get_requests_ca_bundle()
+        assert result == str(secrets_ca_file)
+    
+    def test_relative_path_resolution(self, mock_settings_path, tmp_path, monkeypatch):
+        """Test relative paths are resolved relative to BASE_DIR."""
+        # Mock BASE_DIR to tmp_path
+        monkeypatch.setattr("src.core.ollama_config.BASE_DIR", tmp_path)
+        
+        # Create CA bundle in a subdirectory
+        subdir = tmp_path / "config"
+        subdir.mkdir()
+        ca_file = subdir / "ca-bundle.pem"
+        ca_file.write_text("FAKE CA CERT")
+        
+        # Write settings with relative path
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": "config/ca-bundle.pem"}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result == str(ca_file)
+        assert Path(result).is_absolute()
+    
+    def test_absolute_path_unchanged(self, mock_settings_path, tmp_path):
+        """Test absolute paths are used as-is."""
+        # Create CA bundle with absolute path
+        ca_file = tmp_path / "absolute-ca.pem"
+        ca_file.write_text("FAKE CA CERT")
+        
+        # Write settings with absolute path
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": str(ca_file)}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result == str(ca_file)
+    
+    def test_nonexistent_file_returns_none(self, mock_settings_path):
+        """Test nonexistent CA bundle file returns None with warning."""
+        # Write settings with path to nonexistent file
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": "/nonexistent/ca-bundle.pem"}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result is None
+    
+    def test_empty_string_returns_none(self, mock_settings_path):
+        """Test empty string CA bundle returns None."""
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": ""}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result is None
+    
+    def test_whitespace_only_returns_none(self, mock_settings_path):
+        """Test whitespace-only CA bundle returns None."""
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({"ollamaCloudCABundle": "   "}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result is None
+    
+    def test_no_ca_bundle_configured_returns_none(self, mock_settings_path):
+        """Test returns None when no CA bundle is configured."""
+        # Empty settings file
+        with open(mock_settings_path, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        
+        result = get_requests_ca_bundle()
+        assert result is None

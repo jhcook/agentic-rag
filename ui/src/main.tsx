@@ -4,7 +4,6 @@ import { ErrorBoundary } from "react-error-boundary";
 
 import App from './App.tsx'
 import { ErrorFallback } from './ErrorFallback.tsx'
-import { Toaster } from './components/ui/sonner.tsx'
 import { TooltipProvider } from './components/ui/tooltip.tsx'
 import { useTheme } from './hooks/use-theme.ts'
 
@@ -24,7 +23,6 @@ createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <TooltipProvider>
           <App />
-          <Toaster />
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

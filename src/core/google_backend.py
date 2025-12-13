@@ -47,6 +47,7 @@ from src.core.interfaces import RAGBackend
 from src.core.config_paths import (
     CONFIG_DIR,
     VERTEX_CONFIG_PATH,
+    get_ca_bundle_path,
 )
 from src.core.exceptions import ConfigurationError, AuthenticationError, ProviderError
 try:
@@ -97,6 +98,13 @@ class GoogleGeminiBackend(RAGBackend):
         self.auth_manager = GoogleAuthManager()
         self.creds = self.auth_manager.get_credentials()
 
+        # Configure httplib2 with CA bundle if needed
+        ca_bundle = get_ca_bundle_path()
+        self.http_client = httplib2.Http(
+            timeout=TIMEOUT_SECONDS,
+            ca_certs=ca_bundle
+        )
+
         # Mode configuration
         self.mode = os.getenv("GOOGLE_GROUNDING_MODE", "google_gemini")  # google_gemini | vertex_ai_search
         self.model_name = os.getenv(
@@ -115,8 +123,7 @@ class GoogleGeminiBackend(RAGBackend):
 
         # Initialize Drive Service
         try:
-            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
-            authorized_http = AuthorizedHttp(self.creds, http=http_client)
+            authorized_http = AuthorizedHttp(self.creds, http=self.http_client)
             self.drive_service = build('drive', 'v3', http=authorized_http)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to initialize Drive service (offline?): %s", e)
@@ -124,8 +131,7 @@ class GoogleGeminiBackend(RAGBackend):
 
         # Initialize Gmail Service
         try:
-            http_client = httplib2.Http(timeout=TIMEOUT_SECONDS)
-            authorized_http = AuthorizedHttp(self.creds, http=http_client)
+            authorized_http = AuthorizedHttp(self.creds, http=self.http_client)
             self.gmail_service = build('gmail', 'v1', http=authorized_http)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to initialize Gmail service (offline?): %s", e)

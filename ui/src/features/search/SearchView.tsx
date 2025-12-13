@@ -58,7 +58,7 @@ export function SearchView(props: SearchViewProps) {
         onToggleSidebar
     } = props
 
-    const [mode, setMode] = useState<'search' | 'chat'>('search')
+    const [mode, setMode] = useState<'search' | 'chat'>('chat')
 
     return (
         <div className="flex h-full gap-6">

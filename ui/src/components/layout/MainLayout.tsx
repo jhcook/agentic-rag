@@ -2,6 +2,7 @@
 import { ReactNode, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import {
     LayoutDashboard,
     MessageSquare,
@@ -86,9 +87,10 @@ interface MainLayoutProps {
     config: any
     activeMode: string
     onModeChange: (mode: string) => void
+    jobProgress?: { total: number, completed: number, failed: number, visible: boolean }
 }
 
-export function MainLayout({ children, activeTab, onTabChange, systemStatus = 'stopped', config, activeMode, onModeChange }: MainLayoutProps) {
+export function MainLayout({ children, activeTab, onTabChange, systemStatus = 'stopped', config, activeMode, onModeChange, jobProgress }: MainLayoutProps) {
     const [collapsed, setCollapsed] = useState(false)
 
     return (
@@ -200,15 +202,34 @@ export function MainLayout({ children, activeTab, onTabChange, systemStatus = 's
                             {collapsed ? "v0.2" : "v0.2.0-beta"}
                         </div>
                     </div>
-                </aside >
+                </aside>
 
                 {/* Main Content */}
-                < main className="flex-1 overflow-auto relative z-10 scrollbar-hide" >
-                    <div className="min-h-full p-8 animate-in fade-in duration-500">
+                <main className="flex-1 overflow-auto relative z-10 scrollbar-hide flex flex-col">
+                    <div className="flex-1 p-8 animate-in fade-in duration-500">
                         {children}
                     </div>
-                </main >
-            </div >
+                    
+                    {/* Global Progress Bar */}
+                    {jobProgress && jobProgress.visible && (
+                        <div className="sticky bottom-0 left-0 right-0 bg-background/80 backdrop-blur-md border-t border-white/10 p-3 animate-in slide-in-from-bottom-2">
+                            <div className="max-w-3xl mx-auto flex items-center gap-4">
+                                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground whitespace-nowrap">
+                                    <Database className="w-4 h-4 text-blue-500 animate-pulse" />
+                                    <span>Indexing Documents...</span>
+                                    <span className="text-xs bg-secondary px-2 py-0.5 rounded-full">
+                                        {jobProgress.completed} / {jobProgress.total}
+                                    </span>
+                                </div>
+                                <Progress 
+                                    value={(jobProgress.completed / jobProgress.total) * 100} 
+                                    className="h-2 flex-1"
+                                />
+                            </div>
+                        </div>
+                    )}
+                </main>
+            </div>
         </TooltipProvider>
     )
 }

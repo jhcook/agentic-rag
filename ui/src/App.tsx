@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Toaster } from 'sonner'
+import { Toaster } from '@/components/ui/sonner'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { DashboardView } from '@/features/dashboard/DashboardView'
 import { SettingsView, OllamaConfig } from '@/features/settings/SettingsView'
@@ -292,9 +292,9 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'ollama' })
       })
+      setActiveMode('ollama')
 
       toast.success('Configuration saved & activated')
-      setTimeout(() => window.location.reload(), 1000)
     } catch { toast.error('Failed to save') }
   }
 
@@ -314,7 +314,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'openai_assistants' })
       })
-      setTimeout(() => window.location.reload(), 1000)
+      setActiveMode('openai_assistants')
     } catch { toast.error('Failed to save OpenAI settings') }
   }
 
@@ -333,7 +333,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'vertex_ai_search' })
       })
-      setTimeout(() => window.location.reload(), 1000)
+      setActiveMode('vertex_ai_search')
     } catch { toast.error('Failed to save Vertex settings') }
   }
 
@@ -353,8 +353,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: 'ollama' })
       })
+      setActiveMode('ollama')
       toast.success(`Disconnected ${provider}. Switched to Ollama mode.`)
-      setTimeout(() => window.location.reload(), 1000)
     } catch { toast.error('Failed to disconnect') }
   }
 
@@ -422,12 +422,38 @@ function App() {
   const handleGoogleLogin = () => {
     // Redirect to login endpoint
     const { host, port, base } = getApiBase()
-    window.location.href = `http://${host}:${port}/${base}/auth/login`
+    const url = `http://${host}:${port}/${base}/auth/login`
+    
+    // Open in a popup window
+    const width = 600
+    const height = 700
+    const left = window.screen.width / 2 - width / 2
+    const top = window.screen.height / 2 - height / 2
+    
+    window.open(
+      url,
+      'GoogleLogin',
+      `width=${width},height=${height},top=${top},left=${left},resizable,scrollbars,status`
+    )
   }
+
+  // --- Effect: Listen for Google Auth Success ---
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'GOOGLE_AUTH_SUCCESS') {
+        toast.success('Google Account Connected Successfully')
+        // Refresh config/status if needed
+        // For now, just showing the toast is good feedback
+      }
+    }
+    
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [])
 
   return (
     <>
-      <Toaster theme="dark" position="top-right" />
+      <Toaster />
       <MainLayout
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -435,6 +461,7 @@ function App() {
         config={ollamaConfig}
         activeMode={activeMode}
         onModeChange={setActiveMode}
+        jobProgress={jobProgress}
       >
         {activeTab === 'dashboard' && (
           <DashboardView

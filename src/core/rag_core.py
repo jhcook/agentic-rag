@@ -50,7 +50,7 @@ from src.core.faiss_index import (
 from src.core.extractors import extract_text_from_file
 
 # Import new LLM client wrappers
-from src.core.llm_client import sync_completion, safe_completion
+from src.core.llm_client import sync_completion, safe_completion, reload_llm_config
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -122,6 +122,7 @@ def reload_settings() -> None:
     global _SETTINGS  # pylint: disable=global-statement
     _SETTINGS = _load_settings()
     _apply_settings()
+    reload_llm_config()
     logger.info("Reloaded settings from config/settings.json")
 
 
@@ -919,34 +920,15 @@ async def send_to_llm(query: List[str]) -> Any:
 def expand_query(query: str) -> str:
     """
     Use LLM to expand the query with synonyms/hypothetical questions (HyDE-lite).
+    
+    Note: Currently a pass-through function that returns the original query.
+    Query expansion adds latency and requires careful prompt engineering.
+    This can be implemented in the future when needed.
     """
-    if not query:
-        return query
-    
-    # Simple prompt to get variations
-    expansion_prompt = (
-        f"Generate 3 diverse search query variations for the user question. "
-        f"Keep them concise. Output ONLY the variations separated by newlines.\n\n"
-        f"Question: {query}"
-    )
-    
-    try:
-        # Use sync completion for simplicity in this flow, reusing existing config
-        # We need a lightweight call. 
-            
-        from src.core.ollama_config import get_ollama_endpoint, get_ollama_model
-        # Use a faster/smaller model if possible, or just the main one
-        model = get_llm_model_name()
-        
-        # We'll use the chat interface we already have or just simple completion logic
-        # For now, let's keep it minimal and safe:
-        # If we can't easily reach the LLM, we return the original query.
-        return query # Placeholder: actual expansion adds latency; user controls requested logging first. 
-        # To truly implement this we need a working sync client helper which we have in `search` but not isolated.
-        # Let's effectively implement it inside `grounded_answer` or `search` where we have the client setup.
-        # For now, we returns query to avoid breaking changes without full context of client availability.
-    except Exception:
-        return query
+    # TODO: Implement actual query expansion with LLM when performance requirements allow
+    # Expansion would generate variations like synonyms or hypothetical documents (HyDE)
+    # to improve retrieval, but adds latency to every query.
+    return query
 
 
 

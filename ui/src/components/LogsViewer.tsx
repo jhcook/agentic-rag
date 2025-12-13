@@ -204,8 +204,46 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     const line = stripAnsi(rawLine)
     if (!line.trim()) return null
     
-    // Try to parse REST/MCP server logs: "YYYY-MM-DD HH:MM:SS - name - LEVEL - message"
-    const standardLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - [^-]+ - (\w+) - (.+)$/)
+    // 1. Ollama Key-Value Format: time=2025-11-27T11:46:48.251+11:00 level=INFO source=...
+    const ollamaKvMatch = line.match(/^time=(\S+) level=(\w+) source=\S+ msg="(.+?)"/)
+    if (ollamaKvMatch) {
+      const [, timestampStr, levelStr, message] = ollamaKvMatch
+      const timestamp = new Date(timestampStr)
+      const level = (levelStr.toLowerCase() as LogLevel) || 'info'
+      return {
+        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
+        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
+        level: ['info', 'warn', 'error', 'debug'].includes(level) ? level : 'info',
+        source,
+        message: line.trim()
+      }
+    }
+
+    // 2. Ollama/GIN Format: [GIN] 2025/11/27 - 11:46:49 | 200 | ...
+    const ginMatch = line.match(/^\[GIN\] (\d{4}\/\d{2}\/\d{2} - \d{2}:\d{2}:\d{2}) \| (\d{3}) \|/)
+    if (ginMatch) {
+      const [, timestampStr, statusStr] = ginMatch
+      // Format: 2025/11/27 - 11:46:49 -> 2025-11-27T11:46:49
+      const isoStr = timestampStr.replace(/\//g, '-').replace(' - ', 'T')
+      const timestamp = new Date(isoStr)
+      
+      const status = parseInt(statusStr)
+      let level: LogLevel = 'info'
+      if (status >= 500) level = 'error'
+      else if (status >= 400) level = 'warn'
+
+      return {
+        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
+        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
+        level,
+        source,
+        message: line.trim()
+      }
+    }
+
+    // 3. Standard/Python Log Format: "YYYY-MM-DD HH:MM:SS,mmm - logger - LEVEL - message"
+    // Improved regex to handle logger names with hyphens or dots
+    const standardLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - .+? - (\w+) - (.+)$/)
     if (standardLogMatch) {
       const [, timestampStr, levelStr, message] = standardLogMatch
       const level = (levelStr.toLowerCase() as LogLevel) || 'info'
@@ -216,11 +254,11 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
         level: ['info', 'warn', 'error', 'debug'].includes(level) ? level : 'info',
         source,
-        message: message.trim()
+        message: line.trim()
       }
     }
     
-    // Try to parse access logs: Apache combined format with milliseconds
+    // 4. Access Logs: "YYYY-MM-DD HH:MM:SS,mmm - ..."
     const accessLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - .+$/)
     if (accessLogMatch) {
       const [, timestampStr] = accessLogMatch
@@ -239,21 +277,6 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         level,
         source,
         message: line.trim()
-      }
-    }
-    
-    // Try to parse Python logging format: "YYYY-MM-DD HH:MM:SS,mmm - logger - LEVEL - message"
-    const pythonLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - \S+ - (\w+) - (.+)$/)
-    if (pythonLogMatch) {
-      const [, timestampStr, levelStr, message] = pythonLogMatch
-      const level = (levelStr.toLowerCase() as LogLevel) || 'info'
-      const timestamp = new Date(timestampStr.replace(',', '.'))
-      return {
-        id: `${source}-${timestamp.getTime()}-${line.slice(0, 50)}`,
-        timestamp: isNaN(timestamp.getTime()) ? new Date() : timestamp,
-        level: ['info', 'warn', 'error', 'debug'].includes(level) ? level : 'info',
-        source,
-        message: message.trim()
       }
     }
     
@@ -481,9 +504,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
   }
 
   const downloadLogs = (logs: LogEntry[], source: string) => {
-    const logText = logs.map(log => 
-      `[${log.timestamp.toISOString()}] [${log.level.toUpperCase()}] ${log.message}`
-    ).join('\n')
+    const logText = logs.map(log => log.message).join('\n')
     
     const blob = new Blob([logText], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -580,9 +601,6 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
                   const Icon = LOG_LEVEL_ICONS[log.level]
                   return (
                     <div key={log.id} className="flex items-start gap-2 py-1 hover:bg-muted/50 px-2 rounded">
-                      <span className="text-muted-foreground shrink-0">
-                        {log.timestamp.toLocaleTimeString()}
-                      </span>
                       <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${LOG_LEVEL_STYLES[log.level]}`} />
                       <span className={`${LOG_LEVEL_STYLES[log.level]} break-all`}>
                         {log.message}

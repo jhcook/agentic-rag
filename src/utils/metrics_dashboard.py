@@ -18,6 +18,7 @@ from typing import Dict, Any, Tuple, List
 
 import requests
 from prometheus_client.parser import text_string_to_metric_families
+from src.core.config_paths import get_ca_bundle_path
 
 
 DEFAULT_URL = "http://localhost:8000/metrics"
@@ -66,7 +67,8 @@ EMBED_DURATION_PREFIX = "embedding_duration_seconds"
 
 def fetch_metrics(url: str) -> Dict[str, Any]:
     """Scrape Prometheus metrics text and parse into a structured dict."""
-    resp = requests.get(url, timeout=3)
+    verify_ssl = get_ca_bundle_path() or True
+    resp = requests.get(url, timeout=3, verify=verify_ssl)
     resp.raise_for_status()
 
     data: Dict[str, Any] = {
@@ -213,7 +215,8 @@ def build_metrics_lines(metrics: Dict[str, Any]) -> List[Tuple[str, int, str]]: 
 
 def fetch_rest_metrics(url: str) -> Dict[str, Any]:
     """Scrape REST server metrics and compute aggregates we care about."""
-    resp = requests.get(url, timeout=3)
+    verify_ssl = get_ca_bundle_path() or True
+    resp = requests.get(url, timeout=3, verify=verify_ssl)
     resp.raise_for_status()
 
     data: Dict[str, Any] = {
