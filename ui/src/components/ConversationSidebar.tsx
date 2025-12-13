@@ -51,17 +51,29 @@ export function ConversationSidebar({
   const formatDate = (timestamp: number) => {
     const date = new Date(timestamp)
     const now = new Date()
-    const diff = now.getTime() - date.getTime()
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24))
     
-    if (days === 0) {
-      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    } else if (days === 1) {
-      return 'Yesterday'
-    } else if (days < 7) {
-      return `${days} days ago`
+    // Reset time to start of day for accurate day comparison
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const messageDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+    const diffTime = today.getTime() - messageDate.getTime()
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24))
+    
+    const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    
+    if (diffDays === 0) {
+      return `Today ${time}`
+    } else if (diffDays === 1) {
+      return `Yesterday ${time}`
+    } else if (diffDays < 7) {
+      const dayName = date.toLocaleDateString(undefined, { weekday: 'long' })
+      return `${dayName} ${time}`
     } else {
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      const dateStr = date.toLocaleDateString(undefined, { 
+        year: 'numeric', 
+        month: 'short', 
+        day: 'numeric' 
+      })
+      return `${dateStr} ${time}`
     }
   }
 

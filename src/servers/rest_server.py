@@ -1064,6 +1064,38 @@ def api_chat_history_get(session_id: str):
         logger.error("Failed to get session history: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete(f"/{pth}/chat/history/{{session_id}}")
+def api_chat_history_delete(session_id: str):
+    """Delete a chat session and all its messages."""
+    if not chat_store:
+        raise HTTPException(status_code=503, detail="Chat storage not available")
+    try:
+        deleted = chat_store.delete_session(session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"success": True, "session_id": session_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete session: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"/{pth}/chat/history/delete-all")
+def api_chat_history_delete_all():
+    """Delete all chat sessions. Use with caution!"""
+    if not chat_store:
+        raise HTTPException(status_code=503, detail="Chat storage not available")
+    try:
+        sessions = chat_store.list_sessions(limit=1000)
+        deleted_count = 0
+        for session in sessions:
+            if chat_store.delete_session(session['id']):
+                deleted_count += 1
+        return {"success": True, "deleted_count": deleted_count}
+    except Exception as e:
+        logger.error("Failed to delete all sessions: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post(f"/{pth}/rerank")
 def api_rerank(req: RerankReq):
     """Rerank provided passages for a query."""

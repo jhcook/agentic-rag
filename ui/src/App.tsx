@@ -137,6 +137,20 @@ function App() {
             }).catch(() => { })
           }
         }
+
+        // Load chat history
+        const historyRes = await fetch(`http://${host}:${port}/${base}/chat/history?limit=50`)
+        if (historyRes.ok) {
+          const sessions = await historyRes.json()
+          const conversations: Conversation[] = sessions.map((s: any) => ({
+            id: s.id,
+            title: s.title || 'New Conversation',
+            messages: [],
+            createdAt: s.created_at * 1000,
+            updatedAt: s.updated_at * 1000
+          }))
+          setConversations(conversations)
+        }
       } catch (e) { console.error('Config load failed', e) }
     }
     loadConfig()
@@ -211,6 +225,64 @@ function App() {
     checkStats()
     return () => clearInterval(id)
   }, [getApiBase])
+
+  // --- Handlers: Chat ---
+  const handleSelectConversation = async (conversationId: string) => {
+    setActiveConversationId(conversationId)
+    const { host, port, base } = getApiBase()
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}`)
+      if (res.ok) {
+        const messages = await res.json()
+        setChatMessages(messages.map((m: any) => ({
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(m.created_at * 1000).toLocaleString()
+        })))
+      }
+    } catch (e) {
+      console.error('Failed to load conversation messages', e)
+      toast.error('Failed to load conversation')
+    }
+  }
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    const { host, port, base } = getApiBase()
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}`, {
+        method: 'DELETE'
+      })
+      
+      if (res.ok) {
+        // Find the next conversation to select
+        const sortedConvos = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+        const currentIndex = sortedConvos.findIndex(c => c.id === conversationId)
+        const nextConversation = sortedConvos[currentIndex + 1] || sortedConvos[currentIndex - 1]
+        
+        // Remove from local state
+        setConversations(prev => prev.filter(c => c.id !== conversationId))
+        
+        // If this was the active conversation, select the next one
+        if (activeConversationId === conversationId) {
+          if (nextConversation) {
+            handleSelectConversation(nextConversation.id)
+          } else {
+            setActiveConversationId(null)
+            setChatMessages([])
+          }
+        }
+        
+        toast.success('Conversation deleted')
+      } else {
+        throw new Error('Failed to delete conversation')
+      }
+    } catch (e) {
+      console.error('Failed to delete conversation', e)
+      toast.error('Failed to delete conversation')
+    }
+  }
 
   // --- Handlers: Search ---
   const handleSearch = async () => {
@@ -495,12 +567,12 @@ function App() {
             setMessages={setChatMessages}
             activeConversationId={activeConversationId}
             conversations={conversations}
-            onSelectConversation={setActiveConversationId}
+            onSelectConversation={handleSelectConversation}
             onNewConversation={() => {
               setActiveConversationId(crypto.randomUUID())
               setChatMessages([])
             }}
-            onDeleteConversation={() => { }}
+            onDeleteConversation={handleDeleteConversation}
             isSidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
           />
