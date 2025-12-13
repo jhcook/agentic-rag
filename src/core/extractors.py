@@ -24,6 +24,8 @@ try:
 except ImportError:
     requests = None
 
+from src.core.ssl_utils import get_ssl_verify
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +36,7 @@ def _download_from_url(url: str) -> bytes:
         return b""
     try:
         logger.info("Downloading from %s", url)
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, timeout=30, verify=get_ssl_verify())
         response.raise_for_status()
         return response.content
     except requests.exceptions.SSLError as ssl_exc:

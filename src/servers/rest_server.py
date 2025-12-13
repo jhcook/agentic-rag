@@ -28,6 +28,12 @@ from contextlib import asynccontextmanager
 
 import psutil
 import requests
+
+from src.core.ssl_utils import configure_ssl_environment
+
+# Configure SSL environment early
+configure_ssl_environment()
+
 from fastapi import FastAPI, Request, Response, HTTPException, Form, UploadFile, File
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware

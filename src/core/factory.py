@@ -12,6 +12,7 @@ from typing import Callable, Dict, Any, List, Optional
 import psutil
 import requests
 
+from src.core.ssl_utils import get_ssl_verify
 from src.core.interfaces import RAGBackend
 
 # Optional feature toggles
@@ -345,7 +346,8 @@ class OllamaBackend:
             response = requests.get(
                 f"{endpoint}/api/tags",
                 headers=headers if headers else None,
-                timeout=5
+                timeout=5,
+                verify=get_ssl_verify()
             )
             if response.ok:
                 data = response.json()
@@ -373,7 +375,8 @@ class RemoteBackend:
         resp = requests.post(
             f"{self.base_url}/search",
             json={"query": query, "k": top_k},
-            timeout=self.timeout)
+            timeout=self.timeout,
+            verify=get_ssl_verify())
         resp.raise_for_status()
         return resp.json()
 
@@ -382,7 +385,8 @@ class RemoteBackend:
         resp = requests.post(
             f"{self.base_url}/upsert_document",
             json={"uri": uri, "text": text},
-            timeout=self.timeout)
+            timeout=self.timeout,
+            verify=get_ssl_verify())
         resp.raise_for_status()
         return resp.json()
 
@@ -391,7 +395,8 @@ class RemoteBackend:
         resp = requests.post(
             f"{self.base_url}/index_path",
             json={"path": path, "glob": glob},
-            timeout=self.timeout)
+            timeout=self.timeout,
+            verify=get_ssl_verify())
         resp.raise_for_status()
         return resp.json()
 

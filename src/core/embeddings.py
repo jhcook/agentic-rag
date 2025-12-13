@@ -11,6 +11,11 @@ import shutil
 
 from sentence_transformers import SentenceTransformer  # type: ignore
 
+from src.core.ssl_utils import get_ssl_verify, configure_ssl_environment
+
+# Configure SSL environment before importing any libraries that make HTTPS requests
+configure_ssl_environment()
+
 try:
     from litellm import embedding as litellm_embedding  # type: ignore
 except ImportError:
@@ -24,6 +29,25 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
 os.environ['NUMEXPR_NUM_THREADS'] = '1'
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+# Configure HuggingFace Hub to use custom CA bundle if set
+# Note: configure_ssl_environment() above already sets env vars, but we need to
+# ensure they are set before huggingface_hub is used
+ca_bundle = os.environ.get("SSL_CERT_FILE") or os.environ.get("CA_BUNDLE")
+if ca_bundle:
+    os.environ.setdefault("CURL_CA_BUNDLE", ca_bundle)
+    # Set requests to use the CA bundle
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+    
+    # Configure urllib3 and requests libraries used by huggingface_hub
+    try:
+        import urllib3
+        import certifi
+        # Override certifi's default CA bundle location
+        os.environ["REQUESTS_CA_BUNDLE"] = ca_bundle
+        os.environ["CURL_CA_BUNDLE"] = ca_bundle
+    except ImportError:
+        pass
 
 # Prefer a local cache bundled with the app so offline installs work
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -113,7 +137,12 @@ class LiteLLMEmbedder:
             payload = [inputs]
         else:
             payload = list(inputs)
-        resp = litellm_embedding(model=self.model_name, input=payload, api_base=self.api_base)
+        resp = litellm_embedding(
+            model=self.model_name,
+            input=payload,
+            api_base=self.api_base,
+            ssl_verify=get_ssl_verify()
+        )
         # litellm returns {"data": [{"embedding": ..., "index": 0}, ...]}
         # pylint: disable=no-member
         return [item["embedding"] for item in getattr(resp, "data", resp.get("data", []))]

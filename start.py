@@ -44,6 +44,15 @@ LOG_DIR = ROOT_DIR / "log"
 CONFIG_DIR = ROOT_DIR / "config"
 VENV_DIR = ROOT_DIR / ".venv"
 
+# Propagate CA_BUNDLE to REQUESTS_CA_BUNDLE for compatibility
+if os.environ.get("CA_BUNDLE"):
+    if not os.environ.get("REQUESTS_CA_BUNDLE"):
+        os.environ["REQUESTS_CA_BUNDLE"] = os.environ["CA_BUNDLE"]
+    if not os.environ.get("SSL_CERT_FILE"):
+        os.environ["SSL_CERT_FILE"] = os.environ["CA_BUNDLE"]
+    if not os.environ.get("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"):
+        os.environ["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] = os.environ["CA_BUNDLE"]
+
 # Started processes tracking
 STARTED_PROCESSES: List[Tuple[subprocess.Popen, str]] = []
 

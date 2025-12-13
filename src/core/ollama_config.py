@@ -223,7 +223,8 @@ def get_requests_ca_bundle() -> Optional[str]:
     Priority:
     1. settings.json (ollamaCloudCABundle)
     2. secrets/ollama_cloud_config.json (ca_bundle)
-    3. REQUESTS_CA_BUNDLE environment variable
+    3. CA_BUNDLE environment variable
+    4. REQUESTS_CA_BUNDLE environment variable
     """
     settings = _read_settings_file()
     ca_bundle = settings.get("ollamaCloudCABundle")
@@ -232,6 +233,9 @@ def get_requests_ca_bundle() -> Optional[str]:
         secrets = _read_ollama_cloud_secrets()
         ca_bundle = secrets.get("ca_bundle")
     
+    if not ca_bundle:
+        ca_bundle = os.getenv("CA_BUNDLE")
+
     if not ca_bundle:
         ca_bundle = os.getenv("REQUESTS_CA_BUNDLE")
     

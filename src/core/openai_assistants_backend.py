@@ -13,8 +13,11 @@ import re
 import time
 from typing import List, Dict, Any
 
+import httpx
 from openai import OpenAI, OpenAIError
 from openai.types.beta.threads import Run
+
+from src.core.ssl_utils import get_ssl_verify
 
 # Import local RAG core for search
 # pylint: disable=cyclic-import,protected-access
@@ -67,7 +70,10 @@ class OpenAIAssistantsBackend:
         if self.api_key and self.api_key.strip():
             try:
                 # Just validate API key by creating client, don't create assistant yet
-                self.client = OpenAI(api_key=self.api_key)
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    http_client=httpx.Client(verify=get_ssl_verify())
+                )
                 
                 # Test that the key works with a simple call
                 self.client.models.list()

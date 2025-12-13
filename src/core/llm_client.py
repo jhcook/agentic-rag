@@ -15,6 +15,7 @@ from src.core.ollama_config import (
     get_ollama_endpoint,
     get_ollama_client_headers,
 )
+from src.core.ssl_utils import get_ssl_verify
 
 # Load .env early
 load_dotenv()
@@ -114,6 +115,7 @@ async def safe_completion(
                     timeout=timeout,
                     stream=stream,
                     extra_headers=extra_headers if extra_headers else None,
+                    ssl_verify=get_ssl_verify(),
                     **kwargs
                 )
 
@@ -139,7 +141,11 @@ async def safe_chat(
     async with _LLM_SEMAPHORE:
         endpoint = _get_ollama_api_base()
         headers = get_ollama_client_headers()
-        client = AsyncClient(host=endpoint, headers=headers if headers else None)
+        client = AsyncClient(
+            host=endpoint,
+            headers=headers if headers else None,
+            verify=get_ssl_verify()
+        )
 
         if messages is None:
             if query is None:
