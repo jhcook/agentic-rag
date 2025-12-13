@@ -107,13 +107,13 @@ def start_worker(env: Optional[Dict[str, str]] = None):
             try:
                 # Sync if external changes were detected (another process modified store)
                 # upsert_document already saves the store and adds to index incrementally.
-                # If store was reloaded from external changes, the index needs to be rebuilt
-                # to include the new documents that were added by another process.
+                # If store was reloaded from external changes, we generally do NOT need to
+                # rebuild pgvector here: the worker process performs incremental pgvector
+                # upserts during indexing/upsert operations. Rebuilding on every job creates
+                # an expensive loop where each store write triggers a full index rebuild.
                 store_reloaded = rag_core.ensure_store_synced()
-                # Only rebuild index if store was actually reloaded from external changes
                 if store_reloaded:
-                    logger.info("Store was reloaded from external changes, rebuilding index")
-                    rag_core.rebuild_faiss_index()
+                    logger.info("Store was reloaded from external changes")
             except Exception as exc:  # pragma: no cover
                 logger.error("Failed to sync store after job %s: %s", job_id, exc, exc_info=True)
 
@@ -169,7 +169,7 @@ def _index_worker_loop(
         upsert_document as _worker_upsert,
         load_store as _worker_load_store,
         save_store as _worker_save_store,
-        rebuild_faiss_index as _worker_rebuild,
+        rebuild_index as _worker_rebuild,
     )
     while True:
         job = job_queue.get()

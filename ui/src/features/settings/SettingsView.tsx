@@ -34,6 +34,15 @@ export type OllamaConfig = {
     caBundlePath?: string
 }
 
+export type PgvectorConfig = {
+    host: string
+    port: number
+    dbname: string
+    user: string
+    password: string
+    hasPassword: boolean
+}
+
 interface SettingsViewProps {
     config: OllamaConfig
     onConfigChange: (key: keyof OllamaConfig, value: string | boolean) => void
@@ -52,6 +61,15 @@ interface SettingsViewProps {
     onTestOllamaCloud: (key: string, endpoint?: string) => Promise<{ success: boolean; message: string }>
     onFetchOllamaModels?: (key: string, endpoint?: string) => Promise<string[]>
     ollamaStatus: any
+
+    pgvectorConfig: PgvectorConfig
+    onPgvectorConfigChange: (cfg: PgvectorConfig) => void
+    onSavePgvectorConfig: () => Promise<void>
+    onTestPgvector: () => Promise<{ success: boolean; message: string }>
+    onMigratePgvector: () => Promise<{ status: string; [k: string]: any }>
+    onBackfillPgvector: () => Promise<{ status: string; [k: string]: any }>
+    pgvectorStats: { status: string; documents?: number; chunks?: number; embedding_dim?: number; error?: string } | null
+    onRefreshPgvectorStats: () => Promise<void>
 }
 
 export function SettingsView(props: SettingsViewProps) {
@@ -72,7 +90,15 @@ export function SettingsView(props: SettingsViewProps) {
         onTestOpenAI,
         onTestOllamaCloud,
         onFetchOllamaModels,
-        ollamaStatus
+        ollamaStatus,
+        pgvectorConfig,
+        onPgvectorConfigChange,
+        onSavePgvectorConfig,
+        onTestPgvector,
+        onMigratePgvector,
+        onBackfillPgvector,
+        pgvectorStats,
+        onRefreshPgvectorStats
     } = props
 
     const [ollamaExpanded, setOllamaExpanded] = useState(false)
@@ -82,6 +108,7 @@ export function SettingsView(props: SettingsViewProps) {
     // Local state for editing masked keys
     const [editingOllamaKey, setEditingOllamaKey] = useState(false)
     const [editingOpenaiKey, setEditingOpenaiKey] = useState(false)
+    const [editingPgvectorPassword, setEditingPgvectorPassword] = useState(false)
 
     // Handlers
     const handleTestOllama = async () => {
@@ -100,6 +127,7 @@ export function SettingsView(props: SettingsViewProps) {
 
     const isOllamaKeyMasked = config.ollamaCloudApiKey === '***MASKED***'
     const isOpenaiKeyMasked = hasOpenaiApiKey && !openaiConfig.apiKey
+    const isPgvectorPasswordMasked = pgvectorConfig.password === '***MASKED***'
 
     return (
         <div className="space-y-6 max-w-4xl mx-auto">
@@ -438,6 +466,157 @@ export function SettingsView(props: SettingsViewProps) {
                                 <Label htmlFor="debugMode">Enable Debug Mode (Verbose Logging)</Label>
                             </div>
                             <Button className="w-full mt-4" onClick={onSaveConfig}>Update Network Settings</Button>
+                        </CardContent>
+                    </Card>
+
+                    <Card className="glass-card">
+                        <CardHeader>
+                            <CardTitle>Vector Store (pgvector)</CardTitle>
+                            <CardDescription>Configure and manage PostgreSQL + pgvector.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label>Host</Label>
+                                    <Input
+                                        value={pgvectorConfig.host}
+                                        onChange={(e) => onPgvectorConfigChange({ ...pgvectorConfig, host: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Port</Label>
+                                    <Input
+                                        value={String(pgvectorConfig.port)}
+                                        onChange={(e) => onPgvectorConfigChange({ ...pgvectorConfig, port: Number(e.target.value || 0) })}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <Label>Database</Label>
+                                    <Input
+                                        value={pgvectorConfig.dbname}
+                                        onChange={(e) => onPgvectorConfigChange({ ...pgvectorConfig, dbname: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>User</Label>
+                                    <Input
+                                        value={pgvectorConfig.user}
+                                        onChange={(e) => onPgvectorConfigChange({ ...pgvectorConfig, user: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <Label>Password</Label>
+                                <div className="flex gap-2">
+                                    {!editingPgvectorPassword && isPgvectorPasswordMasked ? (
+                                        <div className="flex-1 flex gap-2">
+                                            <Input disabled value="********************************" type="password" />
+                                            <Button
+                                                variant="outline"
+                                                onClick={() => {
+                                                    setEditingPgvectorPassword(true)
+                                                    onPgvectorConfigChange({ ...pgvectorConfig, password: '' })
+                                                }}
+                                            >
+                                                Change
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <div className="flex-1 flex gap-2">
+                                            <Input
+                                                type="password"
+                                                placeholder="PGVECTOR_PASSWORD"
+                                                value={pgvectorConfig.password}
+                                                onChange={(e) => onPgvectorConfigChange({ ...pgvectorConfig, password: e.target.value })}
+                                            />
+                                            {isPgvectorPasswordMasked && (
+                                                <Button variant="ghost" onClick={() => setEditingPgvectorPassword(false)}>
+                                                    Cancel
+                                                </Button>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                {!pgvectorConfig.hasPassword && (
+                                    <p className="text-xs text-muted-foreground">
+                                        No password detected. Start scripts require `PGVECTOR_PASSWORD` in .env.
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 justify-end">
+                                <Button
+                                    variant="outline"
+                                    onClick={async () => {
+                                        const res = await onTestPgvector()
+                                        if (res.success) toast.success(res.message)
+                                        else toast.error(res.message)
+                                    }}
+                                >
+                                    Test Connection
+                                </Button>
+                                <Button
+                                    variant="outline"
+                                    onClick={async () => {
+                                        const res = await onMigratePgvector()
+                                        if (res.status === 'ok') toast.success('Schema initialized')
+                                        else toast.error(res.error || 'Schema init failed')
+                                    }}
+                                >
+                                    Initialize (Migrate)
+                                </Button>
+                                <Button
+                                    variant="outline"
+                                    onClick={async () => {
+                                        const res = await onBackfillPgvector()
+                                        if (res.status === 'ok') toast.success('Backfill complete')
+                                        else toast.error(res.error || 'Backfill failed')
+                                    }}
+                                >
+                                    Backfill
+                                </Button>
+                                <Button
+                                    variant="secondary"
+                                    onClick={async () => {
+                                        try {
+                                            await onRefreshPgvectorStats()
+                                            toast.success('Stats refreshed')
+                                        } catch (e: any) {
+                                            toast.error(e?.message || 'Stats failed')
+                                        }
+                                    }}
+                                >
+                                    Refresh Stats
+                                </Button>
+                                <Button onClick={async () => {
+                                    try {
+                                        await onSavePgvectorConfig()
+                                        toast.success('pgvector settings saved')
+                                    } catch (e: any) {
+                                        toast.error(e?.message || 'Failed to save pgvector settings')
+                                    }
+                                }}>
+                                    Save
+                                </Button>
+                            </div>
+
+                            <div className="text-xs text-muted-foreground">
+                                {pgvectorStats?.status === 'ok' ? (
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <div>Documents: {pgvectorStats.documents ?? 0}</div>
+                                        <div>Chunks: {pgvectorStats.chunks ?? 0}</div>
+                                        <div>Embedding dim: {pgvectorStats.embedding_dim ?? 0}</div>
+                                    </div>
+                                ) : pgvectorStats?.status === 'error' ? (
+                                    <div className="text-destructive">{pgvectorStats.error || 'Stats unavailable'}</div>
+                                ) : (
+                                    <div>Stats not loaded.</div>
+                                )}
+                            </div>
                         </CardContent>
                     </Card>
                 </TabsContent>

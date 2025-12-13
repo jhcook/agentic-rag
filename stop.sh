@@ -6,6 +6,8 @@
 
 set -euo pipefail
 
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -82,6 +84,14 @@ fi
 
 echo -e "${GREEN}=== Stopping Agentic RAG Services ===${NC}"
 echo ""
+
+# Stop pgvector container (Docker Compose)
+if command -v docker &> /dev/null && docker compose version &> /dev/null && [[ -f "$ROOT_DIR/docker-compose.yml" ]]; then
+    echo -e "${YELLOW}Stopping pgvector (PostgreSQL) container...${NC}"
+    docker compose -f "$ROOT_DIR/docker-compose.yml" stop pgvector 2>/dev/null || true
+else
+    echo -e "${YELLOW}pgvector container: Not managed (docker/compose missing or compose file not found)${NC}"
+fi
 
 # Function to get PID on port
 get_pid_on_port() {

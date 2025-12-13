@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Toaster } from '@/components/ui/sonner'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { DashboardView } from '@/features/dashboard/DashboardView'
-import { SettingsView, OllamaConfig } from '@/features/settings/SettingsView'
+import { SettingsView, OllamaConfig, PgvectorConfig } from '@/features/settings/SettingsView'
 import { SearchView } from '@/features/search/SearchView'
 import { FileManager } from '@/components/FileManager'
 import { LogsViewer } from '@/components/LogsViewer'
@@ -66,6 +66,16 @@ function App() {
   const [openaiModels, setOpenaiModels] = useState<string[]>([])
   const [hasOllamaCloudApiKey, setHasOllamaCloudApiKey] = useState(false)
   const [ollamaStatus, setOllamaStatus] = useState<any>(null)
+
+  const [pgvectorConfig, setPgvectorConfig] = useState<PgvectorConfig>({
+    host: '127.0.0.1',
+    port: 5432,
+    dbname: 'agentic_rag',
+    user: 'agenticrag',
+    password: '',
+    hasPassword: false,
+  })
+  const [pgvectorStats, setPgvectorStats] = useState<{ status: string; documents?: number; chunks?: number; embedding_dim?: number; error?: string } | null>(null)
 
   // Chat State
   const [chatMessages, setChatMessages] = useState<Message[]>([])
@@ -137,6 +147,29 @@ function App() {
             }).catch(() => { })
           }
         }
+
+        // Load pgvector config
+        const pgRes = await fetch(`http://${host}:${port}/${base}/config/pgvector`)
+        if (pgRes.ok) {
+          const d = await pgRes.json()
+          setPgvectorConfig(prev => ({
+            ...prev,
+            host: d.host ?? prev.host,
+            port: Number(d.port ?? prev.port),
+            dbname: d.dbname ?? prev.dbname,
+            user: d.user ?? prev.user,
+            password: d.password ?? '',
+            hasPassword: Boolean(d.has_password),
+          }))
+        }
+
+        // Load pgvector stats (best-effort)
+        fetch(`http://${host}:${port}/${base}/pgvector/stats`).then(async r => {
+          if (r.ok) {
+            const s = await r.json()
+            setPgvectorStats(s)
+          }
+        }).catch(() => { })
 
         // Load chat history
         const historyRes = await fetch(`http://${host}:${port}/${base}/chat/history?limit=50`)
@@ -247,6 +280,103 @@ function App() {
     }
   }
 
+  const refreshConversationList = async () => {
+    const { host, port, base } = getApiBase()
+    try {
+      const historyRes = await fetch(`http://${host}:${port}/${base}/chat/history?limit=50`)
+      if (!historyRes.ok) return
+      const sessions = await historyRes.json()
+      const conversations: Conversation[] = sessions.map((s: any) => ({
+        id: s.id,
+        title: s.title || 'New Conversation',
+        messages: [],
+        createdAt: s.created_at * 1000,
+        updatedAt: s.updated_at * 1000
+      }))
+      setConversations(conversations)
+    } catch {
+      // best-effort
+    }
+  }
+
+  const handleChatSessionId = (sessionId: string) => {
+    setActiveConversationId(sessionId)
+    // Best-effort refresh so the sidebar shows the session immediately
+    refreshConversationList()
+  }
+
+
+  const handleSavePgvectorConfig = async () => {
+    const { host, port, base } = getApiBase()
+
+    const passwordPayload: string | null = (() => {
+      if (pgvectorConfig.password && pgvectorConfig.password !== MASKED_SECRET) return pgvectorConfig.password
+      if (pgvectorConfig.password === MASKED_SECRET) return MASKED_SECRET
+      if (pgvectorConfig.hasPassword) return MASKED_SECRET
+      return null
+    })()
+
+    const res = await fetch(`http://${host}:${port}/${base}/config/pgvector`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: pgvectorConfig.host,
+        port: pgvectorConfig.port,
+        dbname: pgvectorConfig.dbname,
+        user: pgvectorConfig.user,
+        password: passwordPayload,
+      }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || 'Failed to save pgvector config')
+    }
+
+    // Reload config so password returns masked
+    const cfgRes = await fetch(`http://${host}:${port}/${base}/config/pgvector`)
+    if (cfgRes.ok) {
+      const d = await cfgRes.json()
+      setPgvectorConfig(prev => ({
+        ...prev,
+        host: d.host ?? prev.host,
+        port: Number(d.port ?? prev.port),
+        dbname: d.dbname ?? prev.dbname,
+        user: d.user ?? prev.user,
+        password: d.password ?? '',
+        hasPassword: Boolean(d.has_password),
+      }))
+    }
+  }
+
+  const testPgvector = async () => {
+    const { host, port, base } = getApiBase()
+    const res = await fetch(`http://${host}:${port}/${base}/pgvector/test-connection`, { method: 'POST' })
+    const data = await res.json()
+    return { success: Boolean(data.success), message: String(data.message ?? '') }
+  }
+
+  const migratePgvector = async () => {
+    const { host, port, base } = getApiBase()
+    const res = await fetch(`http://${host}:${port}/${base}/pgvector/migrate`, { method: 'POST' })
+    return await res.json()
+  }
+
+  const backfillPgvector = async () => {
+    const { host, port, base } = getApiBase()
+    const res = await fetch(`http://${host}:${port}/${base}/pgvector/backfill`, { method: 'POST' })
+    return await res.json()
+  }
+
+  const refreshPgvectorStats = async () => {
+    const { host, port, base } = getApiBase()
+    const res = await fetch(`http://${host}:${port}/${base}/pgvector/stats`)
+    const data = await res.json()
+    setPgvectorStats(data)
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || 'Failed to fetch stats')
+    }
+  }
   const handleDeleteConversation = async (conversationId: string) => {
     const { host, port, base } = getApiBase()
     
@@ -566,10 +696,11 @@ function App() {
             chatMessages={chatMessages}
             setMessages={setChatMessages}
             activeConversationId={activeConversationId}
+            onSessionId={handleChatSessionId}
             conversations={conversations}
             onSelectConversation={handleSelectConversation}
             onNewConversation={() => {
-              setActiveConversationId(crypto.randomUUID())
+              setActiveConversationId(null)
               setChatMessages([])
             }}
             onDeleteConversation={handleDeleteConversation}
@@ -604,6 +735,15 @@ function App() {
             onTestOllamaCloud={testOllamaCloud}
             onFetchOllamaModels={handleFetchOllamaModels}
             ollamaStatus={ollamaStatus}
+
+            pgvectorConfig={pgvectorConfig}
+            onPgvectorConfigChange={setPgvectorConfig}
+            onSavePgvectorConfig={handleSavePgvectorConfig}
+            onTestPgvector={testPgvector}
+            onMigratePgvector={migratePgvector}
+            onBackfillPgvector={backfillPgvector}
+            pgvectorStats={pgvectorStats}
+            onRefreshPgvectorStats={refreshPgvectorStats}
           />
         )}
 

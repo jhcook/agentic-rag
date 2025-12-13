@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from starlette.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from pathlib import Path
@@ -7,10 +7,10 @@ import anyio
 import json
 import time
 import uuid
+import logging
 
 from src.core.rag_core import (
     get_store,
-    get_faiss_globals,
     MAX_MEMORY_MB,
     save_store,
 )
@@ -18,12 +18,15 @@ from src.core.indexer import index_path, upsert_document
 from src.core.extractors import extract_text_from_file, extract_text_from_bytes
 from src.core.store import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
+from src.servers.mcp_app.admin_auth import require_admin_access
 from src.core.factory import get_rag_backend
 from src.core.models import (
     UpsertReq, IndexPathReq, SearchReq, VectorSearchReq,
     GroundedAnswerReq, RerankReq, VerifyReq, DeleteDocsReq,
     IndexUrlReq, LoggingConfigReq
 )
+
+logger = logging.getLogger(__name__)
 
 rest_api = FastAPI(title="mcp-rest-shim")
 
@@ -250,21 +253,23 @@ async def rest_documents(_request: Request):
 
 
 @rest_api.post("/documents/delete")
-async def rest_documents_delete(req: DeleteDocsReq):
+async def rest_documents_delete(req: DeleteDocsReq, _admin: None = Depends(require_admin_access)):
     try:
         result = await anyio.to_thread.run_sync(backend.delete_documents, req.uris)
         return JSONResponse(result)
     except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        logger.error("documents/delete failed: %s", exc)
+        return JSONResponse({"error": "delete failed"}, status_code=500)
 
 
 @rest_api.post("/flush_cache")
-async def rest_flush_cache():
+async def rest_flush_cache(_admin: None = Depends(require_admin_access)):
     try:
         result = await anyio.to_thread.run_sync(backend.flush_cache)
         return JSONResponse(result)
     except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        logger.error("flush_cache failed: %s", exc)
+        return JSONResponse({"error": "flush_cache failed"}, status_code=500)
 
 
 @rest_api.get("/health")

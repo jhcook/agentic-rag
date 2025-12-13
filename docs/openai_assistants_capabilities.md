@@ -78,7 +78,7 @@ assistant = client.beta.assistants.create(
 ### Option 1: **Replace Local Vector Store with OpenAI Assistants**
 
 **Pros:**
-- ✅ No need to manage FAISS index
+- ✅ No need to manage a separate index format
 - ✅ No need to run embedding models locally
 - ✅ Automatic citations (better than our current implementation)
 - ✅ Scales to 10,000 files easily
@@ -136,13 +136,13 @@ class OpenAIAssistantsBackend(RAGBackend):
 
 ### Option 2: **Hybrid - Local Docs + OpenAI Assistants**
 
-Keep local FAISS but add OpenAI Assistants as an optional tier:
+Keep local pgvector but add OpenAI Assistants as an optional tier:
 
 **Architecture:**
 ```
 User uploads document
     ↓
-1. Index locally (FAISS) ← Free, private, fast
+1. Index locally (pgvector) ← Free, private, fast
 2. Optionally upload to OpenAI ← Better citations, cloud backup
     ↓
 User asks question
@@ -248,7 +248,7 @@ Settings → LLM Provider:
 - [ ] Google Gemini - Drive/Gmail integration
 ```
 
-All three use the same local FAISS index for documents. Only the LLM changes.
+All three use the same local pgvector index for documents. Only the LLM changes.
 
 ---
 

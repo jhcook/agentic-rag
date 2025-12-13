@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.DEBUG)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.core import rag_core
+from src.core import pgvector_store
 
 def test_startup_indexing():
     print("--- Testing Startup Indexing ---")
@@ -37,22 +38,28 @@ def test_startup_indexing():
         print("ERROR: Store is empty after load!")
         return
 
-    # 3. Check Index before rebuild
-    index, _, _ = rag_core.get_faiss_globals()
-    print(f"Index ntotal before rebuild: {index.ntotal if index else 'None'}")
+    # 3. Ensure vector store and check stats before rebuild
+    try:
+        rag_core.ensure_vector_store_ready()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        print(f"ERROR: pgvector not available: {exc}")
+        return
+
+    before = pgvector_store.stats(embedding_model=rag_core.EMBED_MODEL_NAME)
+    print(f"pgvector chunks before rebuild: {before.get('chunks')}")
 
     # 4. Rebuild Index
     print("Rebuilding index...")
-    rag_core.rebuild_faiss_index()
-    
-    # 5. Check Index after rebuild
-    index, _, _ = rag_core.get_faiss_globals()
-    print(f"Index ntotal after rebuild: {index.ntotal if index else 'None'}")
-    
-    if index and index.ntotal == 0:
-        print("ERROR: Index is empty after rebuild!")
+    rag_core.rebuild_index()
+
+    # 5. Check stats after rebuild
+    after = pgvector_store.stats(embedding_model=rag_core.EMBED_MODEL_NAME)
+    print(f"pgvector chunks after rebuild: {after.get('chunks')}")
+
+    if int(after.get("chunks", 0) or 0) <= 0:
+        print("ERROR: pgvector index is empty after rebuild!")
     else:
-        print("SUCCESS: Index populated.")
+        print("SUCCESS: pgvector index populated.")
 
 if __name__ == "__main__":
     test_startup_indexing()

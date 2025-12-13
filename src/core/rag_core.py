@@ -43,14 +43,17 @@ HAS_LANGCHAIN = True
 
 # Shared helpers
 from src.core.embeddings import get_embedder as _get_embedder
-from src.core.faiss_index import (
-    get_faiss_globals as _get_faiss_globals,
-    get_rebuild_lock,
-)
+from src.core import pgvector_store
 from src.core.extractors import extract_text_from_file
+
+# Backwards compatibility for tests/legacy imports.
+_extract_text_from_file = extract_text_from_file
 
 # Import new LLM client wrappers
 from src.core.llm_client import sync_completion, safe_completion, reload_llm_config
+
+# Backwards compatibility: some tests monkeypatch `rag_core.completion`.
+completion = sync_completion
 
 # Load .env early so configuration is available at module import time
 load_dotenv()
@@ -68,6 +71,14 @@ def _load_settings() -> Dict[str, Any]:
     return {}
 
 _SETTINGS = _load_settings()
+
+# Module-level config globals are initialized by `_apply_settings()`. We declare
+# them here so static import validation can resolve the symbols.
+EMBED_MODEL_NAME: str = ""
+OLLAMA_API_BASE: str = ""
+LLM_MODEL_NAME: str = ""
+ASYNC_LLM_MODEL_NAME: str = ""
+LLM_TEMPERATURE: float = 0.1
 
 
 def _get_config_value(json_key: str, env_key: str, default: str) -> str:
@@ -166,6 +177,10 @@ def get_llm_model_name() -> str:
 _STORE: Optional['Store'] = None  # pylint: disable=invalid-name
 _STORE_LOCK = threading.RLock()
 
+# Cache pgvector schema migration so we don't run idempotent DDL on every query.
+_PGVECTOR_SCHEMA_LOCK = threading.Lock()
+_PGVECTOR_SCHEMA_DIM: Optional[int] = None
+
 # Embedding metrics (shared by servers)
 EMBEDDING_REQUESTS = Counter(
     "embedding_requests_total",
@@ -195,26 +210,63 @@ def get_embedder() -> Optional[SentenceTransformer]:
     return _get_embedder(EMBED_MODEL_NAME, DEBUG_MODE, logger)
 
 
-def get_faiss_globals() -> Tuple[Any, Dict[int, Tuple[str, int, int]], int]:
-    """Get FAISS-related globals, initializing them lazily if needed."""
+def _get_embed_dim(embedder: Optional[SentenceTransformer]) -> int:
+    """Return embedding dimension from model, with a conservative fallback."""
+    if embedder is None or DEBUG_MODE:
+        return 384
+    try:
+        dim = int(embedder.get_sentence_embedding_dimension())
+        return dim if dim > 0 else 384
+    except Exception:  # pylint: disable=broad-exception-caught
+        return 384
+
+
+def _ensure_pgvector_ready(embedder: Optional[SentenceTransformer]) -> None:
+    """Best-effort ensure pgvector schema exists for the active embedding dimension.
+
+    Some unit tests and local workflows should still run when the external
+    pgvector service isn't configured/running; call sites should degrade
+    gracefully when this fails.
+    """
+    if DEBUG_MODE:
+        return
+    if embedder is None:
+        return
+    embed_dim = _get_embed_dim(embedder)
+    if EMBED_DIM_OVERRIDE and embed_dim != EMBED_DIM_OVERRIDE:
+        logger.warning(
+            "EMBED_DIM_OVERRIDE=%s does not match embedder dimension %s; using embedder dimension",
+            EMBED_DIM_OVERRIDE,
+            embed_dim,
+        )
+    try:
+        global _PGVECTOR_SCHEMA_DIM  # pylint: disable=global-statement
+        with _PGVECTOR_SCHEMA_LOCK:
+            if _PGVECTOR_SCHEMA_DIM == embed_dim:
+                return
+            pgvector_store.migrate_schema(embed_dim)
+            _PGVECTOR_SCHEMA_DIM = embed_dim
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "pgvector not ready; continuing without it: %s",
+            pgvector_store.redact_error_message(str(exc)),
+        )
+
+
+def ensure_vector_store_ready() -> Dict[str, Any]:
+    """Ensure pgvector schema exists for the active embedding model."""
+
     embedder = get_embedder()
-    embed_dim = 384
-    if embedder is not None and not DEBUG_MODE:
-        try:
-            embed_dim = embedder.get_sentence_embedding_dimension()
-        except Exception:  # pylint: disable=broad-exception-caught
-            embed_dim = 384
-    if EMBED_DIM_OVERRIDE:
-        if embedder is not None and not DEBUG_MODE and embed_dim != EMBED_DIM_OVERRIDE:
-            logger.warning(
-                "EMBED_DIM_OVERRIDE=%s does not match embedder dimension %s; "
-                "using embedder dimension",
-                EMBED_DIM_OVERRIDE,
-                embed_dim,
-            )
-        else:
-            embed_dim = EMBED_DIM_OVERRIDE
-    return _get_faiss_globals(embed_dim, DEBUG_MODE, logger)
+    _ensure_pgvector_ready(embedder)
+    ok, msg = pgvector_store.test_connection()
+    if not ok:
+        raise RuntimeError(f"pgvector not available: {msg}")
+    return {
+        "status": "ok",
+        "embedding_model": EMBED_MODEL_NAME,
+        "embedding_dim": _get_embed_dim(embedder),
+    }
+
 
 
 # -------- In-memory store --------
@@ -501,132 +553,70 @@ def should_skip_uri(uri: str) -> bool:
     return _should_skip_uri(uri)
 
 
-def _rebuild_faiss_index():  # pylint: disable=no-value-for-parameter
-    """Rebuild the FAISS index from store documents."""
-    from src.core.faiss_index import should_skip_rebuild, mark_rebuild_complete
-    with get_rebuild_lock():
-        # Debounce: skip if rebuild happened recently
-        if should_skip_rebuild():
-            logger.debug("Skipping FAISS rebuild (debounced - recent rebuild)")
-            return
-        logger.info("Beginning FAISS rebuild")
-        if DEBUG_MODE:
-            logger.debug("Debug mode: skipping FAISS index rebuild")
-            mark_rebuild_complete()  # Mark even if skipped
-            return
+def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
+    """(Re)build the pgvector index from the current JSONL store."""
 
-        index, index_to_meta, _ = get_faiss_globals()
-        logger.info("FAISS globals ready (index=%s)", "present" if index is not None else "none")
-        embedder = get_embedder()
-        logger.info("Embedder ready")
+    if DEBUG_MODE:
+        return {"status": "skipped", "reason": "debug_mode"}
 
-        logger.info("Rebuilding FAISS index from store documents")
-        # Ensure store is synced before rebuilding
-        _ensure_store_synced()
-        index_to_meta.clear()
-        if index is not None:
-            index.reset()  # type: ignore
+    _ensure_store_synced()
+    store = get_store()
+    embedder = get_embedder()
+    _ensure_pgvector_ready(embedder)
 
-        if _STORE is None:
-            logger.warning("No store available to rebuild index from")
-            mark_rebuild_complete()  # Mark even if no store
-            return
+    ok, msg = pgvector_store.test_connection()
+    if not ok:
+        raise RuntimeError(f"pgvector is not available: {msg}")
 
-        with _STORE_LOCK:
-            doc_items = list(_STORE.docs.items())
-            
-        logger.info("Processing %d documents for FAISS indexing", len(doc_items))
+    with _STORE_LOCK:
+        doc_items = list(store.docs.items())
 
-        total_vectors = 0
-        batch_size = 8
+    logger.info("Rebuilding pgvector index from %d documents", len(doc_items))
 
-        # Process each document separately to avoid accumulating all chunks in memory
-        for uri, text in tqdm(iterable=doc_items, desc="Rebuilding FAISS index", unit="doc"):  # pylint: disable=no-value-for-parameter
-            logger.info("Document %s: %d chars", uri, len(text))
-            if not text or not text.strip():
-                logger.warning("Document %s is empty, skipping", uri)
-                continue
-            chunks, uris, offsets = _chunk_document_with_offsets(text, uri)
-            logger.info("Created %d chunks from %s", len(chunks), uri)
+    total_chunks = 0
+    for uri, text in tqdm(iterable=doc_items, desc="Rebuilding pgvector index", unit="doc"):  # pylint: disable=no-value-for-parameter
+        if _should_skip_uri(uri):
+            continue
+        if not text or not text.strip():
+            continue
 
-            if not chunks:
-                logger.warning(
-                    "No chunks created from document %s (text length: %d)", uri, len(text))
-                continue
+        chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
+        chunks = [c[0] for c in chunks_with_offsets]
+        offsets = [(c[1], c[2]) for c in chunks_with_offsets]
+        if not chunks:
+            continue
 
-            # Process chunks from this document in small batches
-            for i in range(0, len(chunks), batch_size):
-                batch_chunks = chunks[i:i+batch_size]
-                batch_uris = uris[i:i+batch_size]
-                batch_offsets = offsets[i:i+batch_size]
+        embeddings = _encode_with_metrics(
+            embedder,
+            chunks,
+            "rebuild_index",
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        emb = np.array(embeddings, dtype=np.float32)
+        if emb.ndim == 1:
+            emb = emb.reshape(1, -1)
 
-                added = _process_batch_for_index(
-                    embedder, index, index_to_meta,
-                    batch_chunks, batch_uris, batch_offsets, uri
-                )
-                total_vectors += added
+        pgvector_store.upsert_document_chunks(
+            uri=uri,
+            chunks=chunks,
+            offsets=offsets,
+            embeddings=emb,
+            embedding_model=EMBED_MODEL_NAME,
+        )
+        total_chunks += len(chunks)
 
-                # Force garbage collection after each batch
-                del batch_chunks, batch_uris, batch_offsets
-                gc.collect()
+        # Reduce peak memory
+        del chunks_with_offsets, chunks, offsets, embeddings, emb
+        gc.collect()
 
-        if index is not None:
-            logger.info("Added %d vectors to FAISS index", total_vectors)
-        else:
-            logger.warning("No FAISS index available")
-        
-        # Mark rebuild complete for debouncing
-        from src.core.faiss_index import mark_rebuild_complete
-        mark_rebuild_complete()
-
-
-def rebuild_faiss_index() -> None:
-    """Public entry point for triggering a FAISS rebuild."""
-    _rebuild_faiss_index()
-
-
-def _process_batch_for_index(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    embedder: Optional[SentenceTransformer],
-    index: Any,
-    index_to_meta: Dict,
-    batch_chunks: List[str],
-    batch_uris: List[str],
-    batch_offsets: List[Tuple[int, int]],
-    uri: str
-) -> int:
-    """Process a batch of chunks for indexing."""
-    if embedder is None:
-        logger.error("Embedder is None, cannot create embeddings")
-        return 0
-
-    embeddings = _encode_with_metrics(
-        embedder,
-        batch_chunks,
-        "rebuild_index",
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-
-    if embeddings is None or len(embeddings) == 0:
-        logger.warning("No embeddings generated for batch from %s", uri)
-        return 0
-
-    if index is not None:
-        embeddings_array = np.array(embeddings, dtype=np.float32)
-        if len(embeddings_array.shape) == 1:
-            embeddings_array = embeddings_array.reshape(1, -1)
-        index.add(embeddings_array)  # type: ignore
-
-        current_index = index.ntotal - len(batch_chunks)  # type: ignore
-        for idx, (chunk_uri, (start, end)) in enumerate(zip(batch_uris, batch_offsets)):
-            index_to_meta[current_index + idx] = (chunk_uri, start, end)
-
-    return len(batch_chunks)
+    logger.info("pgvector rebuild complete (chunks=%d)", total_chunks)
+    return {"status": "ok", "chunks": total_chunks, "documents": len(doc_items)}
 
 
 def load_store():
-    """Load the store from disk and rebuild FAISS index."""
+    """Load the JSONL store from disk and ensure pgvector is initialized."""
     global _STORE  # pylint: disable=global-statement
 
     if not os.path.exists(DB_PATH):
@@ -655,6 +645,25 @@ def load_store():
             
         logger.info("Successfully loaded %d documents", len(_STORE.docs))
 
+        # Do NOT rebuild embeddings unconditionally on load.
+        # pgvector is persistent; rebuilding here makes restarts and sync-checks
+        # extremely expensive and can look like "rebuilding on every query".
+        if not DEBUG_MODE and len(_STORE.docs) > 0:
+            try:
+                stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+                chunks = int(stats.get("chunks", 0) or 0)
+                if chunks <= 0:
+                    logger.info(
+                        "pgvector has 0 chunks for model '%s' after load; rebuilding index",
+                        EMBED_MODEL_NAME,
+                    )
+                    rebuild_index()
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "pgvector stats/rebuild check failed after load_store: %s",
+                    pgvector_store.redact_error_message(str(exc)),
+                )
+
     except (OSError, ValueError) as exc:
         logger.error("Error loading store: %s", str(exc))
         raise
@@ -673,7 +682,6 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
         logger.warning("Skipping hidden/system file: %s", uri)
         return {"skipped": True, "reason": "hidden/system file", "uri": uri}
 
-    index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
 
     _ensure_store_synced()
@@ -685,49 +693,56 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
         existed = uri in _STORE.docs
         _STORE.add(uri, text)
 
-    if DEBUG_MODE:
-        logger.debug("Debug mode: skipping embeddings for %s", uri)
-        save_store()
-        return {"upserted": True, "existed": existed}
+    if embedder is None:
+        raise RuntimeError("Embedder is not available")
 
-    base_index = index.ntotal if index is not None else 0  # type: ignore
+    _ensure_pgvector_ready(embedder)
+
+    ok, msg = pgvector_store.test_connection()
+    if not ok:
+        raise RuntimeError(f"pgvector is not available: {msg}")
     chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
     chunks = [c[0] for c in chunks_with_offsets]
     offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
-    if embedder is not None and index is not None:
-        faiss_index = cast(Any, index)
-        # Process in batches to control memory
-        batch_size = 8
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i+batch_size]
-            batch_offsets = offsets[i:i+batch_size]
-            embeddings = _encode_with_metrics(
-                embedder,
-                batch_chunks,
-                "upsert_document",
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                batch_size=batch_size,
-            )
-            embeddings = np.array(embeddings, dtype=np.float32)
-            if len(embeddings.shape) == 1:
-                embeddings = embeddings.reshape(1, -1)
+    if chunks:
+        embeddings = _encode_with_metrics(
+            embedder,
+            chunks,
+            "upsert_document",
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        emb = np.array(embeddings, dtype=np.float32)
+        if emb.ndim == 1:
+            emb = emb.reshape(1, -1)
 
-            faiss_index.add(embeddings)  # pylint: disable=no-value-for-parameter
+        pgvector_store.upsert_document_chunks(
+            uri=uri,
+            chunks=chunks,
+            offsets=offsets,
+            embeddings=emb,
+            embedding_model=EMBED_MODEL_NAME,
+        )
 
-            # Update metadata for each chunk in batch
-            for j, (start, end) in enumerate(batch_offsets):
-                index_to_meta[base_index + i + j] = (uri, start, end)
+        del chunks_with_offsets, chunks, offsets, embeddings, emb
+        gc.collect()
 
-            # Explicit cleanup
-            del embeddings, batch_chunks
-            gc.collect()
-
+    try:
+        stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+        logger.info(
+            "Upserted document %s (existed: %s), pgvector chunks=%s",
+            uri,
+            existed,
+            stats.get("chunks"),
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "pgvector stats failed after upsert: %s",
+            pgvector_store.redact_error_message(str(exc)),
+        )
     save_store()
-    total_vectors = index.ntotal if index is not None else 0  # type: ignore
-    logger.info("Upserted document %s (existed: %s), index now has %d vectors",
-                uri, existed, total_vectors)
     return {"upserted": True, "existed": existed}
 
 
@@ -772,7 +787,7 @@ def _process_file(  # pylint: disable=too-many-locals
         if not text:
             return False
         stripped = text.strip()
-        if len(stripped) < 40:  # too shor
+        if not stripped:
             return False
         printable = sum(ch.isprintable() for ch in stripped)
         density = printable / max(1, len(stripped))
@@ -793,40 +808,45 @@ def _process_file(  # pylint: disable=too-many-locals
     with _STORE_LOCK:
         store.add(str(file_path), text)
 
-    if not DEBUG_MODE and embedder is not None and index is not None:
-        base_index = index.ntotal  # type: ignore
-        chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
-        chunks = [c[0] for c in chunks_with_offsets]
-        offsets = [(c[1], c[2]) for c in chunks_with_offsets]
-
-        # Process in batches to control memory
-        batch_size = 8
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i+batch_size]
-            batch_offsets = offsets[i:i+batch_size]
-            embeddings = _encode_with_metrics(
-                embedder,
-                batch_chunks,
-                "index_path",
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                batch_size=batch_size,
-            )
-            embeddings = np.array(embeddings, dtype=np.float32)
-            if len(embeddings.shape) == 1:
-                embeddings = embeddings.reshape(1, -1)
-
-            index.add(embeddings)
-
-            # Update metadata for each chunk in batch
-            for j, (start, end) in enumerate(batch_offsets):
-                index_to_meta[base_index + i + j] = (str(file_path), start, end)
-
-            # Explicit cleanup
-            del embeddings, batch_chunks
-            gc.collect()
-    elif DEBUG_MODE:
+    if DEBUG_MODE:
         logger.debug("Debug mode: skipping embeddings for %s", file_path)
+        return text
+
+    if embedder is None:
+        embedder = get_embedder()
+    if embedder is None:
+        raise RuntimeError("Embedder is not available")
+
+    _ensure_pgvector_ready(embedder)
+    ok, _msg = pgvector_store.test_connection()
+    if not ok:
+        return text
+    chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
+    chunks = [c[0] for c in chunks_with_offsets]
+    offsets = [(c[1], c[2]) for c in chunks_with_offsets]
+    if chunks:
+        embeddings = _encode_with_metrics(
+            embedder,
+            chunks,
+            "index_path",
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        emb = np.array(embeddings, dtype=np.float32)
+        if emb.ndim == 1:
+            emb = emb.reshape(1, -1)
+
+        pgvector_store.upsert_document_chunks(
+            uri=str(file_path),
+            chunks=chunks,
+            offsets=offsets,
+            embeddings=emb,
+            embedding_model=EMBED_MODEL_NAME,
+        )
+
+        del chunks_with_offsets, chunks, offsets, embeddings, emb
+        gc.collect()
 
     return text
 
@@ -843,25 +863,34 @@ def index_path(  # pylint: disable=too-many-locals
         max_files: Maximum number of files to index (safety limit)
         progress_callback: Optional callback(current, total) called during indexing
     """
-    index, index_to_meta, _ = get_faiss_globals()
     embedder = get_embedder()
+    if not DEBUG_MODE:
+        _ensure_pgvector_ready(embedder)
 
     try:
         files, resolved = collect_files(path, glob)
     except FileNotFoundError as exc:
         logger.warning(str(exc))
+        try:
+            total_vectors = int(pgvector_store.stats(embedding_model=EMBED_MODEL_NAME).get("chunks", 0))
+        except Exception:  # pylint: disable=broad-exception-caught
+            total_vectors = 0
         return {
             "indexed": 0,
-            "total_vectors": index.ntotal if index is not None else 0,  # type: ignore
+            "total_vectors": total_vectors,
             "error": str(exc)
         }
 
     if not files:
         message = f"No files matching '{glob}' were found under '{resolved}'"
         logger.info(message)
+        try:
+            total_vectors = int(pgvector_store.stats(embedding_model=EMBED_MODEL_NAME).get("chunks", 0))
+        except Exception:  # pylint: disable=broad-exception-caught
+            total_vectors = 0
         return {
             "indexed": 0,
-            "total_vectors": index.ntotal if index is not None else 0,  # type: ignore
+            "total_vectors": total_vectors,
             "error": message,
         }
 
@@ -878,16 +907,20 @@ def index_path(  # pylint: disable=too-many-locals
         if progress_callback:
             progress_callback(idx, total_files)
         try:
-            text = process_file(file_path, index, index_to_meta, embedder)
+            text = process_file(file_path, None, {}, embedder)
             texts.append(text)
         except (OSError, ValueError) as exc:
             logger.warning("Failed to read %s: %s", file_path, exc)
 
     save_store()
-    index_total = index.ntotal if index is not None else 0  # type: ignore
-    logger.info("Stored %d files, index now has %d vectors", len(texts), index_total)
+    try:
+        stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+        total_vectors = stats.get("chunks", 0)
+    except Exception:  # pylint: disable=broad-exception-caught
+        total_vectors = 0
+    logger.info("Stored %d files, pgvector chunks=%s", len(texts), total_vectors)
 
-    return {"indexed": len(files), "total_vectors": index_total, "resolved_path": str(resolved)}
+    return {"indexed": len(files), "total_vectors": total_vectors, "resolved_path": str(resolved)}
 
 
 async def send_to_llm(query: List[str]) -> Any:
@@ -963,12 +996,10 @@ def send_store_to_llm() -> str:  # pylint: disable=too-many-locals
 
 
 def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  # pylint: disable=too-many-locals
-    """Perform vector similarity search using FAISS."""
-    index, index_to_meta, _ = get_faiss_globals()
-    embedder = get_embedder()
+    """Perform vector similarity search using PostgreSQL + pgvector."""
 
-    if index is None or index.ntotal == 0:  # type: ignore
-        logger.debug("No FAISS index available for vector search")
+    embedder = get_embedder()
+    if embedder is None:
         return []
 
     query_emb = _encode_with_metrics(
@@ -977,23 +1008,30 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  
         "search_query",
         normalize_embeddings=True,
         convert_to_numpy=True,
-    )  # type: ignore
-    query_array = np.array(query_emb, dtype=np.float32).reshape(1, -1)
+        show_progress_bar=False,
+    )
+    q = np.array(query_emb, dtype=np.float32).reshape(1, -1)
 
-    scores, indices = index.search(query_array, min(k, index.ntotal))  # type: ignore  # pylint: disable=no-value-for-parameter
+    _ensure_pgvector_ready(embedder)
+    ok, msg = pgvector_store.test_connection()
+    if not ok:
+        raise RuntimeError(f"pgvector is not available: {msg}")
 
-    hits = []
-    store = get_store()
-    for score, idx in zip(scores[0], indices[0]):
-        if idx in index_to_meta:
-            uri, start, end = index_to_meta[idx]
-            full_text = store.docs.get(uri, "")
-            if len(full_text) >= end:
-                text = full_text[start:end]
-            else:
-                text = full_text[start:] # Fallback
-            hits.append({"score": float(score), "uri": uri, "text": text})
+    results = pgvector_store.search_chunks(
+        query_embedding=q,
+        k=k,
+        embedding_model=EMBED_MODEL_NAME,
+    )
 
+    hits: List[Dict[str, Any]] = []
+    for row in results:
+        hits.append(
+            {
+                "score": float(row.get("score", 0.0)),
+                "uri": row.get("uri", ""),
+                "text": (row.get("text") or ""),
+            }
+        )
     return hits
 
 
@@ -1063,13 +1101,24 @@ def _build_rag_context(
     candidates = _vector_search(query, k=top_k)
 
     if not candidates:
-        # If we have docs but no vectors, ensure store is synced and force a rebuild once
-        _ensure_store_synced()  # Sync store before checking
+        # No hits can be perfectly normal (query unrelated). Only rebuild if the
+        # vector table is empty for the active embedding model.
+        _ensure_store_synced()
         store = get_store()
         if len(getattr(store, "docs", {})) > 0:
-            logger.info("No vector hits but store has %d docs; rebuilding index and retrying...", len(store.docs))
-            _rebuild_faiss_index()
-            candidates = _vector_search(query, k=top_k)
+            try:
+                stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+                chunks = int(stats.get("chunks", 0) or 0)
+            except Exception:  # pylint: disable=broad-exception-caught
+                chunks = 0
+
+            if chunks <= 0:
+                logger.info(
+                    "No vector hits and pgvector chunks=0 (docs=%d); rebuilding index and retrying...",
+                    len(store.docs),
+                )
+                rebuild_index()
+                candidates = _vector_search(query, k=top_k)
         if not candidates:
             logger.info("No vector hits; refusing to answer from outside sources.")
     # Re-rank to prioritize query overlap
@@ -1182,7 +1231,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
 
         # Try primary endpoint (cloud for auto mode)
         try:
-            resp = sync_completion(**completion_kwargs)  # type: ignore
+            resp = completion(**completion_kwargs)  # type: ignore
             return _normalize_llm_response(resp, sources)
         except (APIConnectionError, Timeout) as exc:  # type: ignore
             # Connection/timeout errors - try fallback if available
@@ -1204,7 +1253,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
                 completion_kwargs["api_base"] = fallback_endpoint
                 completion_kwargs.pop("extra_headers", None)  # Remove headers for local
                 try:
-                    resp = sync_completion(**completion_kwargs)  # type: ignore
+                    resp = completion(**completion_kwargs)  # type: ignore
                     return _normalize_llm_response(resp, sources)
                 except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
                     logger.error("Fallback to local endpoint also failed: %s", fallback_exc)
@@ -1416,7 +1465,7 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         
         # Try primary endpoint
         try:
-            resp = sync_completion(**completion_kwargs)
+            resp = completion(**completion_kwargs)
         except Exception as exc: 
             # Connection/timeout errors - try fallback if available
             if fallback_endpoint:
@@ -1426,7 +1475,7 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
                 )
                 completion_kwargs["api_base"] = fallback_endpoint
                 completion_kwargs.pop("extra_headers", None)
-                resp = sync_completion(**completion_kwargs)
+                resp = completion(**completion_kwargs)
             else:
                 raise
         return _normalize_llm_response(resp, sources)
@@ -1707,7 +1756,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         
         # Try primary endpoint
         try:
-            resp = sync_completion(**completion_kwargs)
+            resp = completion(**completion_kwargs)
         except Exception as exc: 
             # Connection/timeout errors - try fallback if available
             if fallback_endpoint:
@@ -1717,7 +1766,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
                 )
                 completion_kwargs["api_base"] = fallback_endpoint
                 completion_kwargs.pop("extra_headers", None)
-                resp = sync_completion(**completion_kwargs)
+                resp = completion(**completion_kwargs)
             else:
                 raise
 

@@ -48,6 +48,84 @@ VENV_DIR = ROOT_DIR / ".venv"
 STARTED_PROCESSES: List[Tuple[subprocess.Popen, str]] = []
 
 
+def check_docker_compose() -> bool:
+    """Check if Docker and Docker Compose (v2) are available."""
+    try:
+        result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def wait_for_pgvector_healthy(max_wait: int = 180) -> bool:
+    """Wait for the pgvector container healthcheck to report healthy."""
+    container_name = "agentic-rag-pgvector"
+    print_warning("Waiting for pgvector container to become healthy...")
+    for _ in range(max_wait):
+        try:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "inspect",
+                    "-f",
+                    "{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}",
+                    container_name,
+                ],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            return False
+
+        status = (result.stdout or "").strip()
+        if status == "healthy":
+            print_success("pgvector is healthy")
+            return True
+        if status == "unhealthy":
+            print_error("pgvector container is unhealthy")
+            subprocess.run(["docker", "logs", "--tail", "50", container_name])
+            return False
+        time.sleep(1)
+
+    print_error(f"Error: pgvector did not become healthy within {max_wait} seconds")
+    subprocess.run(["docker", "logs", "--tail", "50", container_name])
+    return False
+
+
+def ensure_pgvector_running(env_vars: Dict[str, str]) -> bool:
+    """Ensure the pgvector Postgres container is running via docker compose."""
+    if not check_docker_compose():
+        print_error("Error: Docker + docker compose are required to run pgvector")
+        print_error("Install Docker Desktop (includes Compose v2): https://www.docker.com/products/docker-desktop/")
+        return False
+
+    if not os.environ.get("PGVECTOR_PASSWORD") and not env_vars.get("PGVECTOR_PASSWORD"):
+        print_error("Error: PGVECTOR_PASSWORD is not set")
+        print_error("Set PGVECTOR_PASSWORD in .env (or environment) to start the pgvector container")
+        return False
+
+    (ROOT_DIR / "cache" / "vector").mkdir(parents=True, exist_ok=True)
+
+    print_warning("Starting pgvector (PostgreSQL) container...")
+    try:
+        subprocess.run(
+            ["docker", "compose", "-f", str(ROOT_DIR / "docker-compose.yml"), "up", "-d", "pgvector"],
+            cwd=str(ROOT_DIR),
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to start pgvector container: {e}")
+        return False
+
+    if not wait_for_pgvector_healthy():
+        return False
+
+    # Also verify port is open (helps catch host networking issues)
+    pg_host = env_vars.get("PGVECTOR_HOST", os.environ.get("PGVECTOR_HOST", "127.0.0.1"))
+    pg_port = int(env_vars.get("PGVECTOR_PORT", os.environ.get("PGVECTOR_PORT", "5432")))
+    return wait_for_port(pg_host, pg_port, "pgvector/PostgreSQL", max_wait=60)
+
+
 def print_error(msg: str) -> None:
     """Print error message in red."""
     print(f"{RED}{msg}{RESET}", file=sys.stderr)
@@ -438,7 +516,10 @@ def main():
     if args.role == "server":
         args.skip_ui = True
     elif args.role == "client":
+        # Client role is UI-only: no backend services should start.
         args.skip_ollama = True
+        args.skip_mcp = True
+        args.skip_rest = True
 
     # Propagate skip flags so we can skip launching Ollama without disabling the backend
     if args.skip_ollama:
@@ -448,6 +529,12 @@ def main():
     env_file = ROOT_DIR / args.env
     env_vars = load_env_file(env_file)
     os.environ.update(env_vars)
+
+    # Ensure pgvector is running only when starting backend services.
+    # Client/UI-only runs should not require Docker/pgvector.
+    if (not args.skip_mcp) or (not args.skip_rest):
+        if not ensure_pgvector_running(env_vars):
+            return 1
     
     # Configuration
     ollama_host = env_vars.get("OLLAMA_HOST", "127.0.0.1")

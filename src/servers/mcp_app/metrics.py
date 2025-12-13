@@ -11,7 +11,8 @@ from prometheus_client import (
 from starlette.responses import Response
 
 from src.servers.mcp_app.memory import get_memory_usage, MAX_MEMORY_MB
-from src.core.rag_core import get_store, get_faiss_globals
+from src.core.rag_core import get_store, EMBED_MODEL_NAME
+from src.core import pgvector_store
 from src.servers.mcp_app.memory import get_system_memory_mb
 
 logger = logging.getLogger(__name__)
@@ -135,11 +136,10 @@ def refresh_prometheus_metrics(ollama_base: str):
         logger.debug("Failed to update memory metrics: %s", exc)
 
     try:
-        index, index_to_meta, embed_dim = get_faiss_globals()
-        total_vectors = index.ntotal if index is not None else 0  # type: ignore[attr-defined]
-        MCP_EMBEDDING_VECTORS.set(total_vectors)
-        MCP_EMBEDDING_CHUNKS.set(len(index_to_meta) if index_to_meta is not None else 0)
-        MCP_EMBEDDING_DIM.set(embed_dim or 0)
+        stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+        MCP_EMBEDDING_VECTORS.set(int(stats.get("chunks", 0)))
+        MCP_EMBEDDING_CHUNKS.set(int(stats.get("chunks", 0)))
+        MCP_EMBEDDING_DIM.set(int(stats.get("embedding_dim", 0)))
     except Exception as exc:
         logger.debug("Failed to update embedding metrics: %s", exc)
 

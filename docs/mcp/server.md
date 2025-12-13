@@ -84,7 +84,7 @@ src/servers/mcp_server.py
 
 **Search Process**:
 1. Embed query using sentence transformer
-2. Search FAISS index for similar vectors
+2. Search pgvector index for similar vectors
 3. Retrieve full text passages
 4. Generate answer using LiteLLM
 5. Return formatted response
@@ -132,7 +132,7 @@ src/servers/mcp_server.py
 
 ### Initialization and Background Indexing
 
-To ensure the server starts up immediately and remains responsive, the FAISS index rebuilding process runs in a background thread upon startup.
+To ensure the server starts up immediately and remains responsive, the pgvector index rebuilding process runs in a background thread upon startup.
 
 - **Non-blocking Startup**: The server accepts connections immediately.
 - **Background Loading**: The `_background_load_store` method handles loading the document store and rebuilding the vector index asynchronously.
@@ -189,7 +189,7 @@ The MCP server integrates with the core RAG system:
 - Memory limits prevent system instability
 
 ### Search Optimization
-- FAISS provides fast vector similarity search
+- pgvector provides fast vector similarity search
 - Configurable top-k limits result sizes
 - Embedding caching reduces redundant computations
 - Batch processing for multiple documents

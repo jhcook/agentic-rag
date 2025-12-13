@@ -112,7 +112,12 @@ def check_cursor_rules_exist():
     """Verify cursor rules files exist."""
     print("\n🔍 Checking cursor rules files...")
     rules_dir = PROJECT_ROOT / ".cursor" / "rules"
-    required_files = ["main.mdc", "test.mdc", "documentation.mdc", "colours.mdc"]
+    required_files = [
+        "commit-workflow.mdc",
+        "global-compliance-requirements.mdc",
+        "lean-code.mdc",
+        "the-team.mdc",
+    ]
     
     missing = []
     for file in required_files:

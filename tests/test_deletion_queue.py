@@ -3,7 +3,7 @@ import time
 from src.core.factory import OllamaBackend
 
 
-def test_deletion_queue():
+def test_deletion_queue(require_pgvector):
     """Test that deletions are queued and processed atomically."""
     backend = OllamaBackend()
     
@@ -50,7 +50,7 @@ def test_deletion_queue():
     assert len(final_docs) == 0
 
 
-def test_deletion_status_empty():
+def test_deletion_status_empty(require_pgvector):
     """Test deletion status when queue is empty."""
     backend = OllamaBackend()
     status = backend.get_deletion_status()

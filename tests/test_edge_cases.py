@@ -2,7 +2,7 @@ import pytest
 from src.core.rag_core import _extract_text_from_file, upsert_document, get_store
 import pathlib
 
-def test_empty_doc_upsert():
+def test_empty_doc_upsert(require_pgvector):
     upsert_document("empty.txt", "")
     assert get_store().docs["empty.txt"] == ""
 

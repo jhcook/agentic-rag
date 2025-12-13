@@ -2,7 +2,7 @@
 
 ## Overview
 
-The OpenAI Assistants backend provides GPT-4 quality reasoning while keeping your documents **completely local**. Unlike other cloud RAG solutions, this uses a **function calling bridge**: OpenAI orchestrates the conversation, but all document data stays in your local FAISS index.
+The OpenAI Assistants backend provides GPT-4 quality reasoning while keeping your documents **completely local**. Unlike other cloud RAG solutions, this uses a **function calling bridge**: OpenAI orchestrates the conversation, but all document data stays in your local pgvector-backed index.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ The OpenAI Assistants backend provides GPT-4 quality reasoning while keeping you
                         │
                         ▼
             ┌───────────────────────────────┐
-            │   Local FAISS Index           │
+            │   Local pgvector Index        │
             │  - Your documents             │
             │  - Never uploaded to cloud    │
             │  - Instant search             │
@@ -57,7 +57,7 @@ The OpenAI Assistants backend provides GPT-4 quality reasoning while keeping you
 - **Local Privacy**: Documents never uploaded to OpenAI, only queries and results
 - **Automatic Citations**: OpenAI Assistant adds inline [1], [2] markers and sources
 - **Function Orchestration**: Assistant decides when/how to search automatically
-- **No File Upload**: Uses your existing FAISS index, no migration needed
+- **No File Upload**: Uses your existing local pgvector index
 - **Conversation Context**: Assistant manages multi-turn conversations naturally
 
 ### ❌ What You Don't Get (vs Google Vertex AI)
@@ -106,7 +106,7 @@ OPENAI_API_KEY=sk-...
 ### 3. Index Documents Locally
 
 ```bash
-# Index your documents into local FAISS
+# Index your documents into local pgvector
 python -c "from src.core import rag_core; rag_core.index_path('./docs')"
 ```
 
@@ -252,7 +252,7 @@ The assistant is saved and reused across sessions (unless you change the instruc
    return json.dumps({"passages": [...], "total": 5})
    ```
 
-5. **Assistant receives results**: 5 passages from local FAISS
+5. **Assistant receives results**: 5 passages from the local pgvector index
 
 6. **Assistant synthesizes answer**: Uses GPT-4 to create coherent response with citations
 
@@ -434,7 +434,7 @@ No re-indexing needed!
 
 ### From Google Vertex AI
 
-1. Documents in local FAISS work as-is
+1. Documents in the local pgvector index work as-is
 2. Lose Drive/Gmail OAuth features
 3. Keep google_gemini mode if needed
 4. Set `RAG_MODE=openai_assistants`

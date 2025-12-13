@@ -4,7 +4,7 @@ Test script for OpenAI Assistants backend with local search function calling.
 
 Prerequisites:
 1. Set OPENAI_API_KEY in .env
-2. Have some documents indexed in local FAISS
+2. Have some documents indexed in local pgvector
 3. Set RAG_MODE=openai_assistants in .env
 
 Usage:

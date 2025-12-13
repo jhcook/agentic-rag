@@ -9,7 +9,7 @@ os.environ["RAG_PORT"] = "8001"
 os.environ["RAG_PATH"] = "api"
 
 # Mock heavy dependencies before importing rest_server
-# This prevents the actual backend from initializing (which loads models, FAISS, etc.)
+# This prevents the actual backend from initializing (which loads models, etc.)
 patcher_factory = patch("src.core.factory.get_rag_backend")
 mock_get_backend = patcher_factory.start()
 mock_backend_instance = MagicMock()

@@ -195,7 +195,7 @@ class OllamaBackend:
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
         self._check_core()
-        ollama_core.rebuild_faiss_index()
+        ollama_core.rebuild_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages by relevance."""
@@ -231,7 +231,17 @@ class OllamaBackend:
                             deleted += 1
 
                     ollama_core.save_store()
-                    ollama_core.rebuild_faiss_index()
+                    try:
+                        ollama_core.pgvector_store.delete_documents(
+                            uris,
+                            embedding_model=ollama_core.EMBED_MODEL_NAME,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-exception-caught
+                        try:
+                            msg = ollama_core.pgvector_store.redact_error_message(str(exc))
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            msg = "pgvector delete_documents failed"
+                        logger.warning("pgvector delete_documents failed: %s", msg)
 
                     with self._deletion_lock:
                         self._deletion_status["processing"] = False
@@ -279,6 +289,14 @@ class OllamaBackend:
     def flush_cache(self) -> Dict[str, Any]:
         """Clear the document cache."""
         self._check_core()
+        try:
+            ollama_core.pgvector_store.wipe_all()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            try:
+                msg = ollama_core.pgvector_store.redact_error_message(str(exc))
+            except Exception:  # pylint: disable=broad-exception-caught
+                msg = "pgvector wipe_all failed"
+            logger.warning("pgvector wipe_all failed: %s", msg)
         store = ollama_core.get_store()
         store.docs.clear()
         removed = False
@@ -289,16 +307,21 @@ class OllamaBackend:
             except OSError:
                 removed = False
         ollama_core.save_store()
-        ollama_core.rebuild_faiss_index()
         return {"status": "flushed", "db_removed": removed, "documents": 0}
 
     def get_stats(self) -> Dict[str, Any]:
         """Get system statistics."""
         self._check_core()
         store = ollama_core.get_store()
-        index, _, _ = ollama_core.get_faiss_globals()
         docs = len(getattr(store, "docs", {}))
-        vectors = index.ntotal if index is not None else 0
+        try:
+            vectors = int(
+                ollama_core.pgvector_store.stats(embedding_model=ollama_core.EMBED_MODEL_NAME).get(
+                    "chunks", 0
+                )
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
+            vectors = 0
 
         # Calculate total size of indexed text
         total_size_bytes = sum(len(text.encode('utf-8')) for text in store.docs.values())

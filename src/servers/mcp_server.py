@@ -50,6 +50,9 @@ from src.core.rag_core import (
 )
 from src.core.extractors import extract_text_from_file
 
+# Backwards compatibility for tests that patch this symbol.
+_extract_text_from_file = extract_text_from_file
+
 from src.servers.mcp_app.logging_config import (
     configure_logging,
     AccessLogMiddleware,
@@ -142,7 +145,7 @@ def _background_load_store():
     try:
         # Load store and rebuild index in background
         backend.load_store()
-        backend.rebuild_index()
+        # load_store() performs a pgvector stats check and rebuilds only if needed.
         refresh_prometheus_metrics(OLLAMA_API_BASE)
         store_loaded = True
         logger.info("Background store load and index rebuild complete")
@@ -250,7 +253,7 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
                         "upserted": False
                     }
                 try:
-                    content = extract_text_from_file(file_path)
+                    content = _extract_text_from_file(file_path)
                     if not content:
                         return {
                             "error": f"No text extracted from {normalized_uri}",
@@ -368,7 +371,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
         indexed_uris = []
         for file_path in files:
             try:
-                content = extract_text_from_file(file_path)
+                content = _extract_text_from_file(file_path)
                 if not content:
                     logger.warning("No text extracted from %s, skipping", file_path)
                     continue
@@ -446,7 +449,7 @@ def index_url_tool(
             return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
 
         # Pass URL directly as string to extract_text_from_file
-        content = extract_text_from_file(url)
+        content = _extract_text_from_file(url)
 
         if not content:
             logger.warning("No text extracted from URL %s", url)

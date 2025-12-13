@@ -33,7 +33,7 @@ This configuration enables the "Native RAG" mode, bypassing the local vector sto
 
 ## How it Works
 
--   **Search**: Instead of searching a local FAISS index, the system searches your Google Drive files using the Drive API.
+-   **Search**: Instead of searching the local pgvector index, the system searches your Google Drive files using the Drive API.
 -   **Grounded Answer**:
     1.  Retrieves the full text of relevant documents from Drive.
     2.  Passes the *entire* content to Gemini 1.5 Pro.

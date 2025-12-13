@@ -402,7 +402,7 @@ export function MetricsDashboard({ config }: { config: OllamaConfig }) {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{vectorCount}</div>
-            <p className="text-xs text-muted-foreground mt-1">FAISS index total vectors</p>
+            <p className="text-xs text-muted-foreground mt-1">pgvector index total vectors</p>
             <div className="mt-2">
               <Badge variant="secondary" className="text-xs">
                 {healthData ? 'Healthy' : 'Unknown'}

@@ -55,7 +55,8 @@ export function ChatInterface({
   setMessages,
   onNewConversation,
   onDeleteConversation,
-  activeConversationId
+  activeConversationId,
+  onSessionId
 }: { 
   config: any
   messages: Message[]
@@ -63,6 +64,7 @@ export function ChatInterface({
   onNewConversation?: () => void
   onDeleteConversation?: (id: string) => void
   activeConversationId?: string | null
+  onSessionId?: (sessionId: string) => void
 }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -73,10 +75,31 @@ export function ChatInterface({
   const viewportRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const shouldAutoScrollRef = useRef(true)
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' })
+  }
+
   useEffect(() => {
-    if (viewportRef.current) {
-      viewportRef.current.scrollTop = viewportRef.current.scrollHeight
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const onScroll = () => {
+      const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+      shouldAutoScrollRef.current = distanceFromBottom < 48
     }
+
+    viewport.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => viewport.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return
+    // Wait for DOM to paint new messages before scrolling
+    requestAnimationFrame(() => scrollToBottom('auto'))
   }, [messages, loading])
 
   // Set default for history based on model
@@ -123,6 +146,7 @@ export function ChatInterface({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
+          session_id: activeConversationId || undefined,
           model: selectedModel || config?.model || undefined,
           temperature: config?.temperature ? parseFloat(config.temperature) : undefined,
           config: {
@@ -145,6 +169,10 @@ export function ChatInterface({
       }
       
       const data = await res.json()
+
+      if (data.session_id && data.session_id !== activeConversationId) {
+        onSessionId?.(String(data.session_id))
+      }
       
       if (data.error) {
         let content = `Error: ${data.error}`
@@ -267,7 +295,7 @@ export function ChatInterface({
   }
 
   return (
-    <div className="flex flex-col h-[600px] border rounded-lg bg-background">
+    <div className="flex flex-col h-full min-h-0 border rounded-lg bg-background">
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
         <div className="text-sm font-medium text-muted-foreground">Conversation</div>
         <div className="flex items-center gap-2">
@@ -293,8 +321,8 @@ export function ChatInterface({
           <ModelSelector config={config} onModelSelect={setSelectedModel} />
         </div>
       </div>
-      <ScrollArea className="flex-1 p-4" ref={scrollRef} viewportRef={viewportRef}>
-        <div className="space-y-4">
+      <ScrollArea className="flex-1 min-h-0" ref={scrollRef} viewportRef={viewportRef}>
+        <div className="p-4 space-y-4">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[400px] text-muted-foreground opacity-50">
               <Bot className="h-12 w-12 mb-2" />
@@ -366,6 +394,7 @@ export function ChatInterface({
               </div>
             </div>
           )}
+          <div ref={bottomRef} />
         </div>
       </ScrollArea>
       <div className="p-4 border-t bg-card">

@@ -6,6 +6,10 @@
 
 set -euo pipefail
 
+# Ensure we run from repo root (so docker compose and relative paths work)
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$ROOT_DIR"
+
 # Deactivate inherited virtual environment to prevent conflicts during recreation
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
     # Remove VIRTUAL_ENV/bin from PATH
@@ -162,8 +166,8 @@ OPTIONS:
 
     --skip-ollama
         Do not start Ollama locally
-        Useful when using only OpenAI Assistants or Google Gemini backends
-        Note: MCP server will still start (required for OpenAI Assistants)
+        Useful when using Ollama Cloud or an external Ollama endpoint
+        Note: This does NOT disable the Ollama backend (needed for Ollama Cloud)
 
     --skip-ui
         Do not start the UI dev server
@@ -366,8 +370,10 @@ case $ROLE in
         START_UI=false
         ;;
     client)
-        # Disable Ollama for client-only runs, but keep MCP for FAISS
+        # Client role is UI-only (no backend services).
         SKIP_OLLAMA=true
+        START_MCP=false
+        START_REST=false
         ;;
     *)
         echo -e "${RED}Error: Unknown role '$ROLE'. Valid roles: monolith, server, client${NC}"
@@ -389,10 +395,11 @@ else
     echo -e "${YELLOW}Warning: $ENV_FILE file not found, using defaults${NC}"
 fi
 
-# Respect skip-Ollama toggles for downstream processes
+# Respect skip-Ollama toggles for downstream processes.
+# Important: --skip-ollama means "don't start a local Ollama process".
+# It must NOT disable the Ollama backend, otherwise Ollama Cloud cannot be used.
 if [[ "$SKIP_OLLAMA" == true ]]; then
     export SKIP_OLLAMA=1
-    export DISABLE_OLLAMA_BACKEND=1
 fi
 
 ARCH_NAME=$(uname -m)
@@ -409,8 +416,14 @@ RAG_PORT=${RAG_PORT:-${REST_PORT:-8001}}
 UI_HOST=${UI_HOST:-0.0.0.0}
 UI_PORT=${UI_PORT:-5173}
 
+# Pgvector/PostgreSQL (Docker Compose)
+PGVECTOR_HOST=${PGVECTOR_HOST:-127.0.0.1}
+PGVECTOR_PORT=${PGVECTOR_PORT:-5432}
+PGVECTOR_DB=${PGVECTOR_DB:-agentic_rag}
+PGVECTOR_USER=${PGVECTOR_USER:-agenticrag}
+
 # Intel/MKL Optimizations
-# Required for FAISS/NumPy on some systems to prevent crashes and optimize performance
+# Required for NumPy on some systems to prevent crashes and optimize performance
 export KMP_DUPLICATE_LIB_OK=TRUE
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -476,6 +489,60 @@ echo ""
 # Check requirements
 echo -e "${YELLOW}Checking requirements...${NC}"
 
+# Docker + pgvector are only required when starting backend services.
+if [[ "$START_MCP" == true || "$START_REST" == true ]]; then
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Error: docker not found${NC}"
+        echo "Docker is required to run the pgvector PostgreSQL container."
+        echo "Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        exit 1
+    fi
+
+    if ! docker compose version &> /dev/null; then
+        echo -e "${RED}Error: docker compose not available${NC}"
+        echo "Docker Compose (v2) is required."
+        echo "If you're using Docker Desktop, it should be included."
+        exit 1
+    fi
+
+    if [[ -z "${PGVECTOR_PASSWORD:-}" ]]; then
+        echo -e "${RED}Error: PGVECTOR_PASSWORD is not set${NC}"
+        echo "Set PGVECTOR_PASSWORD in $ENV_FILE to start the pgvector container."
+        exit 1
+    fi
+
+    mkdir -p cache/vector
+
+    echo -e "${YELLOW}Starting pgvector (PostgreSQL) container...${NC}"
+    docker compose -f "$ROOT_DIR/docker-compose.yml" up -d pgvector
+
+    echo -e "${YELLOW}Waiting for pgvector to become healthy...${NC}"
+    max_wait_pg=60
+    count_pg=0
+    while [[ $count_pg -lt $max_wait_pg ]]; do
+        status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}nohealth{{end}}' agentic-rag-pgvector 2>/dev/null || echo "missing")
+        if [[ "$status" == "healthy" ]]; then
+            echo -e "${GREEN}✓ pgvector is healthy${NC}"
+            break
+        fi
+        if [[ "$status" == "unhealthy" ]]; then
+            echo -e "${RED}Error: pgvector container is unhealthy${NC}"
+            docker logs --tail 50 agentic-rag-pgvector 2>/dev/null || true
+            exit 1
+        fi
+        sleep 1
+        count_pg=$((count_pg + 1))
+    done
+
+    if [[ $count_pg -ge $max_wait_pg ]]; then
+        echo -e "${RED}Error: pgvector did not become healthy within ${max_wait_pg}s${NC}"
+        docker logs --tail 50 agentic-rag-pgvector 2>/dev/null || true
+        exit 1
+    fi
+else
+    echo -e "${GREEN}Skipping pgvector startup (client-only / no backend services)${NC}"
+fi
+
 # Check Python version
 if ! command -v "$PYTHON_CMD" &> /dev/null; then
     echo -e "${RED}Error: $PYTHON_CMD not found${NC}"
@@ -531,7 +598,7 @@ else
     fi
 fi
 
-# Check for libomp on macOS (required for FAISS/Torch)
+# Check for libomp on macOS (often required by Torch)
 if [[ "$(uname -s)" == "Darwin" ]]; then
     if brew list libomp &>/dev/null; then
         echo "✓ libomp: found (via brew)"
@@ -540,7 +607,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         if [[ -f "/opt/homebrew/opt/libomp/lib/libomp.dylib" ]] || [[ -f "/usr/local/opt/libomp/lib/libomp.dylib" ]]; then
              echo "✓ libomp: found (manual check)"
         else
-            echo -e "${YELLOW}Warning: libomp not found. This is required for FAISS/Torch on macOS.${NC}"
+            echo -e "${YELLOW}Warning: libomp not found. This may be required for Torch on macOS.${NC}"
             echo -e "${YELLOW}Attempting to install via Homebrew...${NC}"
             if command -v brew &>/dev/null; then
                 if brew install libomp; then

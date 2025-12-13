@@ -1,50 +1,6 @@
 import json
-import sys
 import tempfile
-import types
 from pathlib import Path
-
-class _FakeStoreModel:
-    """Minimal stand-in for rag_core.Store."""
-
-    def __init__(self):
-        self.docs = {}
-
-
-_FAKE_STORE = _FakeStoreModel()
-
-
-def _noop(*_, **__):
-    return {}
-
-
-def _get_store():
-    return _FAKE_STORE
-
-
-def _get_faiss_globals():
-    return (types.SimpleNamespace(ntotal=0), None, None)
-
-
-_fake_rag_core = types.SimpleNamespace(
-    OLLAMA_API_BASE="http://127.0.0.1:11434",
-    resolve_input_path=lambda path: Path(path),
-    upsert_document=_noop,
-    search=_noop,
-    load_store=lambda: True,
-    save_store=lambda: True,
-    ensure_store_synced=lambda: True,
-    get_store=_get_store,
-    rebuild_faiss_index=lambda: None,
-    rerank=_noop,
-    verify_grounding=_noop,
-    get_faiss_globals=_get_faiss_globals,
-    Store=_FakeStoreModel,
-    DB_PATH=str(Path(tempfile.gettempdir()) / "rag_store.jsonl"),
-    should_skip_uri=lambda *_args, **_kwargs: False,
-)
-
-sys.modules.setdefault("src.core.rag_core", _fake_rag_core)
 
 from src.core import factory
 

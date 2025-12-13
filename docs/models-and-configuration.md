@@ -172,7 +172,7 @@ def get_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2", ...
 def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
     embedder = get_embedder()
     query_emb = embedder.encode(query, normalize_embeddings=True, convert_to_numpy=True)
-    # Search FAISS index for similar vectors
+    # Search pgvector index for similar vectors
 ```
 
 **Document Indexing**:
@@ -182,7 +182,7 @@ def _rebuild_faiss_index():
     for uri, text in _STORE.docs.items():
         chunks = _chunk_text(text)
         embeddings = embedder.encode(chunks, normalize_embeddings=True)
-        index.add(embeddings)  # Add to FAISS vector database
+        # Vectors are written to pgvector during indexing
 ```
 
 ## Primary LLM Model (`LLM_MODEL_NAME`)
@@ -331,12 +331,12 @@ For retrieval-augmented generation, low temperature (0.1) ensures responses stay
 1. **Text Extraction**: Documents are parsed from various formats (PDF, DOCX, HTML, TXT)
 2. **Chunking**: Text is split into overlapping chunks (800 chars, 120 char overlap)
 3. **Embedding**: Each chunk is converted to a 384-dimensional vector using `EMBED_MODEL_NAME`
-4. **Storage**: Vectors are stored in FAISS index with metadata linking back to source documents
+4. **Storage**: Vectors are stored in pgvector with metadata linking back to source documents
 
 ### Query Processing Pipeline
 
 1. **Query Embedding**: User query is converted to vector using same embedding model
-2. **Vector Search**: FAISS finds most similar document chunks (top-k results)
+2. **Vector Search**: pgvector finds the most similar document chunks (top-k results)
 3. **Context Assembly**: Retrieved chunks are assembled into context (max 4000 chars)
 4. **Answer Generation**: `LLM_MODEL_NAME` generates response using only the retrieved context
 5. **Response**: Grounded answer based on indexed documents
@@ -385,7 +385,7 @@ For retrieval-augmented generation, low temperature (0.1) ensures responses stay
 
 **Empty Search Results**:
 - Verify documents have been indexed: check `cache/rag_store.jsonl`
-- Confirm FAISS index exists and has vectors
+- Confirm pgvector is running and has vectors
 - Check debug logs for embedding failures
 
 ## Google Backend Configuration

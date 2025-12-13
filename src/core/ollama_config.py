@@ -251,6 +251,32 @@ def get_requests_ca_bundle() -> Optional[str]:
     return ca_bundle or None
 
 
+def get_configured_ca_bundle() -> str:
+    """Return the configured CA bundle path without checking file existence.
+
+    This is intended for surfacing stored configuration back to a UI. Runtime
+    TLS verification should continue to use `get_requests_ca_bundle()`.
+    """
+    settings = _read_settings_file()
+    ca_bundle = settings.get("ollamaCloudCABundle")
+
+    if not ca_bundle:
+        secrets = _read_ollama_cloud_secrets()
+        ca_bundle = secrets.get("ca_bundle")
+
+    if not ca_bundle:
+        ca_bundle = os.getenv("REQUESTS_CA_BUNDLE")
+
+    ca_bundle = ca_bundle.strip() if ca_bundle else ""
+    if not ca_bundle:
+        return ""
+
+    if not os.path.isabs(ca_bundle):
+        ca_bundle = str(BASE_DIR / ca_bundle)
+
+    return ca_bundle
+
+
 def get_ollama_cloud_endpoint() -> str:
     """
     Get Ollama Cloud endpoint from settings, secrets file, or environment variable.

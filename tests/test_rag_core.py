@@ -72,7 +72,7 @@ def test_save_and_load_store(temp_db_path, monkeypatch):
         f"Expected 'test.txt' in {list(rag_core._STORE.docs.keys())}")  # pylint: disable=protected-access
     assert rag_core._STORE.docs["test.txt"] == test_content  # pylint: disable=protected-access
 
-def test_upsert_document(temp_db_path, monkeypatch):
+def test_upsert_document(temp_db_path, monkeypatch, require_pgvector):
     """Test document upsert with proper store reset."""
     monkeypatch.setattr("src.core.rag_core.DB_PATH", temp_db_path)
 
@@ -91,7 +91,7 @@ def test_upsert_document(temp_db_path, monkeypatch):
     assert rag_core._STORE.docs["test_doc.txt"] == test_content  # pylint: disable=protected-access
 
 
-def test_index_path(tmp_path):
+def test_index_path(tmp_path, require_pgvector):
     """Test indexing a directory path."""
     # Create temporary directory with test files
     (tmp_path / "test1.txt").write_text("Content 1")
@@ -100,7 +100,7 @@ def test_index_path(tmp_path):
     result = index_path(str(tmp_path))
     assert result["indexed"] == 2
 
-def test_search():
+def test_search(require_pgvector):
     """Test search functionality."""
     # Clear the store first
     from src.core.rag_core import _STORE  # pylint: disable=import-outside-toplevel
@@ -146,7 +146,7 @@ def test_synthesize_answer():
     assert "citations" in result
 
 
-def test_grounded_answer():
+def test_grounded_answer(require_pgvector):
     """Test grounded answer generation."""
     import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
     rag_core._STORE = Store()  # pylint: disable=protected-access

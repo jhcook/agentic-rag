@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 import time
 from pathlib import Path
+import warnings
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
@@ -38,7 +39,7 @@ def update_logging_level(debug_mode: bool):
     logging.getLogger("src.core").setLevel(log_level)
     logging.getLogger("src.core.rag_core").setLevel(log_level)
     logging.getLogger("src.core.factory").setLevel(log_level)
-    logging.getLogger("src.core.faiss_index").setLevel(log_level)
+    logging.getLogger("src.core.pgvector_store").setLevel(log_level)
     logging.getLogger("src.core.indexer").setLevel(log_level)
     logging.getLogger("src.core.extractors").setLevel(log_level)
     logging.getLogger("src.servers").setLevel(log_level)
@@ -79,6 +80,13 @@ def configure_logging():
             logging.StreamHandler(),
         ],
     )
+
+    # Route warnings through logging so they also include timestamps.
+    logging.captureWarnings(True)
+    warnings.simplefilter("default")
+    _warnings_logger = logging.getLogger("py.warnings")
+    _warnings_logger.handlers.clear()
+    _warnings_logger.propagate = True
     logger = logging.getLogger(__name__)
     logger.setLevel(initial_level)
     

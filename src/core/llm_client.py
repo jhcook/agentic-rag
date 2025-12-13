@@ -6,6 +6,8 @@ import os
 import logging
 import asyncio
 import threading
+import ssl
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
@@ -20,6 +22,9 @@ from src.core.ollama_config import (
     get_ollama_endpoint,
     get_ollama_client_headers,
     get_ollama_api_key,
+    get_ollama_mode,
+    get_ollama_cloud_proxy,
+    get_requests_ca_bundle,
 )
 from src.core.config_paths import get_ca_bundle_path
 
@@ -43,6 +48,43 @@ reload_llm_config()
 
 logger = logging.getLogger(__name__)
 
+
+def _get_settings_model_name() -> Optional[str]:
+    """Return the configured model from config/settings.json if present."""
+    try:
+        from src.core.config_paths import SETTINGS_PATH
+
+        if not SETTINGS_PATH.exists():
+            return None
+
+        # Local import to avoid adding a global dependency on json.
+        import json  # pylint: disable=import-outside-toplevel
+
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+
+        model = settings.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+    return None
+
+
+def _get_default_model_name() -> str:
+    """Resolve default model name with correct precedence (settings > env)."""
+    return _get_settings_model_name() or os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
+
+
+def _get_default_async_model_name() -> str:
+    """Resolve default async model name with correct precedence (settings > env)."""
+    # If settings defines a model, use it for both sync and async.
+    configured = _get_settings_model_name()
+    if configured:
+        return configured
+    return os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
+
 def _redact_text(text: str) -> str:
     """Redact API key from text."""
     api_key = get_ollama_api_key()
@@ -56,8 +98,9 @@ def _get_ollama_api_base() -> str:
     """Get Ollama API base URL based on current mode."""
     return get_ollama_endpoint()
 
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
-ASYNC_LLM_MODEL_NAME = os.getenv("ASYNC_LLM_MODEL_NAME", "llama3.2:1b")
+# Defaults are resolved dynamically (settings > env) to support runtime config changes.
+LLM_MODEL_NAME = _get_default_model_name()
+ASYNC_LLM_MODEL_NAME = _get_default_async_model_name()
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "300"))
 LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "1"))
@@ -70,8 +113,8 @@ def get_llm_config() -> Dict[str, Any]:
     """Return current LLM configuration."""
     return {
         "api_base": _get_ollama_api_base(),
-        "model": LLM_MODEL_NAME,
-        "async_model": ASYNC_LLM_MODEL_NAME,
+        "model": _get_default_model_name(),
+        "async_model": _get_default_async_model_name(),
         "temperature": LLM_TEMPERATURE,
         "timeout": LLM_TIMEOUT,
         "max_concurrency": LLM_MAX_CONCURRENCY,
@@ -123,13 +166,58 @@ def _get_chat_model(
     if api_base and api_base.endswith("/"):
         api_base = api_base[:-1]
 
-    # Configure httpx to use CA bundle via environment variable
-    # httpx respects SSL_CERT_FILE which we set in reload_llm_config()
-    ca_bundle = get_ca_bundle_path()
+    # --- Transport config (proxy/TLS) ---
+    # For cloud mode, be explicit about proxy + CA bundle. This avoids relying on
+    # ambient env vars (which can break local mode) and improves reliability.
+    mode = None
+    try:
+        mode = get_ollama_mode()
+    except Exception:  # pylint: disable=broad-exception-caught
+        mode = None
+
+    is_https = bool(api_base and api_base.startswith("https://"))
+    is_cloud_like = is_https or (mode in ("cloud", "auto"))
+
+    proxy_url: Optional[str] = None
+    if is_cloud_like:
+        try:
+            proxy_url = get_ollama_cloud_proxy()
+        except Exception:  # pylint: disable=broad-exception-caught
+            proxy_url = None
+
+    # CA bundle: prefer cloud-specific resolver, fall back to shared config.
+    ca_bundle: Optional[str] = None
+    try:
+        ca_bundle = get_requests_ca_bundle() or get_ca_bundle_path()
+    except Exception:  # pylint: disable=broad-exception-caught
+        ca_bundle = get_ca_bundle_path()
+
+    verify: bool | ssl.SSLContext = True
     if ca_bundle:
-        logger.debug(f"Using CA bundle from environment: {ca_bundle}")
-        # SSL_CERT_FILE is already set in reload_llm_config()
-        # httpx will use it automatically
+        try:
+            ca_path = Path(ca_bundle)
+            # Resolve relative CA bundle paths against repo root.
+            if not ca_path.is_absolute():
+                ca_path = (Path(__file__).resolve().parents[2] / ca_path).resolve()
+            if ca_path.is_file():
+                verify = ssl.create_default_context(cafile=str(ca_path))
+                logger.debug("Using CA bundle for HTTP client: %s", str(ca_path))
+        except Exception:  # pylint: disable=broad-exception-caught
+            verify = True
+
+    # Build kwargs for httpx clients used internally by langchain-ollama.
+    # httpx 0.28 uses `proxy=` (not `proxies=`).
+    base_client_kwargs: dict = {
+        "trust_env": False,
+        "verify": verify,
+    }
+    if proxy_url and is_https:
+        base_client_kwargs["proxy"] = proxy_url
+
+    # Disable streaming for cloud-like endpoints. Some proxies/servers will
+    # disconnect early on streaming responses, surfacing as "Server disconnected".
+    if "disable_streaming" not in kwargs and is_cloud_like:
+        kwargs["disable_streaming"] = True
 
     return ChatOllama(
         model=model,
@@ -137,6 +225,8 @@ def _get_chat_model(
         temperature=temperature,
         timeout=timeout,
         headers=extra_headers if extra_headers else None,
+        async_client_kwargs=base_client_kwargs,
+        sync_client_kwargs=base_client_kwargs,
         **kwargs
     )
 
@@ -157,7 +247,7 @@ async def safe_completion(
             messages = [{"role": "system", "content": system_prompt}] + messages
 
     # Handle model override
-    model = kwargs.pop("model", LLM_MODEL_NAME)
+    model = kwargs.pop("model", _get_default_model_name())
     api_base = kwargs.pop("api_base", _get_ollama_api_base())
     temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
     timeout = kwargs.pop("timeout", LLM_TIMEOUT)
@@ -207,7 +297,7 @@ async def safe_chat(
                 raise ValueError("Either 'messages' or 'query' must be provided")
             messages = [{"content": str(text), "role": "user"} for text in query]
 
-        model_name = model or ASYNC_LLM_MODEL_NAME
+        model_name = model or _get_default_async_model_name()
         api_base = kwargs.pop("api_base", _get_ollama_api_base())
         temperature = kwargs.pop("temperature", LLM_TEMPERATURE)
         timeout = kwargs.pop("timeout", LLM_TIMEOUT)

@@ -11,6 +11,7 @@ import re
 import sys
 import json
 import logging
+import warnings
 import time
 import socket
 import signal
@@ -21,6 +22,8 @@ import asyncio
 import uuid
 import inspect
 import stat
+import hmac
+from ipaddress import ip_address
 from pathlib import Path
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Callable, Tuple
@@ -28,7 +31,7 @@ from contextlib import asynccontextmanager
 
 import psutil
 import requests
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Form, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Form, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
@@ -59,6 +62,7 @@ from src.core.google_auth import GoogleAuthManager
 from src.core.extractors import extract_text_from_bytes
 from src.core import rag_core
 from src.core.rag_core import verify_grounding_simple
+from src.core import pgvector_store
 from src.core.config_paths import (
     CONFIG_DIR,
     SETTINGS_PATH,
@@ -70,6 +74,16 @@ from src.core.ollama_config import (
     get_ollama_mode,
     get_ollama_api_key,
 )
+
+
+class PgvectorConfigModel(BaseModel):
+    """Request model for pgvector connection configuration."""
+
+    host: str = "127.0.0.1"
+    port: int = 5432
+    dbname: str = "agentic_rag"
+    user: str = "agenticrag"
+    password: Optional[str] = None
 
 # Set up logging
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "log"
@@ -107,6 +121,21 @@ for h in list(root_logger.handlers):
 root_logger.setLevel(_initial_log_level)
 for h in log_handlers:
     root_logger.addHandler(h)
+
+# Ensure warnings are logged (with timestamps) instead of being printed raw.
+logging.captureWarnings(True)
+warnings.simplefilter("default")
+_warnings_logger = logging.getLogger("py.warnings")
+_warnings_logger.handlers.clear()
+_warnings_logger.propagate = True
+
+# Ensure uvicorn logs (startup/errors) are emitted via our root handlers so they
+# also include timestamps in log/rest_server.log.
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _uv_logger = logging.getLogger(_name)
+    _uv_logger.handlers.clear()
+    _uv_logger.propagate = True
+    _uv_logger.setLevel(_initial_log_level)
 root_logger.propagate = False
 
 logger = logging.getLogger(__name__)
@@ -167,7 +196,7 @@ def update_logging_level(debug_mode: bool):
     logging.getLogger("src.core").setLevel(log_level)
     logging.getLogger("src.core.rag_core").setLevel(log_level)
     logging.getLogger("src.core.factory").setLevel(log_level)
-    logging.getLogger("src.core.faiss_index").setLevel(log_level)
+    logging.getLogger("src.core.pgvector_store").setLevel(log_level)
     
     # Update server loggers
     logging.getLogger("src.servers").setLevel(log_level)
@@ -276,6 +305,169 @@ def _redact_error_message(message: str, *secrets: Optional[str]) -> str:
     for secret in secrets:
         redacted = _redact_api_key(redacted, secret)
     return redacted
+
+
+def _redact_pgvector_error_message(message: str, *secrets: Optional[str]) -> str:
+    """Redact pgvector/Postgres connection secrets from messages.
+
+    This is defensive: psycopg/pgvector errors can include conninfo/DSNs with passwords.
+    """
+
+    redacted = _redact_error_message(message, *secrets)
+    # Mask conninfo fragments like: password=... or postgresql://user:pass@host
+    redacted = re.sub(r"(password=)\S+", r"\1***MASKED***", redacted)
+    redacted = re.sub(r"(postgres(?:ql)?://[^:\s]+:)[^@\s]+@", r"\1***MASKED***@", redacted)
+    redacted = re.sub(r"(POSTGRES_PASSWORD\s*[:=]\s*)\S+", r"\1***MASKED***", redacted, flags=re.IGNORECASE)
+    return redacted
+
+
+def _get_bool_setting(env_key: str, json_key: str, default: bool) -> bool:
+    """Read a boolean from env or settings.json (app_config)."""
+
+    raw = os.getenv(env_key)
+    if raw is None and isinstance(app_config, dict):
+        raw = app_config.get(json_key)
+
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_str_setting(env_key: str, json_key: str, default: str) -> str:
+    """Read a string from env or settings.json (app_config)."""
+
+    raw = os.getenv(env_key)
+    if raw is None and isinstance(app_config, dict):
+        raw = app_config.get(json_key)
+    if raw is None:
+        return default
+    return str(raw)
+
+
+def _get_cors_allow_origins() -> List[str]:
+    """Return CORS allowlist.
+
+    Default is localhost-only to reduce CSRF-style risks against local admin endpoints.
+    Operators can override via env `RAG_CORS_ALLOW_ORIGINS` (comma-separated) or
+    settings.json `corsAllowOrigins`.
+    """
+
+    env_val = os.getenv("RAG_CORS_ALLOW_ORIGINS")
+    if env_val and env_val.strip():
+        return [o.strip() for o in env_val.split(",") if o.strip()]
+
+    cfg_val = None
+    if isinstance(app_config, dict):
+        cfg_val = app_config.get("corsAllowOrigins")
+
+    if isinstance(cfg_val, list):
+        parsed = [str(o).strip() for o in cfg_val if str(o).strip()]
+        if parsed:
+            return parsed
+    if isinstance(cfg_val, str) and cfg_val.strip():
+        return [o.strip() for o in cfg_val.split(",") if o.strip()]
+
+    # Safe default: local UI + local REST.
+    return [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+    ]
+
+
+def _get_client_host(request: Request) -> str:
+    """Return client host, optionally honoring forwarded headers.
+
+    Proxy headers are trusted only when `RAG_ADMIN_TRUST_PROXY=1`.
+    """
+
+    trust_proxy = _get_bool_setting("RAG_ADMIN_TRUST_PROXY", "adminTrustProxy", False)
+    if trust_proxy:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        xri = request.headers.get("x-real-ip")
+        if xri:
+            return xri.strip()
+
+    if request.client and request.client.host:
+        return request.client.host
+    return ""
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """True if the request originated from a loopback address."""
+
+    host = _get_client_host(request)
+    # Starlette TestClient uses synthetic hostnames like "testclient"/"testserver".
+    # Treat these as loopback so unit tests exercise handlers without requiring
+    # an admin token or HTTPS.
+    if host in {"testclient", "testserver"}:
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_https_request(request: Request) -> bool:
+    """True if the request is HTTPS (direct) or forwarded as HTTPS."""
+
+    if request.url.scheme == "https":
+        return True
+    if _get_bool_setting("RAG_ADMIN_TRUST_PROXY", "adminTrustProxy", False):
+        proto = request.headers.get("x-forwarded-proto", "").strip().lower()
+        return proto == "https"
+    return False
+
+
+def require_admin_access(request: Request) -> None:
+    """Enforce admin access for sensitive endpoints.
+
+    Behavior:
+    - Localhost requests (loopback IP) are allowed without auth when mode=nonlocal.
+    - Non-local requests require:
+      - HTTPS (by default)
+      - A valid admin token in `Authorization: Bearer ...` or `X-RAG-Admin-Token`.
+    """
+
+    mode = _get_str_setting("RAG_ADMIN_AUTH_MODE", "adminAuthMode", "nonlocal").strip().lower()
+    require_https_nonlocal = _get_bool_setting(
+        "RAG_ADMIN_REQUIRE_HTTPS_NONLOCAL", "adminRequireHttpsNonLocal", True
+    )
+
+    if mode in {"off", "disabled", "0", "false"}:
+        return
+
+    is_loopback = _is_loopback_request(request)
+    if mode == "nonlocal" and is_loopback:
+        return
+
+    if require_https_nonlocal and not is_loopback and not _is_https_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="HTTPS is required for remote admin endpoints",
+        )
+
+    token = os.getenv("RAG_ADMIN_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=500,
+            detail="RAG_ADMIN_TOKEN must be set to use admin endpoints remotely",
+        )
+
+    provided = ""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        provided = auth.split(" ", 1)[1].strip()
+    if not provided:
+        provided = request.headers.get("x-rag-admin-token", "").strip()
+
+    if not provided or not hmac.compare_digest(provided, token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     """
@@ -578,10 +770,11 @@ async def provider_exception_handler(request: Request, exc: ProviderError):
         content={"error": "provider_error", "message": str(exc)},
     )
 
-# Allow cross-origin calls from mobile/web clients (permissive by default)
+# Allow cross-origin calls.
+# Default is localhost-only; override via `RAG_CORS_ALLOW_ORIGINS` or settings.json.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_get_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1194,7 +1387,7 @@ def api_documents():
         ) from exc
 
 @app.post(f"/{pth}/documents/delete")
-def api_documents_delete(req: DeleteDocsReq):
+def api_documents_delete(req: DeleteDocsReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Delete documents by URI from the store and rebuild index."""
     try:
         return backend.delete_documents(req.uris)
@@ -1230,7 +1423,7 @@ def api_get_mode():
     return {"mode": "unknown", "available_modes": []}
 
 @app.post(f"/{pth}/config/mode")
-def api_set_mode(req: ConfigModeReq):
+def api_set_mode(req: ConfigModeReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Set the backend mode (e.g., 'ollama', 'google')."""
     if hasattr(backend, "set_mode"):
         success = backend.set_mode(req.mode)
@@ -1278,7 +1471,7 @@ def api_search_job(job_id: str):
     return job
 
 @app.post(f"/{pth}/flush_cache")
-def api_flush_cache():
+def api_flush_cache(_request: Request, _admin: None = Depends(require_admin_access)):
     """Flush the document store and delete the backing DB file."""
     try:
         return backend.flush_cache()
@@ -1322,7 +1515,7 @@ def api_today_metrics():
 
 
 @app.get(f"/{pth}/services")
-def api_service_status():
+def api_service_status(_request: Request, _admin: None = Depends(require_admin_access)):
     """List controller state for managed services."""
     statuses = []
     with SERVICE_LOCK:
@@ -1368,7 +1561,7 @@ def api_service_status():
 
 
 @app.post(f"/{pth}/services/{{service}}/start")
-def api_start_service(service: str):
+def api_start_service(service: str, _request: Request, _admin: None = Depends(require_admin_access)):
     """Start a controller for the given service."""
     svc = service.lower()
     if svc not in SUPPORTED_SERVICES:
@@ -1394,7 +1587,7 @@ def api_start_service(service: str):
 
 
 @app.post(f"/{pth}/services/{{service}}/stop")
-def api_stop_service(service: str):
+def api_stop_service(service: str, _request: Request, _admin: None = Depends(require_admin_access)):
     """Stop a controller for the given service."""
     svc = service.lower()
     if svc not in SUPPORTED_SERVICES:
@@ -1409,7 +1602,7 @@ def api_stop_service(service: str):
 
 
 @app.post(f"/{pth}/services/{{service}}/restart")
-def api_restart_service(service: str):
+def api_restart_service(service: str, _request: Request, _admin: None = Depends(require_admin_access)):
     """Restart a service controller."""
     svc = service.lower()
     if svc not in SUPPORTED_SERVICES:
@@ -1463,7 +1656,7 @@ def auth_login(request: Request):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/auth/setup", name="auth_setup")
-def auth_setup(_request: Request):
+def auth_setup(_request: Request, _admin: None = Depends(require_admin_access)):
     """Show the setup page for Google Auth."""
     return HTMLResponse(content="""
         <html>
@@ -1517,7 +1710,12 @@ def auth_setup(_request: Request):
     """)
 
 @app.post(f"/{pth}/auth/setup")
-def auth_setup_post(request: Request, client_id: str = Form(...), client_secret: str = Form(...)):
+def auth_setup_post(
+    request: Request,
+    client_id: str = Form(...),
+    client_secret: str = Form(...),
+    _admin: None = Depends(require_admin_access),
+):
     """Save the provided credentials to secrets/client_secrets.json."""
     
     # Basic validation
@@ -1643,7 +1841,7 @@ def auth_logout(request: Request, provider: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post(f"/{pth}/config/openai")
-def save_openai_config(_request: Request, config: OpenAIConfigModel):
+def save_openai_config(_request: Request, config: OpenAIConfigModel, _admin: None = Depends(require_admin_access)):
     """Save OpenAI API configuration to secrets/openai_config.json."""
     incoming_key = config.api_key
     existing_api_key = ""
@@ -1689,7 +1887,7 @@ def save_openai_config(_request: Request, config: OpenAIConfigModel):
         raise HTTPException(status_code=500, detail=error_msg) from e
 
 @app.post(f"/{pth}/config/openai/reload")
-def reload_openai_backend(_request: Request):
+def reload_openai_backend(_request: Request, _admin: None = Depends(require_admin_access)):
     """Reload OpenAI backend to pick up configuration changes."""
     global backend  # pylint: disable=global-statement
     try:
@@ -1710,7 +1908,7 @@ def reload_openai_backend(_request: Request):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/config/openai")
-def get_openai_config(_request: Request):
+def get_openai_config(_request: Request, _admin: None = Depends(require_admin_access)):
     """Get OpenAI configuration (API key is masked; has_api_key indicates presence)."""
     existing_api_key: Optional[str] = None
     try:
@@ -1739,9 +1937,161 @@ def get_openai_config(_request: Request):
         logger.error("Failed to load OpenAI config: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg) from e
 
+
+@app.post(f"/{pth}/config/pgvector")
+def save_pgvector_config(_request: Request, config: PgvectorConfigModel, _admin: None = Depends(require_admin_access)):
+    """Save pgvector configuration (password stored in secrets; other fields in settings.json)."""
+    incoming_pw = config.password
+    existing_pw: Optional[str] = None
+    try:
+        os.makedirs("secrets", exist_ok=True)
+
+        # Load existing secret password if present
+        secrets_path = Path("secrets/pgvector_config.json")
+        existing_secret: Dict[str, Any] = {}
+        if secrets_path.exists():
+            try:
+                existing_secret = json.loads(secrets_path.read_text(encoding="utf-8")) or {}
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to read existing pgvector secret config: %s", exc)
+        existing_pw = existing_secret.get("password")
+
+        if incoming_pw is None or incoming_pw == MASKED_SECRET:
+            if not (existing_pw and str(existing_pw).strip()) and not (os.getenv("PGVECTOR_PASSWORD") or "").strip():
+                raise HTTPException(status_code=400, detail="PGVECTOR password is required")
+            pw_to_save = str(existing_pw) if (existing_pw and str(existing_pw).strip()) else None
+        else:
+            pw_to_save = incoming_pw.strip()
+
+        if pw_to_save:
+            secrets_path.write_text(json.dumps({"password": pw_to_save}, indent=2), encoding="utf-8")
+            try:
+                os.chmod(secrets_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError as perm_err:
+                logger.warning("Failed to set permissions on pgvector secret config: %s", perm_err)
+
+            os.environ["PGVECTOR_PASSWORD"] = pw_to_save
+
+        # Persist non-secret settings in config/settings.json (merged)
+        config_path = CONFIG_DIR / "settings.json"
+        existing_settings: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                existing_settings = json.loads(config_path.read_text(encoding="utf-8")) or {}
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to read existing settings.json for merge: %s", exc)
+
+        existing_settings.update(
+            {
+                "pgvectorHost": config.host,
+                "pgvectorPort": config.port,
+                "pgvectorDb": config.dbname,
+                "pgvectorUser": config.user,
+            }
+        )
+        config_path.write_text(json.dumps(existing_settings, indent=2), encoding="utf-8")
+
+        # Update runtime env for immediate effect
+        os.environ["PGVECTOR_HOST"] = config.host
+        os.environ["PGVECTOR_PORT"] = str(config.port)
+        os.environ["PGVECTOR_DB"] = config.dbname
+        os.environ["PGVECTOR_USER"] = config.user
+
+        logger.info("pgvector configuration saved")
+        return JSONResponse({"status": "success", "message": "Configuration saved"})
+    except HTTPException:
+        raise
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        error_msg = _redact_pgvector_error_message(str(e), incoming_pw, existing_pw)
+        logger.error("Failed to save pgvector config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from e
+
+
+@app.get(f"/{pth}/config/pgvector")
+def get_pgvector_config(_request: Request, _admin: None = Depends(require_admin_access)):
+    """Get pgvector configuration (password masked; has_password indicates presence)."""
+    existing_pw: Optional[str] = None
+    try:
+        config_path = CONFIG_DIR / "settings.json"
+        settings: Dict[str, Any] = {}
+        if config_path.exists():
+            settings = json.loads(config_path.read_text(encoding="utf-8")) or {}
+
+        host = os.getenv("PGVECTOR_HOST") or settings.get("pgvectorHost") or "127.0.0.1"
+        port = int(os.getenv("PGVECTOR_PORT") or settings.get("pgvectorPort") or 5432)
+        dbname = os.getenv("PGVECTOR_DB") or settings.get("pgvectorDb") or "agentic_rag"
+        user = os.getenv("PGVECTOR_USER") or settings.get("pgvectorUser") or "agenticrag"
+
+        env_pw = (os.getenv("PGVECTOR_PASSWORD") or "").strip()
+        if env_pw:
+            existing_pw = env_pw
+        else:
+            secrets_path = Path("secrets/pgvector_config.json")
+            if secrets_path.exists():
+                secret = json.loads(secrets_path.read_text(encoding="utf-8")) or {}
+                existing_pw = secret.get("password")
+
+        masked_pw, has_pw = _mask_secret(existing_pw)
+        return JSONResponse(
+            {
+                "host": host,
+                "port": port,
+                "dbname": dbname,
+                "user": user,
+                "password": masked_pw,
+                "has_password": has_pw,
+            }
+        )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        error_msg = _redact_pgvector_error_message(str(e), existing_pw)
+        logger.error("Failed to load pgvector config: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from e
+
+
+@app.post(f"/{pth}/pgvector/test-connection")
+def api_pgvector_test_connection(_request: Request, _admin: None = Depends(require_admin_access)):
+    """Test pgvector/Postgres connectivity."""
+    ok, msg = pgvector_store.test_connection()
+    safe_msg = _redact_pgvector_error_message(msg, os.getenv("PGVECTOR_PASSWORD"))
+    return JSONResponse({"success": bool(ok), "message": safe_msg})
+
+
+@app.post(f"/{pth}/pgvector/migrate")
+def api_pgvector_migrate(_request: Request, _admin: None = Depends(require_admin_access)):
+    """Create pgvector schema + indexes (idempotent)."""
+    try:
+        result = rag_core.ensure_vector_store_ready()
+        return JSONResponse(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        err = _redact_pgvector_error_message(str(exc), os.getenv("PGVECTOR_PASSWORD"))
+        return JSONResponse({"status": "error", "error": err}, status_code=500)
+
+
+@app.post(f"/{pth}/pgvector/backfill")
+def api_pgvector_backfill(_request: Request, _admin: None = Depends(require_admin_access)):
+    """Backfill pgvector from the JSONL store."""
+    try:
+        result = rag_core.rebuild_index()
+        return JSONResponse(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        err = _redact_pgvector_error_message(str(exc), os.getenv("PGVECTOR_PASSWORD"))
+        return JSONResponse({"status": "error", "error": err}, status_code=500)
+
+
+@app.get(f"/{pth}/pgvector/stats")
+def api_pgvector_stats(_request: Request, _admin: None = Depends(require_admin_access)):
+    """Return vector store stats for UI."""
+    try:
+        stats = pgvector_store.stats(embedding_model=rag_core.EMBED_MODEL_NAME)
+        return JSONResponse({"status": "ok", **stats})
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        err = _redact_pgvector_error_message(str(exc), os.getenv("PGVECTOR_PASSWORD"))
+        return JSONResponse({"status": "error", "error": err}, status_code=500)
+
 @app.get(f"/{pth}/config/openai/models")
-def get_openai_models(_request: Request):
+def get_openai_models(_request: Request, _admin: None = Depends(require_admin_access)):
     """Get list of available OpenAI models using the configured API key."""
+    api_key = ""
     try:
         if not os.path.exists("secrets/openai_config.json"):
             raise HTTPException(status_code=400, detail="OpenAI not configured")
@@ -1792,11 +2142,12 @@ def get_openai_models(_request: Request):
     except HTTPException:
         raise
     except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Failed to fetch OpenAI models: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        safe_err = _redact_error_message(str(e), api_key)
+        logger.error("Failed to fetch OpenAI models: %s", safe_err)
+        raise HTTPException(status_code=500, detail=safe_err) from e
 
 @app.post(f"/{pth}/config/openai/models")
-def get_openai_models_post(req: OpenAIModelsReq):
+def get_openai_models_post(req: OpenAIModelsReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Get list of available OpenAI models using the provided API key."""
     try:
         api_key = req.api_key
@@ -1849,8 +2200,9 @@ def get_openai_models_post(req: OpenAIModelsReq):
     except HTTPException:
         raise
     except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Failed to fetch OpenAI models (POST): %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        safe_err = _redact_error_message(str(e), api_key)
+        logger.error("Failed to fetch OpenAI models (POST): %s", safe_err)
+        raise HTTPException(status_code=500, detail=safe_err) from e
 
 @app.post(f"/{pth}/chat")
 def api_chat(req: ChatReq):
@@ -1943,7 +2295,7 @@ async def get_autotune_params(query: str, default_k: int = 12):
     }
 
 @app.post(f"/{pth}/config/app")
-async def update_app_config(req: AppConfigReq):
+async def update_app_config(req: AppConfigReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Save application configuration."""
     config_dir = CONFIG_DIR
     config_dir.mkdir(exist_ok=True)
@@ -1979,11 +2331,18 @@ async def update_app_config(req: AppConfigReq):
         else:
             payload["ragMode"] = "none"
 
+        existing: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to read existing app config for merge: %s", exc)
+
+        existing.update(payload)
         with open(config_path, "w", encoding="utf-8") as f:
-            # Dump using aliases to match frontend expectation when reading back,
-            # or dump by name and let frontend handle it?
-            # Frontend expects camelCase. Pydantic .model_dump(by_alias=True) does this.
-            json.dump(payload, f, indent=2)
+            # Preserve unknown keys (e.g., pgvector config) by merging.
+            json.dump(existing, f, indent=2)
         
         # Reload configuration in rag_core
         try:
@@ -2023,7 +2382,7 @@ async def update_app_config(req: AppConfigReq):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/config/app")
-def api_get_app_config():
+def api_get_app_config(_request: Request, _admin: None = Depends(require_admin_access)):
     """Get application configuration."""
     config_path = CONFIG_DIR / "settings.json"
     try:
@@ -2037,7 +2396,7 @@ def api_get_app_config():
         return {}
 
 @app.post(f"/{pth}/config/vertex")
-def api_save_vertex_config(req: VertexConfigReq):
+def api_save_vertex_config(req: VertexConfigReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Save Vertex AI configuration."""
     config = {
         "VERTEX_PROJECT_ID": req.project_id,
@@ -2059,7 +2418,7 @@ def api_save_vertex_config(req: VertexConfigReq):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/config/vertex")
-def api_get_vertex_config():
+def api_get_vertex_config(_request: Request, _admin: None = Depends(require_admin_access)):
     """Get Vertex AI configuration."""
     try:
         if VERTEX_CONFIG_PATH.exists():
@@ -2088,7 +2447,7 @@ def api_get_ollama_mode():
         return {"mode": "local"}  # Default fallback
 
 @app.post(f"/{pth}/ollama/mode")
-def api_set_ollama_mode(req: OllamaModeReq):
+def api_set_ollama_mode(req: OllamaModeReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Set Ollama mode (local/cloud/auto)."""
     mode = req.mode.strip().lower()
     if mode not in ["local", "cloud", "auto"]:
@@ -2259,7 +2618,7 @@ def api_list_ollama_models_post(req: OllamaModelsReq):
         return {"models": []}
 
 @app.post(f"/{pth}/ollama/test-connection")
-def api_test_ollama_connection(req: OllamaTestConnectionReq):
+def api_test_ollama_connection(req: OllamaTestConnectionReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Test connection to Ollama Cloud with API key."""
     try:
         from src.core.ollama_config import (
@@ -2304,14 +2663,14 @@ def api_test_ollama_connection(req: OllamaTestConnectionReq):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get(f"/{pth}/ollama/cloud-config")
-def api_get_ollama_cloud_config():
+def api_get_ollama_cloud_config(_request: Request, _admin: None = Depends(require_admin_access)):
     """Fetch stored Ollama Cloud configuration (API key is masked)."""
     api_key_raw: Optional[str] = None
     try:
         from src.core.ollama_config import (
             get_ollama_api_key,
             get_ollama_cloud_endpoint,
-            get_requests_ca_bundle,
+            get_configured_ca_bundle,
             get_ollama_cloud_proxy,
         )
         api_key_raw = get_ollama_api_key()
@@ -2320,7 +2679,7 @@ def api_get_ollama_cloud_config():
             "api_key": masked_key,
             "has_api_key": has_key,
             "endpoint": get_ollama_cloud_endpoint(),
-            "ca_bundle": get_requests_ca_bundle() or "",
+            "ca_bundle": get_configured_ca_bundle() or "",
             "proxy": get_ollama_cloud_proxy() or "",
         }
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -2329,7 +2688,7 @@ def api_get_ollama_cloud_config():
         raise HTTPException(status_code=500, detail=error_msg) from exc
 
 @app.post(f"/{pth}/ollama/cloud-config")
-def api_save_ollama_cloud_config(req: OllamaCloudConfigReq):
+def api_save_ollama_cloud_config(req: OllamaCloudConfigReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Persist Ollama Cloud secrets/config without forcing a live test."""
     api_key: Optional[str] = None
     try:
@@ -2360,7 +2719,7 @@ def api_save_ollama_cloud_config(req: OllamaCloudConfigReq):
         raise HTTPException(status_code=500, detail=error_msg) from exc
 
 @app.get(f"/{pth}/logs/{{log_type}}")
-def api_get_logs(log_type: str, lines: int = 500):
+def api_get_logs(log_type: str, _request: Request, lines: int = 500, _admin: None = Depends(require_admin_access)):
     """
     Get log file contents.
     
@@ -2412,7 +2771,7 @@ def api_get_logs(log_type: str, lines: int = 500):
 
 
 @app.get(f"/{pth}/logs/{{log_type}}/stream")
-async def api_stream_logs(log_type: str, request: Request):
+async def api_stream_logs(log_type: str, request: Request, _admin: None = Depends(require_admin_access)):
     """
     Stream log file contents using Server-Sent Events (SSE).
     

@@ -26,6 +26,7 @@ interface SearchViewProps {
     chatMessages: Message[]
     setMessages: Dispatch<SetStateAction<Message[]>>
     activeConversationId: string | null
+    onSessionId?: (id: string) => void
     conversations: Conversation[]
     onSelectConversation: (id: string) => void
     onNewConversation: () => void
@@ -50,6 +51,7 @@ export function SearchView(props: SearchViewProps) {
         chatMessages,
         setMessages,
         activeConversationId,
+        onSessionId,
         conversations,
         onSelectConversation,
         onNewConversation,
@@ -178,6 +180,7 @@ export function SearchView(props: SearchViewProps) {
                             onNewConversation={onNewConversation}
                             onDeleteConversation={onDeleteConversation}
                             activeConversationId={activeConversationId}
+                            onSessionId={onSessionId}
                         />
                     </div>
                 )}

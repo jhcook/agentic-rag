@@ -1,9 +1,8 @@
-"""
-Google Gemini + Drive Backend Implementation.
+"""Google Gemini + Drive Backend Implementation.
 
-This backend bypasses the local FAISS vector store and uses Google's
-native "Long Context" capabilities (Gemini 1.5 Pro) to perform RAG
-directly over documents stored in Google Drive.
+This backend bypasses the local pgvector-backed store and uses Google's native
+"Long Context" capabilities (Gemini 1.5 Pro) to perform RAG directly over
+documents stored in Google Drive.
 """
 # pylint: disable=too-many-lines
 

@@ -44,10 +44,23 @@ def temp_secrets_dir(tmp_path):
 
 
 @pytest.fixture
-def mock_settings_path(temp_config_dir, monkeypatch):
+def mock_settings_path(temp_config_dir, temp_secrets_dir, monkeypatch):
     """Mock settings.json path."""
     settings_path = temp_config_dir / "settings.json"
     monkeypatch.setattr("src.core.ollama_config.SETTINGS_PATH", settings_path)
+    # Default to an empty secrets file path for tests that don't explicitly
+    # request `mock_secrets_path`, so repo-local secrets don't affect unit tests.
+    monkeypatch.setattr(
+        "src.core.ollama_config.OLLAMA_CLOUD_SECRETS_PATH",
+        temp_secrets_dir / "ollama_cloud_config.json",
+    )
+
+    # Clear process env defaults that could affect deterministic unit tests.
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("OLLAMA_CLOUD_ENDPOINT", raising=False)
+    monkeypatch.delenv("OLLAMA_CLOUD_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_MODE", raising=False)
+    monkeypatch.delenv("OLLAMA_API_BASE", raising=False)
     return settings_path
 
 
@@ -628,7 +641,7 @@ class TestGetRequestsCABundle:
         
         # Create CA bundle in a subdirectory
         subdir = tmp_path / "config"
-        subdir.mkdir()
+        subdir.mkdir(exist_ok=True)
         ca_file = subdir / "ca-bundle.pem"
         ca_file.write_text("FAKE CA CERT")
         

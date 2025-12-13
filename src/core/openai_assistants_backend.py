@@ -1,9 +1,8 @@
-"""
-OpenAI Assistants backend with function calling bridge to local FAISS.
+"""OpenAI Assistants backend with function-calling bridge to local pgvector.
 
-This backend uses OpenAI Assistants API to orchestrate conversations,
-but keeps all document data local. The assistant calls our local search
-function instead of uploading files to OpenAI.
+This backend uses OpenAI Assistants API to orchestrate conversations, but keeps
+all document data local. The assistant calls our local search function instead
+of uploading files to OpenAI.
 """
 
 import logging
@@ -31,7 +30,7 @@ class OpenAIAssistantsBackend:
     OpenAI Assistants backend with local search function calling.
 
     Architecture:
-    - User documents stay in local FAISS (privacy, no upload)
+    - User documents stay in local pgvector (privacy, no upload)
     - OpenAI Assistant orchestrates conversation flow
     - When assistant needs info, it calls our search_documents function
     - We execute local search and return results
@@ -183,7 +182,7 @@ class OpenAIAssistantsBackend:
     def search_documents_function(self, query: str, top_k: int = 5) -> str:
         """
         Function called by OpenAI Assistant to search local documents.
-        Delegates to MCP server to avoid duplicating FAISS index in memory.
+        Delegates to MCP server.
 
         Args:
             query: Search query
@@ -457,7 +456,7 @@ class OpenAIAssistantsBackend:
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
-        local_core.rebuild_faiss_index()
+        local_core.rebuild_index()
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rerank passages."""

@@ -862,8 +862,8 @@ export function SettingsDashboard({
                       <p className="text-sm font-medium">How it works</p>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      OpenAI Assistants orchestrates conversations using GPT-4 while keeping your documents local. 
-                      When it needs information, it calls our search function to query your FAISS index. 
+                      OpenAI Assistants orchestrates conversations using GPT-4 while keeping your documents local.
+                      When it needs information, it calls our search function to query your pgvector index.
                       You get GPT-4 quality with local privacy.
                     </p>
                   </div>

@@ -1,16 +1,20 @@
 # Agentic RAG
 
-Agentic RAG (Retrieval-Augmented Generation) combines a document store, FAISS index, and multiple LLM adapters (Ollama, OpenAI Assistants, Google Vertex AI) so you can ask natural language questions over your own knowledge base.
+Agentic RAG (Retrieval-Augmented Generation) combines a document store, PostgreSQL+pgvector vector index, and multiple LLM adapters (Ollama, OpenAI Assistants, Google Vertex AI) so you can ask natural language questions over your own knowledge base.
 
 ## Features
 - Local Ollama server + REST/MCP APIs for hybrid deployments
 - **Ollama Cloud support** - Use cloud-hosted models with automatic local fallback
 - Role-based startup (`monolith`, `server`, `client`) so you can choose which components to run
-- Automatic grounding, citations, reranking, and verification powered by FAISS + Litellm
+- Automatic grounding, citations, reranking, and verification powered by pgvector + Litellm
 - React UI with file manager, logs, metrics, and backend switching
 - Command-line helper (`cli_agent.py`) and Python APIs for scripting
 
 ## Quick Start
+
+Prerequisites:
+- Docker Desktop (includes Docker Compose v2)
+- Set `PGVECTOR_PASSWORD` in `.env` (required to start the local Postgres+pgvector container)
 
 ```bash
 git clone https://github.com/yourorg/agentic-rag.git
@@ -24,6 +28,7 @@ stop.sh
 `start.sh`/`start.py` do the heavy lifting:
 1. create/activate `.venv`
 2. install dependencies (`pip install -r requirements.txt`)
+3. start local PostgreSQL+pgvector via Docker Compose (data persisted under `cache/vector/`)
 3. install the correct `torch` wheel per-platform (Intel → `2.2.2`, others → PyTorch CPU wheel)
 4. respect `--skip-ollama`, `--skip-ui`, and role flags when launching services
 
