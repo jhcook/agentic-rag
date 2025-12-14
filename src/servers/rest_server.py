@@ -791,7 +791,89 @@ async def lifespan(_fastapi_app: FastAPI):
     yield
     logger.info("REST server shutting down")
 
+from fastapi.routing import APIRoute
+from starlette.responses import Response as StarletteResponse
+
+
+class MetricsRoute(APIRoute):
+    def get_route_handler(self) -> Callable:
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request) -> StarletteResponse:
+            response = await original_route_handler(request)
+
+            if hasattr(response, "body_iterator"):
+                response_body = b""
+                async for chunk in response.body_iterator:
+                    response_body += chunk
+            else:
+                response_body = getattr(response, "body", b"")
+
+            if response.headers.get('content-type') == 'application/json':
+                try:
+                    data = json.loads(response_body)
+                    if isinstance(data, dict):
+                        usage = data.get("usage")
+                        if isinstance(usage, dict):
+                            request.state.token_count = usage.get("total_tokens")
+                        model = data.get("model")
+                        if isinstance(model, str):
+                            request.state.model = model
+                        
+                        if response.status_code >= 400:
+                            error_message = data.get("error") or data.get("detail") or data.get("message")
+                            if isinstance(error_message, dict):
+                                error_message = error_message.get("message")
+
+                            if isinstance(error_message, str):
+                                request.state.error_message = error_message
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+            
+            if hasattr(response, "body_iterator"):
+                return StarletteResponse(
+                    content=response_body,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    media_type=response.media_type,
+                )
+            return response
+
+        return custom_route_handler
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
 app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
+app.router.route_class = MetricsRoute
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors to performance metrics."""
+    path = _get_route_path_template(request)
+    operation = None
+    if path.endswith("/search"):
+        operation = "search"
+    elif path.endswith("/grounded_answer"):
+        operation = "grounded_answer"
+    elif path.endswith("/chat"):
+        operation = "chat"
+    elif path.endswith("/upsert_document"):
+        operation = "upsert_document"
+    
+    if operation:
+        try:
+            pgvector_store.insert_performance_metric(
+                operation=operation,
+                duration_ms=0,
+                error=str(exc),
+            )
+        except Exception as e:
+            logger.error("Failed to insert performance metric for validation error: %s", e)
+
+    return await request_validation_exception_handler(request, exc)
+
 
 @app.exception_handler(ConfigurationError)
 async def configuration_exception_handler(request: Request, exc: ConfigurationError):
@@ -1027,6 +1109,9 @@ async def add_prometheus_metrics(request: Request, call_next: Callable):
 
         if operation:
             try:
+                token_count = getattr(request.state, "token_count", None)
+                model = getattr(request.state, "model", None)
+                error = getattr(request.state, "error_message", error)
                 pgvector_store.insert_performance_metric(
                     operation=operation,
                     duration_ms=duration_ms,

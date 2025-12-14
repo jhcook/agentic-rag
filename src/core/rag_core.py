@@ -938,16 +938,22 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
     Returns:
         Dict with 'answer' or 'content' key and optional 'sources'
     """
+    logger.debug("Normalizing LLM response: %s", resp)
     if resp is None:
         return {"error": "No response from LLM"}
 
     # Handle LangChain AIMessage (or any object with content attribute)
     if hasattr(resp, "content"):
-        return {
+        normalized_resp = {
             "answer": resp.content,
             "sources": sources or [],
             "model": "unknown"
         }
+        if hasattr(resp, "usage"):
+            normalized_resp["usage"] = resp.usage
+        elif hasattr(resp, "usage_metadata") and isinstance(resp.usage_metadata, dict):
+            normalized_resp["usage"] = resp.usage_metadata
+        return normalized_resp
 
     # Handle dict responses (legacy or other backends)
     if isinstance(resp, dict):
