@@ -8,6 +8,7 @@ Agentic RAG (Retrieval-Augmented Generation) combines a document store, PostgreS
 - Role-based startup (`monolith`, `server`, `client`) so you can choose which components to run
 - Automatic grounding, citations, reranking, and verification powered by pgvector + Litellm
 - React UI with file manager, logs, metrics, and backend switching
+- Performance metrics dashboard with visualizations for operation duration, token counts, and error rates
 - Command-line helper (`cli_agent.py`) and Python APIs for scripting
 
 ## Quick Start

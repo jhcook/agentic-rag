@@ -6,10 +6,12 @@ import { SettingsView, OllamaConfig, PgvectorConfig } from '@/features/settings/
 import { SearchView } from '@/features/search/SearchView'
 import { FileManager } from '@/components/FileManager'
 import { LogsViewer } from '@/components/LogsViewer'
+import { MetricsView } from '@/features/dashboard/MetricsView'
 import { HelpView } from '@/features/help/HelpView'
 import { toast } from 'sonner'
 import { Message } from '@/components/ChatInterface'
 import { Conversation } from '@/components/ConversationSidebar'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const MASKED_SECRET = '***MASKED***'
 
@@ -765,7 +767,22 @@ function App() {
           />
         )}
 
-        {activeTab === 'logs' && <LogsViewer config={ollamaConfig} />}
+        {activeTab === 'logs' && (
+          <Tabs defaultValue="logs" className="h-full space-y-6">
+            <div className="space-between flex items-center">
+              <TabsList>
+                <TabsTrigger value="logs">Logs</TabsTrigger>
+                <TabsTrigger value="metrics">Metrics</TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="logs">
+              <LogsViewer config={ollamaConfig} />
+            </TabsContent>
+            <TabsContent value="metrics">
+              <MetricsView />
+            </TabsContent>
+          </Tabs>
+        )}
         {activeTab === 'help' && <HelpView />}
       </MainLayout>
     </>

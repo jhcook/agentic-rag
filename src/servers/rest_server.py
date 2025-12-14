@@ -1677,6 +1677,16 @@ def api_today_metrics():
     }
 
 
+@app.get(f"/{pth}/metrics/performance")
+def api_performance_metrics(hours: int = 24):
+    """Return performance metrics from the last N hours."""
+    try:
+        return pgvector_store.get_performance_metrics(hours=hours)
+    except Exception as exc:
+        logger.error("Failed to get performance metrics: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get(f"/{pth}/services")
 def api_service_status(_request: Request, _admin: None = Depends(require_admin_access)):
     """List controller state for managed services."""
