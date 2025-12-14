@@ -779,7 +779,7 @@ function App() {
               <LogsViewer config={ollamaConfig} />
             </TabsContent>
             <TabsContent value="metrics">
-              <MetricsView />
+              <MetricsView config={ollamaConfig} />
             </TabsContent>
           </Tabs>
         )}

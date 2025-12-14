@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { toast } from 'sonner';
@@ -12,14 +12,28 @@ type PerformanceMetric = {
   error: string | null;
 };
 
-export function MetricsView() {
+type OllamaConfig = {
+  ragHost?: string;
+  ragPort?: string;
+  ragPath?: string;
+};
+
+export function MetricsView({ config }: { config: OllamaConfig }) {
   const [data, setData] = useState<PerformanceMetric[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const getApiBase = useCallback(() => {
+    const host = config?.ragHost || '127.0.0.1';
+    const port = config?.ragPort || '8001';
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '');
+    return `http://${host}:${port}/${base}`;
+  }, [config]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch('/api/metrics/performance?hours=24');
+        const apiBase = getApiBase();
+        const res = await fetch(`${apiBase}/metrics/performance?hours=24`);
         if (res.ok) {
           const metrics = await res.json();
           setData(metrics);
@@ -37,7 +51,7 @@ export function MetricsView() {
     const interval = setInterval(fetchData, 60000); // Refresh every minute
 
     return () => clearInterval(interval);
-  }, []);
+  }, [getApiBase]);
 
   if (loading) {
     return <div>Loading...</div>;

@@ -458,3 +458,23 @@ def get_performance_metrics(hours: int = 24) -> List[Dict[str, Any]]:
             }
         )
     return results
+
+
+def insert_performance_metric(
+    operation: str,
+    duration_ms: int,
+    token_count: Optional[int] = None,
+    model: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Insert a new performance metric into the database."""
+    pool = get_pool()
+    with pool.connection() as conn:
+        _configure_connection(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO performance_metrics (operation, duration_ms, token_count, model, error) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (operation, duration_ms, token_count, model, error),
+            )
+        conn.commit()

@@ -991,21 +991,59 @@ async def add_prometheus_metrics(request: Request, call_next: Callable):
     method = request.method.upper()
     path = _get_route_path_template(request)
     HTTP_INFLIGHT.inc()
-    status_code = "500"
+    status_code = 500
+    error = None
+    response = None
+    token_count = None
+    model = None
 
     try:
         response = await call_next(request)
-        status_code = str(getattr(response, "status_code", 500))
+        status_code = getattr(response, "status_code", 500)
+    except Exception as e:
+        status_code = 500
+        error = str(e)
+        raise
+    finally:
+        duration = time.perf_counter() - start
+        duration_ms = int(duration * 1000)
+
+        # Log to prometheus
+        HTTP_INFLIGHT.dec()
+        HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=status_code).inc()
+        HTTP_REQUEST_DURATION.labels(method=method, path=path, status=status_code).observe(duration)
+        _record_today_request(duration, path)
+
+        # Log to performance_metrics table
+        operation = None
+        if path.endswith("/search"):
+            operation = "search"
+        elif path.endswith("/grounded_answer"):
+            operation = "grounded_answer"
+        elif path.endswith("/chat"):
+            operation = "chat"
+        elif path.endswith("/upsert_document"):
+            operation = "upsert_document"
+
+        if operation:
+            try:
+                pgvector_store.insert_performance_metric(
+                    operation=operation,
+                    duration_ms=duration_ms,
+                    token_count=token_count,
+                    model=model,
+                    error=error,
+                )
+            except Exception as e:
+                logger.error("Failed to insert performance metric: %s", e)
 
         # Log access in Apache combined log format style
         client_ip = getattr(request.client, 'host', 'unknown') if request.client else 'unknown'
         query = str(request.url.query) if request.url.query else ''
         full_path = f"{request.url.path}?{query}" if query else request.url.path
         user_agent = request.headers.get('user-agent', '-')
-        content_length = response.headers.get('content-length', '-')
-        duration = time.perf_counter() - start
+        content_length = response.headers.get('content-length', '-') if response else '-'
 
-        # Write directly to access log file instead of using logger
         log_entry = (
             f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]} - '
             f'{client_ip} - - [{time.strftime("%d/%b/%Y:%H:%M:%S %z", time.localtime())}] '
@@ -1014,16 +1052,7 @@ async def add_prometheus_metrics(request: Request, call_next: Callable):
         )
         _append_access_log(log_entry)
 
-        return response
-    except Exception:  # pylint: disable=broad-exception-caught
-        status_code = "500"
-        raise
-    finally:
-        duration = time.perf_counter() - start
-        HTTP_INFLIGHT.dec()
-        HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=status_code).inc()
-        HTTP_REQUEST_DURATION.labels(method=method, path=path, status=status_code).observe(duration)
-        _record_today_request(duration, path)
+    return response
 
 ACCESS_LOG_PATH = LOG_DIR / "rest_server_access.log"
 
