@@ -134,6 +134,86 @@ Check the status of the server and get basic statistics.
 curl "http://localhost:8001/api/health"
 ```
 
+## Chat & Conversation History
+
+The REST server persists chat history locally (SQLite) so that conversations can be rehydrated after restart and (in future) replicated.
+
+### 1. Chat
+
+**Endpoint:** `POST /api/chat`
+
+**Request:**
+
+- `messages`: ordered list of `{ role, content }`
+- `messages[].display_content` (optional): the exact content shown in the UI (used for display-first transcript replay)
+- `session_id` (optional): provide to append to an existing session; if omitted, the server creates a new session
+
+```json
+{
+  "session_id": "optional-session-id",
+  "messages": [
+    { "role": "user", "content": "Hello", "display_content": "Hello" }
+  ]
+}
+```
+
+**Response (selected fields):**
+
+- `session_id`: the persisted session
+- `user_message_id` / `assistant_message_id`: persisted message IDs (when available)
+- assistant text may appear under different keys depending on backend; the server persists it in a backend-agnostic way
+
+### 2. Chat History (List Messages)
+
+**Endpoint:** `GET /api/chat/history/{session_id}`
+
+Returns messages in chronological order.
+
+Each message includes:
+
+- `id`: message ID
+- `role`: `user` or `assistant`
+- `content`: canonical content
+- `display_content`: UI-facing content (may match `content`)
+- `sources`: ordered list of citations/sources if present
+- `kind`: optional kind discriminator (e.g. `assistant_grounded`)
+
+### 3. Delete Message
+
+Deletes a single message from an existing session.
+
+**Endpoint:** `DELETE /api/chat/history/{session_id}/messages/{message_id}`
+
+### 4. Delete Session
+
+Deletes the session and all messages.
+
+**Endpoint:** `DELETE /api/chat/history/{session_id}`
+
+## Grounded Answer
+
+Generate a grounded answer (search + synthesis). When chat persistence is enabled, the server can also persist the Q/A into a session.
+
+**Endpoint:** `POST /api/grounded_answer`
+
+**Request:**
+
+- `question`: the user question
+- `session_id` (optional): if provided, the grounded answer is appended to that session; if omitted, the server may create a new session
+
+```json
+{
+  "question": "What is pgvector?",
+  "session_id": "optional-session-id"
+}
+```
+
+**Response (selected fields):**
+
+- `grounded_answer` (or `answer` depending on backend)
+- `sources` / `citations` (if available)
+- `session_id`: the session that was used/created
+
 ## Ollama Cloud Configuration
 
 Manage credentials and endpoints for Ollama Cloud without exposing secrets.

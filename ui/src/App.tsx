@@ -269,9 +269,12 @@ function App() {
       if (res.ok) {
         const messages = await res.json()
         setChatMessages(messages.map((m: any) => ({
+          id: m.id || undefined,
           role: m.role,
           content: m.content,
-          timestamp: new Date(m.created_at * 1000).toLocaleString()
+          displayContent: m.display_content || undefined,
+          sources: Array.isArray(m.sources) ? m.sources : undefined,
+          timestamp: typeof m.created_at === 'number' ? Math.floor(m.created_at * 1000) : Date.now()
         })))
       }
     } catch (e) {
@@ -300,7 +303,7 @@ function App() {
   }
 
   const handleChatSessionId = (sessionId: string) => {
-    setActiveConversationId(sessionId)
+    setActiveConversationId(prev => prev ?? sessionId)
     // Best-effort refresh so the sidebar shows the session immediately
     refreshConversationList()
   }
@@ -420,46 +423,58 @@ function App() {
     const { host, port, base } = getApiBase()
     if (!queryText.trim()) return
 
-    setSearching(true); setSearchError(null); setSearchAnswer(null); setSearchSources([])
+    setSearching(true); setSearchError(null); setSearchAnswer(null); setSearchSources([]); setSearchMessage('')
     const controller = new AbortController()
     searchAbortRef.current = controller
 
     try {
-      const kickRes = await fetch(`http://${host}:${port}/${base}/search`, {
+      setSearchMessage('Generating grounded answer...')
+
+      const res = await fetch(`http://${host}:${port}/${base}/grounded_answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: queryText, async: true }),
+        body: JSON.stringify({
+          question: queryText,
+          session_id: activeConversationId || undefined,
+        }),
         signal: controller.signal
       })
-      if (!kickRes.ok) throw new Error('Failed to start')
-      const { job_id } = await kickRes.json()
 
-      let done = false
-      while (!done) {
-        const pollRes = await fetch(`http://${host}:${port}/${base}/search/jobs/${job_id}`, { signal: controller.signal })
-        const status = await pollRes.json()
-        setSearchMessage(status.message)
+      if (!res.ok) {
+        let errorMsg = 'Failed to generate grounded answer'
+        try {
+          const err = await res.json()
+          errorMsg = err.detail || err.error || errorMsg
+        } catch { }
+        throw new Error(errorMsg)
+      }
 
-        if (['completed', 'failed', 'timeout'].includes(status.status)) {
-          done = true
-          const res = status.result
-          if (!res) {
-            setSearchError(status.error || 'Unknown error')
-          } else if (res.error) {
-            setSearchError(res.error)
-          } else {
-            setSearchAnswer(res.answer || res)
-            setSearchSources(res.sources || [])
-          }
-        } else {
-          await new Promise(r => setTimeout(r, 1000))
-        }
+      const data = await res.json()
+
+      if (data.error) {
+        setSearchError(String(data.error))
+        return
+      }
+
+      // Accept multiple payload shapes.
+      const answerText: string = String(data.grounded_answer || data.answer || data.content || '')
+      const sources: string[] = Array.isArray(data.sources)
+        ? data.sources
+        : (Array.isArray(data.citations) ? data.citations : [])
+
+      setSearchAnswer(answerText)
+      setSearchSources(sources)
+
+      // If grounded_answer created a new persisted session (no active chat), refresh sidebar.
+      if (data.session_id && !activeConversationId) {
+        refreshConversationList()
       }
     } catch (e: any) {
       if (e.name !== 'AbortError') setSearchError(e.message)
     } finally {
       setSearching(false)
       searchAbortRef.current = null
+      setSearchMessage('')
     }
   }
 
@@ -700,7 +715,10 @@ function App() {
             conversations={conversations}
             onSelectConversation={handleSelectConversation}
             onNewConversation={() => {
-              setActiveConversationId(null)
+              const newId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+                ? (crypto as any).randomUUID()
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+              setActiveConversationId(newId)
               setChatMessages([])
             }}
             onDeleteConversation={handleDeleteConversation}

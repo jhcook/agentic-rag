@@ -1,0 +1,16 @@
+[MASTER]
+# Pylint configuration used by scripts/check_rules_compliance.py.
+ignore-paths=
+    ^cache/,
+    ^log/,
+    ^\.venv/,
+    ^ui/,
+    ^electron/,
+    ^mobile/,
+
+[REPORTS]
+score=no
+
+[FORMAT]
+# Compliance gate: 100 characters.
+max-line-length=100

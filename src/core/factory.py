@@ -525,6 +525,7 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         configured = False
 
         def get_stats(self) -> Dict[str, Any]:
+            """Return a stats payload matching the normal backend shape."""
             return {
                 "status": "unavailable",
                 "mode": "none",
@@ -849,8 +850,20 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             if self.current_mode == "none" and not target_mode:
                  if self.set_mode("ollama"):
                      logger.info("Auto-switched to ollama for model %s", model)
-        
-        return self._backend.chat(messages, **kwargs)
+
+        backend_chat = getattr(self._backend, "chat", None)
+        if not callable(backend_chat):
+            return {"error": "Chat not supported by current backend"}
+
+        sig = inspect.signature(backend_chat)
+
+        # If backend accepts kwargs, pass everything.
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            return backend_chat(messages, **kwargs)
+
+        # Otherwise, filter kwargs to what is accepted.
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return backend_chat(messages, **filtered_kwargs)
 
     def upsert_document(self, uri: str, text: str) -> Dict[str, Any]:
         """Add or update a document."""
@@ -934,20 +947,6 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         if hasattr(self._backend, "list_models"):
             return self._backend.list_models()
         return []
-    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
-        """Chat with the backend."""
-        if hasattr(self._backend, "chat"):
-            sig = inspect.signature(self._backend.chat)
-
-            # If backend accepts kwargs, pass everything
-            if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
-                return self._backend.chat(messages, **kwargs)
-
-            # Otherwise, filter kwargs to what is accepted
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-            return self._backend.chat(messages, **filtered_kwargs)
-
-        return {"error": "Chat not supported by current backend"}
 
     def list_drive_files(self, folder_id: str = None) -> List[Dict[str, Any]]:
         """List Google Drive files."""

@@ -1,3 +1,4 @@
+"""Pydantic request/response models used by the REST API."""
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any
@@ -42,6 +43,7 @@ class GroundedAnswerReq(BaseModel):
     """Request model for grounded answer generation."""
     question: str
     k: Optional[int] = 3
+    session_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -107,6 +109,7 @@ class ChatMessage(BaseModel):
     """Model for a chat message."""
     role: str
     content: str
+    display_content: Optional[str] = None
 
 class ChatReq(BaseModel):
     """Request model for chat completion."""
@@ -130,6 +133,8 @@ class OpenAIConfigModel(BaseModel):
     assistant_id: str = Field(default="", description="Optional OpenAI Assistant ID", alias="assistantId")
     
     class Config:
+        """Pydantic v1-style config (kept for compatibility)."""
+
         populate_by_name = True
 
 class VertexConfigReq(BaseModel):

@@ -28,6 +28,7 @@ patcher_factory.stop()
 patcher_auth.stop()
 
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 client = TestClient(app)
 
@@ -135,6 +136,108 @@ def test_grounded_answer_endpoint(mock_backend):
     assert response.status_code == 200
     assert response.json()["answer"] == "grounded"
     mock_backend.grounded_answer.assert_called()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"content": "hello"},
+        {"answer": "hello"},
+        {"response": "hello"},
+        {"grounded_answer": "hello"},
+    ],
+)
+def test_chat_persists_assistant_text_across_backends(tmp_path: Path, mock_backend, payload):
+    from src.core.chat_store import ChatStore
+
+    store = ChatStore(tmp_path / "chat.db")
+    with patch("src.servers.rest_server.chat_store", store):
+        mock_backend.chat.return_value = payload
+        resp = client.post(
+            "/api/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi", "display_content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        session_id = resp.json().get("session_id")
+        assert session_id
+
+        msgs = client.get(f"/api/chat/history/{session_id}").json()
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert msgs[0]["content"] == "hi"
+        assert msgs[0].get("display_content") == "hi"
+        assert msgs[1]["content"] == "hello"
+
+
+def test_chat_does_not_persist_error_payload_as_assistant(tmp_path: Path, mock_backend):
+    from src.core.chat_store import ChatStore
+
+    store = ChatStore(tmp_path / "chat.db")
+    with patch("src.servers.rest_server.chat_store", store):
+        mock_backend.chat.return_value = {"error": "boom"}
+        resp = client.post(
+            "/api/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi", "display_content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        session_id = resp.json().get("session_id")
+        assert session_id
+
+        msgs = client.get(f"/api/chat/history/{session_id}").json()
+        assert [m["role"] for m in msgs] == ["user"]
+
+
+def test_grounded_answer_persists_into_chat_history(tmp_path: Path, mock_backend):
+    from src.core.chat_store import ChatStore
+
+    store = ChatStore(tmp_path / "chat.db")
+    with patch("src.servers.rest_server.chat_store", store):
+        mock_backend.grounded_answer.return_value = {
+            "grounded_answer": "A",
+            "citations": ["u1"],
+        }
+        resp = client.post("/api/grounded_answer", json={"question": "Q?"})
+        assert resp.status_code == 200
+        session_id = resp.json().get("session_id")
+        assert session_id
+
+        msgs = client.get(f"/api/chat/history/{session_id}").json()
+        assert [m["role"] for m in msgs] == ["user", "assistant"]
+        assert msgs[0]["content"] == "Q?"
+        assert msgs[1]["content"] == "A"
+        assert msgs[1].get("kind") == "assistant_grounded"
+        assert msgs[1].get("sources") == ["u1"]
+
+
+def test_delete_message_persists_in_history(tmp_path: Path, mock_backend):
+    from src.core.chat_store import ChatStore
+
+    store = ChatStore(tmp_path / "chat.db")
+    with patch("src.servers.rest_server.chat_store", store):
+        mock_backend.chat.return_value = {"content": "hello"}
+        resp = client.post(
+            "/api/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi", "display_content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        session_id = body.get("session_id")
+        assert session_id
+
+        msgs = client.get(f"/api/chat/history/{session_id}").json()
+        assert len(msgs) == 2
+        assistant_id = msgs[1]["id"]
+
+        del_resp = client.delete(f"/api/chat/history/{session_id}/messages/{assistant_id}")
+        assert del_resp.status_code == 200
+
+        msgs2 = client.get(f"/api/chat/history/{session_id}").json()
+        assert [m["role"] for m in msgs2] == ["user"]
 
 def test_flush_cache(mock_backend):
     mock_backend.flush_cache.return_value = {"status": "flushed", "db_removed": True, "documents": 0}

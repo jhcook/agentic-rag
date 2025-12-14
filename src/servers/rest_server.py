@@ -76,6 +76,51 @@ from src.core.ollama_config import (
 )
 
 
+def _extract_persistable_text(payload: Dict[str, Any]) -> Optional[str]:
+    """Extract assistant text from a backend response payload.
+
+    This is intentionally backend-agnostic and only used for persistence.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    # Never persist error payloads as assistant messages.
+    if payload.get("status") == "error" or payload.get("error"):
+        return None
+
+    for key in ("content", "answer", "response", "grounded_answer"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+
+    # OpenAI/LiteLLM-style
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+
+    return None
+
+
+def _extract_sources(payload: Dict[str, Any]) -> List[str]:
+    """Extract sources/citations from a backend response payload."""
+    if not isinstance(payload, dict):
+        return []
+
+    raw = payload.get("sources")
+    if raw is None:
+        raw = payload.get("citations")
+
+    if isinstance(raw, list):
+        return [str(x) for x in raw if x is not None and str(x).strip()]
+    return []
+
+
 class PgvectorConfigModel(BaseModel):
     """Request model for pgvector connection configuration."""
 
@@ -748,6 +793,7 @@ app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
 
 @app.exception_handler(ConfigurationError)
 async def configuration_exception_handler(request: Request, exc: ConfigurationError):
+    """Convert configuration errors into a stable JSON error response."""
     logger.error(f"Configuration error: {exc}")
     return JSONResponse(
         status_code=409,
@@ -756,6 +802,7 @@ async def configuration_exception_handler(request: Request, exc: ConfigurationEr
 
 @app.exception_handler(AuthenticationError)
 async def authentication_exception_handler(request: Request, exc: AuthenticationError):
+    """Convert authentication errors into a stable JSON error response."""
     logger.error(f"Authentication error: {exc}")
     return JSONResponse(
         status_code=401,
@@ -764,6 +811,7 @@ async def authentication_exception_handler(request: Request, exc: Authentication
 
 @app.exception_handler(ProviderError)
 async def provider_exception_handler(request: Request, exc: ProviderError):
+    """Convert upstream/provider errors into a stable JSON error response."""
     logger.error(f"Provider error: {exc}")
     return JSONResponse(
         status_code=502,
@@ -1145,6 +1193,36 @@ def api_grounded_answer(req: GroundedAnswerReq):
     """Return a grounded answer using vector search + synthesis."""
     logger.info("Processing grounded answer request: %s", req.question)
     try:
+        session_id = getattr(req, "session_id", None)
+        if chat_store:
+            if not session_id:
+                try:
+                    title = (req.question or "New Grounded Answer")[:50] + "..."
+                    mode_str = None
+                    try:
+                        mode_str = str(backend.get_mode())
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        mode_str = None
+                    session_id = chat_store.create_session(
+                        title=title,
+                        metadata={"mode": mode_str, "kind": "grounded_answer"},
+                    )
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed to create grounded answer session: %s", exc)
+
+            # Persist the user question as shown.
+            if session_id:
+                try:
+                    chat_store.add_message(
+                        session_id,
+                        "user",
+                        req.question,
+                        display_content=req.question,
+                        kind="user",
+                    )
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed to save grounded answer user message: %s", exc)
+
         # Build kwargs
         kwargs = {}
         if req.model:
@@ -1160,6 +1238,24 @@ def api_grounded_answer(req: GroundedAnswerReq):
         if result is None:
             logger.error("Backend.grounded_answer returned None! Backend type: %s", type(backend))
             raise HTTPException(status_code=500, detail="Backend returned None")
+
+        if chat_store and session_id:
+            assistant_text = _extract_persistable_text(result)
+            if assistant_text:
+                try:
+                    chat_store.add_message(
+                        session_id,
+                        "assistant",
+                        assistant_text,
+                        display_content=assistant_text,
+                        sources=_extract_sources(result),
+                        kind="assistant_grounded",
+                    )
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed to save grounded answer assistant message: %s", exc)
+
+        # Include session_id in response for UI to attach or restore.
+        result["session_id"] = session_id
         return result
     except HTTPException:
         raise
@@ -1173,15 +1269,55 @@ def api_chat(req: ChatReq):
     logger.info("Chat request received. Backend type: %s", type(backend))
     
     session_id = req.session_id
+    user_message_id = None
+    assistant_message_id = None
     if chat_store:
+        # If client supplied a session_id (pre-generated), ensure the session exists.
+        if session_id:
+            try:
+                existing = chat_store.get_session(session_id)
+            except Exception:  # pylint: disable=broad-exception-caught
+                existing = None
+            if not existing:
+                try:
+                    last_msg = req.messages[-1] if req.messages else None
+                    last_content = (
+                        last_msg.display_content
+                        if last_msg and getattr(last_msg, "display_content", None)
+                        else (last_msg.content if last_msg else "New Chat")
+                    )
+                    title = last_content[:50] + "..."
+                    mode_str = None
+                    try:
+                        mode_str = str(backend.get_mode())
+                    except Exception:  # pylint: disable=broad-exception-caught
+                        mode_str = None
+                    chat_store.create_session(
+                        title=title,
+                        metadata={"mode": mode_str},
+                        session_id=session_id,
+                    )
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error("Failed to ensure chat session exists: %s", e)
+
         # If new session needed
         if not session_id:
             try:
                 # Use first few words of query as title
                 # req.messages is List[ChatMessage]
-                last_content = req.messages[-1].content if req.messages else "New Chat"
+                last_msg = req.messages[-1] if req.messages else None
+                last_content = (
+                    last_msg.display_content
+                    if last_msg and getattr(last_msg, "display_content", None)
+                    else (last_msg.content if last_msg else "New Chat")
+                )
                 title = last_content[:50] + "..."
-                session_id = chat_store.create_session(title=title, metadata={"mode": backend.get_mode()})
+                mode_str = None
+                try:
+                    mode_str = str(backend.get_mode())
+                except Exception:  # pylint: disable=broad-exception-caught
+                    mode_str = None
+                session_id = chat_store.create_session(title=title, metadata={"mode": mode_str})
             except Exception as e:
                 logger.error("Failed to create chat session: %s", e)
         
@@ -1189,7 +1325,13 @@ def api_chat(req: ChatReq):
         if req.messages:
             last_msg = req.messages[-1]
             try:
-                chat_store.add_message(session_id, last_msg.role, last_msg.content)
+                user_message_id = chat_store.add_message(
+                    session_id,
+                    last_msg.role,
+                    last_msg.content,
+                    display_content=getattr(last_msg, "display_content", None),
+                    kind="user" if last_msg.role == "user" else last_msg.role,
+                )
             except Exception as e:
                 logger.error("Failed to save user message: %s", e)
 
@@ -1203,22 +1345,35 @@ def api_chat(req: ChatReq):
         if req.max_tokens is not None:
             kwargs["max_tokens"] = req.max_tokens
             
-        # Convert Pydantic models to dicts for backend
-        messages_dicts = [m.model_dump() for m in req.messages]
+        # Convert to backend-compatible dicts (avoid persistence-only fields like display_content).
+        messages_dicts = [{"role": m.role, "content": m.content} for m in req.messages]
         result = backend.chat(messages_dicts, **kwargs)
         
         if result is None:
              raise ProviderError("Backend returned None")
         
-        # Save AI response
-        if chat_store and session_id and result.get("answer"):
-            try:
-                chat_store.add_message(session_id, "assistant", result["answer"])
-            except Exception as e:
-                logger.error("Failed to save AI message: %s", e)
+        # Save AI response (backend-agnostic, skip error payloads)
+        if chat_store and session_id:
+            assistant_text = _extract_persistable_text(result)
+            if assistant_text:
+                try:
+                    assistant_message_id = chat_store.add_message(
+                        session_id,
+                        "assistant",
+                        assistant_text,
+                        display_content=assistant_text,
+                        sources=_extract_sources(result),
+                        kind="assistant",
+                    )
+                except Exception as e:
+                    logger.error("Failed to save AI message: %s", e)
         
         # Include session_id in response
         result["session_id"] = session_id
+        if user_message_id:
+            result["user_message_id"] = user_message_id
+        if assistant_message_id:
+            result["assistant_message_id"] = assistant_message_id
         return result
 
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -1255,6 +1410,23 @@ def api_chat_history_get(session_id: str):
         raise
     except Exception as e:
         logger.error("Failed to get session history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete(f"/{pth}/chat/history/{{session_id}}/messages/{{message_id}}")
+def api_chat_history_delete_message(session_id: str, message_id: str):
+    """Delete a single message from a specific session."""
+    if not chat_store:
+        raise HTTPException(status_code=503, detail="Chat storage not available")
+    try:
+        deleted = chat_store.delete_message(session_id=session_id, message_id=message_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return {"success": True, "session_id": session_id, "message_id": message_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete message: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete(f"/{pth}/chat/history/{{session_id}}")
@@ -1819,15 +1991,18 @@ def auth_logout(request: Request, provider: Optional[str] = None):
         if not provider or provider == 'google':
             auth_manager.logout()
             
-        if hasattr(backend, 'logout'):
-            # Check if backend.logout accepts provider argument
-            sig = inspect.signature(backend.logout)
+        logout_fn = getattr(backend, "logout", None)
+        if callable(logout_fn):
+            # Check if backend logout supports granular provider logout.
+            sig = inspect.signature(logout_fn)
             if "provider" in sig.parameters:
-                backend.logout(provider=provider)
+                logout_kwargs = {}
+                logout_kwargs["provider"] = provider
+                logout_fn(**logout_kwargs)
             else:
                 # Fallback for backends that don't support granular logout
                 if not provider:
-                    backend.logout()
+                    logout_fn()
                 else:
                     logger.warning(
                         "Backend does not support granular logout for provider: %s",
@@ -2203,29 +2378,6 @@ def get_openai_models_post(req: OpenAIModelsReq, _request: Request, _admin: None
         safe_err = _redact_error_message(str(e), api_key)
         logger.error("Failed to fetch OpenAI models (POST): %s", safe_err)
         raise HTTPException(status_code=500, detail=safe_err) from e
-
-@app.post(f"/{pth}/chat")
-def api_chat(req: ChatReq):
-    """Conversational chat."""
-    logger.info("Chat request received. Backend type: %s", type(backend))
-    if hasattr(backend, "chat"):
-        # Prepare kwargs
-        kwargs = {}
-        if req.model:
-            kwargs["model"] = req.model
-        if req.temperature is not None:
-            kwargs["temperature"] = req.temperature
-        if req.max_tokens is not None:
-            kwargs["max_tokens"] = req.max_tokens
-        if req.config:
-            kwargs.update(req.config)
-
-        result = backend.chat([m.model_dump() for m in req.messages], **kwargs)
-        if result is None:
-            logger.error("Backend.chat returned None! Backend type: %s", type(backend))
-            return {"error": "Internal Error: Backend returned None"}
-        return result
-    raise HTTPException(status_code=501, detail="Backend does not support chat")
 
 @app.get(f"/{pth}/drive/files")
 def api_drive_files(folder_id: Optional[str] = None):

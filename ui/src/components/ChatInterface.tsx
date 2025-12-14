@@ -9,6 +9,7 @@ import { marked } from 'marked'
 import { ModelSelector } from '@/components/ModelSelector'
 
 export type Message = {
+  id?: string
   role: 'user' | 'assistant'
   content: string
   displayContent?: string
@@ -75,6 +76,14 @@ export function ChatInterface({
   const viewportRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Keep a live reference to the currently active conversation.
+  // This prevents in-flight responses from being appended to the wrong chat
+  // if the user switches conversations while waiting.
+  const activeConversationIdRef = useRef<string | null>(activeConversationId ?? null)
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId ?? null
+  }, [activeConversationId])
+
   const bottomRef = useRef<HTMLDivElement>(null)
   const shouldAutoScrollRef = useRef(true)
 
@@ -111,8 +120,16 @@ export function ChatInterface({
     }
   }, [selectedModel]);
 
+  // If the user switches conversations mid-request, don't show a global "loading"
+  // state in the newly selected conversation.
+  useEffect(() => {
+    setLoading(false)
+  }, [activeConversationId])
+
   const handleSend = async () => {
     if (!input.trim() && attachments.length === 0) return
+
+    const conversationIdAtSend = activeConversationIdRef.current
     
     let content = input
     let displayContent = input
@@ -145,7 +162,11 @@ export function ChatInterface({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
+          messages: messagesToSend.map(m => ({
+            role: m.role,
+            content: m.content,
+            display_content: m.displayContent
+          })),
           session_id: activeConversationId || undefined,
           model: selectedModel || config?.model || undefined,
           temperature: config?.temperature ? parseFloat(config.temperature) : undefined,
@@ -170,8 +191,28 @@ export function ChatInterface({
       
       const data = await res.json()
 
-      if (data.session_id && data.session_id !== activeConversationId) {
+      if (data.session_id) {
+        // Best-effort refresh of sidebar; does not force navigation.
         onSessionId?.(String(data.session_id))
+      }
+
+      const shouldAppendToCurrentConversation = (() => {
+        const currentActive = activeConversationIdRef.current
+        // Existing session: only append if we're still viewing it.
+        if (conversationIdAtSend) return currentActive === conversationIdAtSend
+        // New session (was null when sent): only append if user hasn't switched away.
+        if (!currentActive) return true
+        // Allow append if the app already switched to the newly created session.
+        return Boolean(data.session_id) && String(data.session_id) === currentActive
+      })()
+
+      if (shouldAppendToCurrentConversation && data.user_message_id) {
+        const persistedId = String(data.user_message_id)
+        setMessages(prev => prev.map(m => {
+          if (m.role !== 'user') return m
+          if (m.timestamp !== userMsg.timestamp) return m
+          return { ...m, id: persistedId }
+        }))
       }
       
       if (data.error) {
@@ -180,7 +221,9 @@ export function ChatInterface({
            content += `\n\n⚠️ **Authentication Required**\n\nPlease [click here to re-authenticate](http://${host}:${port}/${base}/auth/login) with Google.`
         }
         const botMsg: Message = { role: 'assistant', content, timestamp: Date.now() }
-        setMessages(prev => [...prev, botMsg])
+        if (shouldAppendToCurrentConversation) {
+          setMessages(prev => [...prev, botMsg])
+        }
         return
       }
 
@@ -199,10 +242,13 @@ export function ChatInterface({
       const botMsg: Message = { 
         role: 'assistant', 
         content: responseContent,
+        id: data.assistant_message_id ? String(data.assistant_message_id) : undefined,
         sources: sources.length > 0 ? sources : undefined,
         timestamp: Date.now() 
       }
-      setMessages(prev => [...prev, botMsg])
+      if (shouldAppendToCurrentConversation) {
+        setMessages(prev => [...prev, botMsg])
+      }
     } catch (e: any) {
       console.error(e)
       toast.error("Failed to send message")
@@ -225,7 +271,11 @@ export function ChatInterface({
         ? `\n\nIt looks like you need to sign in. [Click here to Authenticate](${authUrl})`
         : `\n\nIf this persists, you may need to [Re-authenticate](${authUrl}).`
 
-      setMessages(prev => [...prev, { role: 'assistant', content: errorText + helpText, timestamp: Date.now() }])
+      // Only append local error text if the user is still viewing the conversation
+      // where the request was initiated.
+      if (activeConversationIdRef.current === conversationIdAtSend) {
+        setMessages(prev => [...prev, { role: 'assistant', content: errorText + helpText, timestamp: Date.now() }])
+      }
     } finally {
       setLoading(false)
     }
@@ -290,8 +340,40 @@ export function ChatInterface({
     URL.revokeObjectURL(url)
   }
 
-  const deleteMessage = (index: number) => {
-    setMessages(prev => prev.filter((_, i) => i !== index))
+  const deleteMessage = async (index: number, messageId?: string) => {
+    // If we don't have persistence identifiers, this is a local-only delete.
+    if (!messageId || !activeConversationId) {
+      setMessages(prev => prev.filter((_, i) => i !== index))
+      return
+    }
+
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+
+    try {
+      const res = await fetch(
+        `http://${host}:${port}/${base}/chat/history/${activeConversationId}/messages/${messageId}`,
+        { method: 'DELETE' }
+      )
+
+      if (!res.ok) {
+        if (res.status === 503) {
+          throw new Error('Deletion is unavailable (chat storage not enabled on the server).')
+        }
+        let errorMsg = 'Failed to delete message'
+        try {
+          const errData = await res.json()
+          errorMsg = errData.detail || errData.error || errorMsg
+        } catch (e) {}
+        throw new Error(errorMsg)
+      }
+
+      setMessages(prev => prev.filter((_, i) => i !== index))
+    } catch (e: any) {
+      console.error(e)
+      toast.error(e?.message || 'Failed to delete message')
+    }
   }
 
   return (
@@ -339,7 +421,7 @@ export function ChatInterface({
               
               {m.role === 'user' && (
                  <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => deleteMessage(i)} title="Delete message">
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => deleteMessage(i, m.id)} title="Delete message">
                         <Trash className="h-3 w-3" />
                     </Button>
                  </div>
@@ -367,7 +449,7 @@ export function ChatInterface({
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(m.content)} title="Download response">
                       <Download className="h-3 w-3" />
                     </Button>
-                    <Button variant="ghost" size="icon" className="h-6 w-6 hover:text-destructive" onClick={() => deleteMessage(i)} title="Delete message">
+                    <Button variant="ghost" size="icon" className="h-6 w-6 hover:text-destructive" onClick={() => deleteMessage(i, m.id)} title="Delete message">
                       <Trash className="h-3 w-3" />
                     </Button>
                   </div>

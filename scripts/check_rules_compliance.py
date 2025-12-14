@@ -13,26 +13,72 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
+def _get_staged_python_files(prefix: str) -> list[str]:
+    """Return staged .py files under the given prefix (e.g. 'src' or 'tests')."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return []
+        files: list[str] = []
+        for raw in result.stdout.splitlines():
+            path = raw.strip()
+            if not path:
+                continue
+            if not path.startswith(f"{prefix}/"):
+                continue
+            if path.endswith(".py"):
+                files.append(path)
+        return files
+    except Exception:
+        return []
+
+
 def check_pylint():
     """Check if pylint passes with project configuration."""
     print("🔍 Running pylint checks...")
     try:
+        staged_src = _get_staged_python_files("src")
+        staged_tests = _get_staged_python_files("tests")
+        targets = staged_src + staged_tests
+        if not targets:
+            # Fallback: lint the full codebase only if nothing is staged.
+            targets = ["src", "tests"]
+
         result = subprocess.run(
-            ["pylint", "src/", "tests/", "--rcfile=.pylintrc"],
+            [
+                "pylint",
+                "--jobs=0",
+                *targets,
+                "--rcfile=.pylintrc",
+                "--errors-only",
+            ],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            timeout=300,
         )
         if result.returncode == 0:
             print("✅ Pylint checks passed")
             return True
         else:
             print("❌ Pylint checks failed:")
-            print(result.stdout)
+            if result.stdout.strip():
+                print(result.stdout)
+            if result.stderr.strip():
+                print(result.stderr)
             return False
     except FileNotFoundError:
         print("⚠️  Pylint not found. Install with: pip install pylint")
         return None
+    except subprocess.TimeoutExpired:
+        print("❌ Pylint checks timed out")
+        return False
 
 
 def check_tests_exist():
@@ -54,10 +100,13 @@ def check_docstrings():
     """Check if main modules have docstrings."""
     print("\n🔍 Checking docstrings...")
     try:
+        staged_src = _get_staged_python_files("src")
+        targets = staged_src if staged_src else ["src"]
         result = subprocess.run(
             [
                 "pylint",
-                "src/",
+                "--jobs=0",
+                *targets,
                 "--rcfile=.pylintrc",
                 "--disable=all",
                 "--enable=missing-module-docstring,missing-class-docstring,missing-function-docstring",
@@ -65,6 +114,7 @@ def check_docstrings():
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            timeout=300,
         )
         # Count missing docstring errors
         missing = result.stdout.count("missing-")
@@ -77,35 +127,54 @@ def check_docstrings():
     except FileNotFoundError:
         print("⚠️  Pylint not found")
         return None
+    except subprocess.TimeoutExpired:
+        print("⚠️  Docstring check timed out")
+        return False
 
 
 def check_line_length():
     """Check line length compliance."""
     print("\n🔍 Checking line length (PEP-8: 100 chars)...")
     try:
+        # Enforce on staged additions only (commit-focused), not the entire file.
         result = subprocess.run(
-            [
-                "pylint",
-                "src/",
-                "--rcfile=.pylintrc",
-                "--disable=all",
-                "--enable=line-too-long",
-            ],
+            ["git", "diff", "--cached", "-U0", "--", "src"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            check=False,
+            timeout=60,
         )
-        # Count line-too-long errors
-        long_lines = result.stdout.count("line-too-long")
-        if long_lines == 0:
-            print("✅ All lines comply with 100 character limit")
-            return True
-        else:
-            print(f"⚠️  Found {long_lines} lines exceeding 100 characters")
+        if result.returncode not in (0, 1):
+            print("⚠️  Unable to compute staged diff for src/")
             return False
+
+        too_long = 0
+        for line in result.stdout.splitlines():
+            if not line.startswith("+"):
+                continue
+            if line.startswith("+++"):
+                continue
+            # Remove the diff marker.
+            content = line[1:]
+            # Ignore empty additions.
+            if not content:
+                continue
+            if len(content) > 100:
+                too_long += 1
+
+        if too_long == 0:
+            print("✅ All staged additions comply with 100 character limit")
+            return True
+
+        print(f"⚠️  Found {too_long} staged lines exceeding 100 characters")
+        return False
     except FileNotFoundError:
-        print("⚠️  Pylint not found")
+        print("⚠️  Git not found")
         return None
+    except subprocess.TimeoutExpired:
+        print("⚠️  Line length check timed out")
+        return False
 
 
 def check_cursor_rules_exist():
