@@ -776,6 +776,12 @@ def _stop_service_controller(service: str) -> Dict[str, Any]:
 @asynccontextmanager
 async def lifespan(_fastapi_app: FastAPI):
     """Manage application lifecycle."""
+    try:
+        logger.info("Ensuring pgvector schema is up to date...")
+        rag_core.ensure_vector_store_ready()
+    except Exception as exc:
+        logger.error("pgvector schema migration failed (server will likely fail): %s", exc)
+
     logger.info(
         "REST server startup complete (host=%s port=%s base=/api)",
         os.getenv("RAG_HOST", "127.0.0.1"),
