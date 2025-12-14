@@ -15,6 +15,15 @@ import os
 import sys
 import traceback
 
+
+# This file is an interactive/integration smoke test intended to be run directly
+# (e.g. `python tests/test_openai_assistants.py`). Skip it when running under
+# pytest collection to avoid treating it as a unit test.
+if "pytest" in sys.modules:
+    import pytest  # pylint: disable=import-outside-toplevel
+
+    pytest.skip("OpenAI Assistants smoke test; run directly", allow_module_level=True)
+
 from dotenv import load_dotenv
 from openai import OpenAIError
 
@@ -29,9 +38,9 @@ def test_local_search():
     print("\n=== Testing Local Search ===")
 
     # Ensure we have some documents
-    store = local_core.get_store()
-    doc_count = len(store.docs)
-    print(f"Documents in local store: {doc_count}")
+    docs = local_core.list_documents()
+    doc_count = len(docs)
+    print(f"Documents in local index: {doc_count}")
 
     if doc_count == 0:
         print("⚠️  No documents found. Please index some documents first.")
@@ -40,13 +49,14 @@ def test_local_search():
 
     # Test local search
     results = local_core.search("What is RAG?", top_k=3)
-    print(f"Local search returned {len(results.get('results', []))} results")
+    sources = results.get("sources", []) if isinstance(results, dict) else []
+    answer = results.get("answer") if isinstance(results, dict) else None
+    print(f"Local search returned answer={bool(answer)} sources={len(sources)}")
 
-    if results.get('results'):
-        print("\nSample result:")
-        print(f"  URI: {results['results'][0]['uri']}")
-        print(f"  Score: {results['results'][0]['score']:.3f}")
-        print(f"  Text preview: {results['results'][0]['text'][:100]}...")
+    if sources:
+        print("\nSources:")
+        for src in sources[:3]:
+            print(f"  - {src}")
 
     return True
 

@@ -1264,14 +1264,6 @@ class GoogleGeminiBackend(RAGBackend):
         """Index a path (stub)."""
         return {"status": "skipped", "reason": "Managed by Google Drive"}
 
-    def load_store(self) -> bool:
-        """Load the store (stub)."""
-        return True
-
-    def save_store(self) -> bool:
-        """Save the store (stub)."""
-        return True
-
     def list_documents(self) -> List[Dict[str, Any]]:
         """List documents (stub)."""
         # Would list files in the specific Drive folder

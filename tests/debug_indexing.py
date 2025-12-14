@@ -11,32 +11,22 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.core import rag_core
 from src.core import pgvector_store
+from src.core import document_repo
 
 def test_startup_indexing():
     print("--- Testing Startup Indexing ---")
     
-    # 1. Check Store Path
-    db_path = rag_core.DB_PATH
-    print(f"DB_PATH: {db_path}")
-    
-    if os.path.exists(db_path):
-        print(f"DB file exists. Size: {os.path.getsize(db_path)} bytes")
-    else:
-        print("DB file does NOT exist.")
-        # Create dummy store
-        rag_core.upsert_document("test_doc", "This is a test document.")
-        print("Created dummy document.")
+    # 1. Check indexed artifacts directory
+    indexed_dir = document_repo.INDEXED_DIR
+    print(f"INDEXED_DIR: {indexed_dir}")
 
-    # 2. Load Store
-    print("Loading store...")
-    rag_core.load_store()
-    
-    store = rag_core.get_store()
-    print(f"Store loaded. Docs: {len(store.docs)}")
-    
-    if len(store.docs) == 0:
-        print("ERROR: Store is empty after load!")
-        return
+    if os.path.isdir(indexed_dir):
+        file_count = len([p for p in os.listdir(indexed_dir) if not p.startswith('.')])
+        print(f"Indexed dir exists. Files: {file_count}")
+    else:
+        print("Indexed dir does NOT exist. Creating dummy document...")
+        rag_core.upsert_document("test_doc", "This is a test document.")
+        print("Created dummy document + artifact.")
 
     # 3. Ensure vector store and check stats before rebuild
     try:
@@ -55,6 +45,9 @@ def test_startup_indexing():
     # 5. Check stats after rebuild
     after = pgvector_store.stats(embedding_model=rag_core.EMBED_MODEL_NAME)
     print(f"pgvector chunks after rebuild: {after.get('chunks')}")
+
+    docs = rag_core.list_documents()
+    print(f"Documents listed: {len(docs)}")
 
     if int(after.get("chunks", 0) or 0) <= 0:
         print("ERROR: pgvector index is empty after rebuild!")

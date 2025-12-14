@@ -1,22 +1,16 @@
 """Tests for file deletion logic."""
-import os
 import pathlib
 import tempfile
 import time
 
 from src.core.factory import OllamaBackend
 
-def test_file_deletion_and_reindexing():
+def test_file_deletion_and_reindexing(monkeypatch, require_pgvector):
     """Verify that deleted files are not re-indexed on restart."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Use a temporary file for the database
-        db_path = pathlib.Path(temp_dir) / "rag_store.jsonl"
-        
-        # We need to monkeypatch the DB_PATH in the local_core module
-        from src.core import rag_core
-        rag_core.DB_PATH = str(db_path)
-        # Reset the global store to ensure clean state
-        rag_core._STORE = None
+        indexed_dir = pathlib.Path(temp_dir) / "indexed"
+        monkeypatch.setattr("src.core.document_repo.INDEXED_DIR", str(indexed_dir))
+        indexed_dir.mkdir(parents=True, exist_ok=True)
         
         # 1. Setup a dummy file and an OllamaBackend
         backend = OllamaBackend()
@@ -52,9 +46,6 @@ def test_file_deletion_and_reindexing():
         
         # 6. Simulate a restart by creating a new OllamaBackend instance
         backend2 = OllamaBackend()
-        from src.core import rag_core as rag_core2
-        rag_core2.DB_PATH = str(db_path)
-        backend2.load_store() # This will load from the persisted file
 
         # 7. Verify the file is NOT re-indexed
         docs2 = backend2.list_documents()

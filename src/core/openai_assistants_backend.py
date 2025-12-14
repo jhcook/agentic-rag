@@ -438,21 +438,9 @@ class OpenAIAssistantsBackend:
         messages = [{"role": "user", "content": question}]
         return self.chat(messages, **kwargs)
 
-    def load_store(self) -> bool:
-        """Load the document store."""
-        local_core.load_store()
-        return True
-
-    def save_store(self) -> bool:
-        """Save the document store."""
-        local_core.save_store()
-        return True
-
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents."""
-        local_core.ensure_store_synced()
-        store = local_core.get_store()
-        return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
+        return local_core.list_documents()
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""

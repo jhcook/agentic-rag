@@ -23,9 +23,18 @@ The base path for API endpoints is `/api`.
 
 ## Common Endpoints
 
+## Document Storage Model
+
+Document indexing and retrieval uses two layers:
+
+- **Canonical indexed text artifacts**: extracted text persisted under `cache/indexed/` (durable and exact-match to what was embedded)
+- **Vector index**: PostgreSQL + pgvector tables storing chunk embeddings (and related metadata)
+
+The API endpoints below operate on this combined document store.
+
 ### 1. Search
 
-Search the retrieval store for relevant documents.
+Search the pgvector index for relevant chunks/documents.
 
 **Endpoint:** `POST /api/search`
 
@@ -48,7 +57,9 @@ curl -X POST "http://localhost:8001/api/search" \
 
 ### 2. Upsert Document
 
-Add or update a document in the store.
+Add or update a document in the document store.
+
+The server treats `text` as the canonical extracted text to be indexed. It persists an extracted-text artifact under `cache/indexed/` and derives embeddings/chunks from that exact content.
 
 **Endpoint:** `POST /api/upsert_document`
 

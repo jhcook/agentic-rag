@@ -260,9 +260,9 @@ def test_documents():
 ```python
 @pytest.fixture(autouse=True)
 def clean_store():
-    # Reset document store before each test
-    from src.core.rag_core import reset_store
-    reset_store()
+    # Clear indexed artifacts + pgvector rows before each test
+    from src.core.rag_core import flush_cache
+    flush_cache()
     yield
 ```
 

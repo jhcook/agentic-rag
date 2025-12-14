@@ -18,7 +18,6 @@ import warnings
 
 
 from typing import List, Dict, Any, Optional, Tuple, Callable, cast
-from dataclasses import dataclass, field
 
 import numpy as np
 from dotenv import load_dotenv  # type: ignore
@@ -44,6 +43,7 @@ HAS_LANGCHAIN = True
 # Shared helpers
 from src.core.embeddings import get_embedder as _get_embedder
 from src.core import pgvector_store
+from src.core import document_repo
 from src.core.extractors import extract_text_from_file
 
 # Backwards compatibility for tests/legacy imports.
@@ -163,7 +163,6 @@ logger = logging.getLogger(__name__)
 
 # -------- Configuration --------
 DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
-DB_PATH = os.getenv("RAG_DB", "./cache/rag_store.jsonl")
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
 SEARCH_TOP_K = int(os.getenv("SEARCH_TOP_K", "12"))
 SEARCH_MAX_CONTEXT_CHARS = int(os.getenv("SEARCH_MAX_CONTEXT_CHARS", "8000"))
@@ -172,10 +171,6 @@ EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
 def get_llm_model_name() -> str:
     """Get the current LLM model name from settings or env."""
     return _SETTINGS.get("model") or os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
-
-# Lazy-initialized global state
-_STORE: Optional['Store'] = None  # pylint: disable=invalid-name
-_STORE_LOCK = threading.RLock()
 
 # Cache pgvector schema migration so we don't run idempotent DDL on every query.
 _PGVECTOR_SCHEMA_LOCK = threading.Lock()
@@ -267,20 +262,6 @@ def ensure_vector_store_ready() -> Dict[str, Any]:
         "embedding_dim": _get_embed_dim(embedder),
     }
 
-
-
-# -------- In-memory store --------
-@dataclass
-class Store:
-    """Optimized document store - single source of truth for text."""
-    docs: Dict[str, str] = field(default_factory=dict)
-    last_loaded: float = 0.0
-
-    def add(self, uri: str, text: str) -> None:
-        """Add a document to the store."""
-        self.docs[uri] = text
-
-
 def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any,
                          stage: str, **kwargs):
     """Wrap embedder.encode to record metrics when available."""
@@ -301,56 +282,6 @@ def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any,
         if EMBEDDING_ERRORS:
             EMBEDDING_ERRORS.labels(stage=stage).inc()
         raise
-
-
-def _ensure_store_synced():
-    """Check and reload store if modified on disk. Returns True if store was reloaded."""
-    if not os.path.exists(DB_PATH):
-        return False
-
-    try:
-        file_mtime = os.path.getmtime(DB_PATH)
-        store = get_store()
-
-        if file_mtime > store.last_loaded:
-            logger.info("Detected external changes, reloading store from disk")
-            load_store()
-            store.last_loaded = time.time()
-            # After reloading store from external changes, we need to rebuild the index
-            # because the index in this process may not have vectors for documents added by another process
-            # However, we'll do this lazily in _build_rag_context when search finds no vectors
-            return True  # Store was reloaded
-        return False  # No reload needed
-    except OSError as exc:
-        logger.warning("Error checking store sync: %s", exc)
-        return False
-
-
-def ensure_store_synced() -> bool:
-    """Public wrapper to keep the in-memory store in sync with disk.
-    
-    Returns:
-        True if store was reloaded from disk (external changes detected), False otherwise.
-    """
-    return _ensure_store_synced()
-
-
-def get_store() -> Store:
-    """Return the global Store instance, creating it if necessary."""
-    global _STORE  # pylint: disable=global-statement
-    if _STORE is None:
-        with _STORE_LOCK:
-            if _STORE is None:
-                try:
-                    load_store()
-                except (OSError, ValueError) as exc:
-                    logger.debug("No existing store to load: %s", exc)
-                
-                # Ensure _STORE is initialized even if load failed
-                if _STORE is None:
-                    _STORE = Store()
-    return _STORE
-
 
 def _hash_uri(uri: str) -> str:
     """Hash a URI for storage."""
@@ -383,34 +314,6 @@ def resolve_input_path(path: str) -> pathlib.Path:
 
     attempted = ", ".join(str(c) for c in candidates)
     raise FileNotFoundError(f"Path '{path}' not found (tried: {attempted})")
-
-
-def save_store():
-    """Save the store to disk."""
-    try:
-        store = get_store()
-        logger.info("Saving store to %s", DB_PATH)
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        
-        # Snapshot docs under lock to avoid modification during iteration
-        with _STORE_LOCK:
-            docs_snapshot = list(store.docs.items())
-            
-        with open(DB_PATH, "w", encoding="utf-8") as f:
-            for uri, text in docs_snapshot:
-                rec: Dict[str, Any] = {
-                    "uri": uri,
-                    "id": _hash_uri(uri),
-                    "text": text,
-                    "ts": int(time.time())
-                }
-                f.write(json.dumps(rec) + "\n")
-        logger.info("Successfully saved %d documents", len(docs_snapshot))
-        store.last_loaded = time.time()
-    except (OSError, ValueError) as exc:
-        logger.error("Error saving store: %s", str(exc))
-        raise
-
 
 def _chunk_text_with_offsets(
     text: str, max_chars: int = 800, overlap: int = 120
@@ -554,13 +457,11 @@ def should_skip_uri(uri: str) -> bool:
 
 
 def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
-    """(Re)build the pgvector index from the current JSONL store."""
+    """(Re)build the pgvector index from canonical indexed artifacts."""
 
     if DEBUG_MODE:
         return {"status": "skipped", "reason": "debug_mode"}
 
-    _ensure_store_synced()
-    store = get_store()
     embedder = get_embedder()
     _ensure_pgvector_ready(embedder)
 
@@ -568,16 +469,24 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
     if not ok:
         raise RuntimeError(f"pgvector is not available: {msg}")
 
-    with _STORE_LOCK:
-        doc_items = list(store.docs.items())
-
-    logger.info("Rebuilding pgvector index from %d documents", len(doc_items))
+    # Use rag_documents as the source of URIs; canonical text is on disk.
+    docs = pgvector_store.list_documents()
+    logger.info("Rebuilding pgvector index from %d documents", len(docs))
 
     total_chunks = 0
-    for uri, text in tqdm(iterable=doc_items, desc="Rebuilding pgvector index", unit="doc"):  # pylint: disable=no-value-for-parameter
+    for doc in tqdm(iterable=docs, desc="Rebuilding pgvector index", unit="doc"):  # pylint: disable=no-value-for-parameter
+        uri = str(doc.get("uri") or "")
         if _should_skip_uri(uri):
             continue
-        if not text or not text.strip():
+
+        raw = document_repo.read_indexed_bytes(uri)
+        if not raw:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if not text.strip():
             continue
 
         chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
@@ -600,6 +509,7 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
 
         pgvector_store.upsert_document_chunks(
             uri=uri,
+            text_sha256=hashlib.sha256(raw).hexdigest(),
             chunks=chunks,
             offsets=offsets,
             embeddings=emb,
@@ -612,66 +522,13 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
         gc.collect()
 
     logger.info("pgvector rebuild complete (chunks=%d)", total_chunks)
-    return {"status": "ok", "chunks": total_chunks, "documents": len(doc_items)}
-
-
-def load_store():
-    """Load the JSONL store from disk and ensure pgvector is initialized."""
-    global _STORE  # pylint: disable=global-statement
-
-    if not os.path.exists(DB_PATH):
-        logger.warning("Store file not found at %s", DB_PATH)
-        return
-
-    try:
-        logger.info("Loading store from %s", DB_PATH)
-        new_store = Store()
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line.strip())
-                    if "uri" in rec and "text" in rec:
-                        new_store.add(rec["uri"], rec["text"])
-                except json.JSONDecodeError as exc:
-                    logger.warning("load_store: %s", exc)
-                    continue
-
-        with _STORE_LOCK:
-            if _STORE is None:
-                _STORE = Store()
-            # Atomic-ish update of the dictionary reference
-            _STORE.docs = new_store.docs
-            _STORE.last_loaded = time.time()
-            
-        logger.info("Successfully loaded %d documents", len(_STORE.docs))
-
-        # Do NOT rebuild embeddings unconditionally on load.
-        # pgvector is persistent; rebuilding here makes restarts and sync-checks
-        # extremely expensive and can look like "rebuilding on every query".
-        if not DEBUG_MODE and len(_STORE.docs) > 0:
-            try:
-                stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
-                chunks = int(stats.get("chunks", 0) or 0)
-                if chunks <= 0:
-                    logger.info(
-                        "pgvector has 0 chunks for model '%s' after load; rebuilding index",
-                        EMBED_MODEL_NAME,
-                    )
-                    rebuild_index()
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning(
-                    "pgvector stats/rebuild check failed after load_store: %s",
-                    pgvector_store.redact_error_message(str(exc)),
-                )
-
-    except (OSError, ValueError) as exc:
-        logger.error("Error loading store: %s", str(exc))
-        raise
-
-
+    return {"status": "ok", "chunks": total_chunks, "documents": len(docs)}
 def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=too-many-locals
-    """Upsert a single document into the store."""
-    global _STORE  # pylint: disable=global-statement
+    """Upsert a single document.
+
+    Persists canonical extracted text under `cache/indexed/` and embeds from the
+    bytes read back from disk to guarantee an exact match.
+    """
 
     # Safety check for huge documents
     if len(text) > 5_000_000:  # 5MB text limi
@@ -684,14 +541,16 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
 
     embedder = get_embedder()
 
-    _ensure_store_synced()
-
-    with _STORE_LOCK:
-        if _STORE is None:
-            _STORE = Store()
-
-        existed = uri in _STORE.docs
-        _STORE.add(uri, text)
+    artifact_path = document_repo.artifact_path_for_uri(uri)
+    existed = artifact_path.exists()
+    artifact = document_repo.write_indexed_text(uri=uri, text=text)
+    raw = document_repo.read_indexed_bytes(uri)
+    if raw is None:
+        raise RuntimeError("Failed to read indexed artifact after write")
+    try:
+        canonical_text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("Indexed artifact is not valid utf-8") from exc
 
     if embedder is None:
         raise RuntimeError("Embedder is not available")
@@ -701,7 +560,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
     ok, msg = pgvector_store.test_connection()
     if not ok:
         raise RuntimeError(f"pgvector is not available: {msg}")
-    chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
+    chunks_with_offsets = _chunk_text_with_offsets(canonical_text)  # pylint: disable=no-value-for-parameter
     chunks = [c[0] for c in chunks_with_offsets]
     offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
@@ -720,6 +579,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
 
         pgvector_store.upsert_document_chunks(
             uri=uri,
+            text_sha256=artifact.text_sha256,
             chunks=chunks,
             offsets=offsets,
             embeddings=emb,
@@ -742,8 +602,71 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
             "pgvector stats failed after upsert: %s",
             pgvector_store.redact_error_message(str(exc)),
         )
-    save_store()
     return {"upserted": True, "existed": existed}
+
+
+def list_documents() -> List[Dict[str, Any]]:
+    """List indexed documents (URI + artifact size)."""
+
+    try:
+        docs = pgvector_store.list_documents()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("pgvector list_documents failed: %s", pgvector_store.redact_error_message(str(exc)))
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for doc in docs:
+        uri = str(doc.get("uri") or "")
+        if not uri:
+            continue
+        artifact_path = document_repo.artifact_path_for_uri(uri)
+        try:
+            size = artifact_path.stat().st_size if artifact_path.exists() else 0
+        except OSError:
+            size = 0
+        out.append(
+            {
+                "uri": uri,
+                "size": int(size),
+                "text_sha256": doc.get("text_sha256"),
+                "artifact_present": bool(artifact_path.exists()),
+            }
+        )
+    return out
+
+
+def delete_documents(uris: List[str]) -> Dict[str, Any]:
+    """Delete documents by URI from pgvector and delete their indexed artifacts."""
+
+    if not uris:
+        return {"deleted": 0, "artifacts_deleted": 0}
+
+    artifacts_deleted = 0
+    for uri in uris:
+        if document_repo.delete_indexed_text(uri):
+            artifacts_deleted += 1
+
+    try:
+        deleted = pgvector_store.delete_documents(uris, embedding_model=None)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        msg = pgvector_store.redact_error_message(str(exc))
+        logger.warning("pgvector delete_documents failed: %s", msg)
+        deleted = 0
+
+    return {"deleted": int(deleted), "artifacts_deleted": int(artifacts_deleted)}
+
+
+def flush_cache() -> Dict[str, Any]:
+    """Clear all indexed content (pgvector + cache/indexed artifacts)."""
+
+    try:
+        pgvector_store.wipe_all()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        msg = pgvector_store.redact_error_message(str(exc))
+        logger.warning("pgvector wipe_all failed: %s", msg)
+
+    removed = document_repo.clear_indexed_dir()
+    return {"status": "flushed", "artifacts_removed": int(removed)}
 
 
 def process_file(
@@ -804,50 +727,8 @@ def _process_file(  # pylint: disable=too-many-locals
         logger.warning("Skipping non-text or empty content from %s", file_path)
         return ""
 
-    store = get_store()
-    with _STORE_LOCK:
-        store.add(str(file_path), text)
-
-    if DEBUG_MODE:
-        logger.debug("Debug mode: skipping embeddings for %s", file_path)
-        return text
-
-    if embedder is None:
-        embedder = get_embedder()
-    if embedder is None:
-        raise RuntimeError("Embedder is not available")
-
-    _ensure_pgvector_ready(embedder)
-    ok, _msg = pgvector_store.test_connection()
-    if not ok:
-        return text
-    chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
-    chunks = [c[0] for c in chunks_with_offsets]
-    offsets = [(c[1], c[2]) for c in chunks_with_offsets]
-    if chunks:
-        embeddings = _encode_with_metrics(
-            embedder,
-            chunks,
-            "index_path",
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        emb = np.array(embeddings, dtype=np.float32)
-        if emb.ndim == 1:
-            emb = emb.reshape(1, -1)
-
-        pgvector_store.upsert_document_chunks(
-            uri=str(file_path),
-            chunks=chunks,
-            offsets=offsets,
-            embeddings=emb,
-            embedding_model=EMBED_MODEL_NAME,
-        )
-
-        del chunks_with_offsets, chunks, offsets, embeddings, emb
-        gc.collect()
-
+    # Persist + embed from canonical artifact.
+    upsert_document(str(file_path), text)
     return text
 
 
@@ -912,7 +793,6 @@ def index_path(  # pylint: disable=too-many-locals
         except (OSError, ValueError) as exc:
             logger.warning("Failed to read %s: %s", file_path, exc)
 
-    save_store()
     try:
         stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
         total_vectors = stats.get("chunks", 0)
@@ -966,9 +846,16 @@ def expand_query(query: str) -> str:
 
 
 def send_store_to_llm() -> str:  # pylint: disable=too-many-locals
-    """Send the entire store as context to the LLM for processing."""
-    _ensure_store_synced()
-    texts = list(get_store().docs.values())
+    """Send all indexed artifacts as context to the LLM (best-effort)."""
+    docs = pgvector_store.list_documents()
+    texts: List[str] = []
+    for doc in docs:
+        uri = str(doc.get("uri") or "")
+        if not uri:
+            continue
+        text = document_repo.read_indexed_text(uri)
+        if text:
+            texts.append(text)
     resp = None
 
     for _ in range(3):
@@ -1103,22 +990,21 @@ def _build_rag_context(
     if not candidates:
         # No hits can be perfectly normal (query unrelated). Only rebuild if the
         # vector table is empty for the active embedding model.
-        _ensure_store_synced()
-        store = get_store()
-        if len(getattr(store, "docs", {})) > 0:
-            try:
-                stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
-                chunks = int(stats.get("chunks", 0) or 0)
-            except Exception:  # pylint: disable=broad-exception-caught
-                chunks = 0
+        try:
+            stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+            chunks = int(stats.get("chunks", 0) or 0)
+            docs = int(stats.get("documents", 0) or 0)
+        except Exception:  # pylint: disable=broad-exception-caught
+            chunks = 0
+            docs = 0
 
-            if chunks <= 0:
-                logger.info(
-                    "No vector hits and pgvector chunks=0 (docs=%d); rebuilding index and retrying...",
-                    len(store.docs),
-                )
-                rebuild_index()
-                candidates = _vector_search(query, k=top_k)
+        if docs > 0 and chunks <= 0:
+            logger.info(
+                "No vector hits and pgvector chunks=0 (docs=%d); rebuilding index and retrying...",
+                docs,
+            )
+            rebuild_index()
+            candidates = _vector_search(query, k=top_k)
         if not candidates:
             logger.info("No vector hits; refusing to answer from outside sources.")
     # Re-rank to prioritize query overlap
@@ -1508,13 +1394,13 @@ def verify_grounding_simple(_question: str, draft_answer: str,
 
 def verify_grounding(_question: str, draft_answer: str, citations: List[str]) -> Dict[str, Any]:
     """
-    Verify grounding given a list of citation URIs by pulling text from the store.
+    Verify grounding given a list of citation URIs by pulling text from indexed artifacts.
     """
-    store = get_store()
     passages: List[Dict[str, Any]] = []
     for uri in citations:
-        if uri in store.docs:
-            passages.append({"uri": uri, "text": store.docs[uri], "score": 1.0})
+        text = document_repo.read_indexed_text(uri)
+        if text:
+            passages.append({"uri": uri, "text": text, "score": 1.0})
     return verify_grounding_simple(_question, draft_answer, passages)
 
 

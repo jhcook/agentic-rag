@@ -27,20 +27,12 @@ class RAGBackend(Protocol):
         """Generate an answer based on search results."""
         ...
 
-    def load_store(self) -> bool:
-        """Load or reload the document store."""
-        ...
-
-    def save_store(self) -> bool:
-        """Save the document store to disk."""
-        ...
-
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all indexed documents with metadata (uri, size, etc)."""
         ...
 
     def rebuild_index(self) -> None:
-        """Rebuild the vector index from the document store."""
+        """Rebuild the vector index from the canonical indexed artifacts."""
         ...
 
     def rerank(self, query: str, passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -56,7 +48,7 @@ class RAGBackend(Protocol):
         ...
 
     def flush_cache(self) -> Dict[str, Any]:
-        """Clear the document store."""
+        """Clear all indexed content (vectors + indexed artifacts)."""
         ...
 
     def get_stats(self) -> Dict[str, Any]:

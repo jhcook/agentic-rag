@@ -228,6 +228,3 @@ class QualityMetricsResp(BaseModel):
     success_rate: float
     avg_sources: float
 
-class LoadStoreReq(BaseModel):
-    """Request model for sending the store to an LLM."""
-    _ : Optional[bool] = True

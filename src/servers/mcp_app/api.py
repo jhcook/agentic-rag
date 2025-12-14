@@ -9,14 +9,9 @@ import time
 import uuid
 import logging
 
-from src.core.rag_core import (
-    get_store,
-    MAX_MEMORY_MB,
-    save_store,
-)
+from src.core.rag_core import MAX_MEMORY_MB
 from src.core.indexer import index_path, upsert_document
 from src.core.extractors import extract_text_from_file, extract_text_from_bytes
-from src.core.store import DB_PATH
 from src.servers.mcp_app import worker as worker_mod
 from src.servers.mcp_app.admin_auth import require_admin_access
 from src.core.factory import get_rag_backend
@@ -239,15 +234,15 @@ async def rest_verify_grounding(req: VerifyReq):
 @rest_api.get("/documents")
 async def rest_documents(_request: Request):
     try:
-        store = get_store()
-        docs = []
-        for uri, text in getattr(store, "docs", {}).items():
-            try:
-                size = len(str(text).encode("utf-8", errors="ignore"))
-            except Exception:
-                size = 0
-            docs.append({"uri": uri, "size_bytes": size})
-        return JSONResponse({"documents": docs})
+        docs = await anyio.to_thread.run_sync(backend.list_documents)
+        return JSONResponse(
+            {
+                "documents": [
+                    {"uri": d.get("uri"), "size_bytes": d.get("size", 0)}
+                    for d in (docs or [])
+                ]
+            }
+        )
     except Exception:
         return JSONResponse({"documents": []})
 

@@ -30,8 +30,6 @@ except Exception:  # pragma: no cover
 
 from src.core.extractors import extract_text_from_file
 from src.core.indexer import index_path, upsert_document
-from src.core.store import load_store, save_store
-from src.core import rag_core
 
 logger = logging.getLogger(__name__)
 
@@ -105,15 +103,8 @@ def start_worker(env: Optional[Dict[str, str]] = None):
                         }
                 JOBS[job_id] = job
             try:
-                # Sync if external changes were detected (another process modified store)
-                # upsert_document already saves the store and adds to index incrementally.
-                # If store was reloaded from external changes, we generally do NOT need to
-                # rebuild pgvector here: the worker process performs incremental pgvector
-                # upserts during indexing/upsert operations. Rebuilding on every job creates
-                # an expensive loop where each store write triggers a full index rebuild.
-                store_reloaded = rag_core.ensure_store_synced()
-                if store_reloaded:
-                    logger.info("Store was reloaded from external changes")
+                # No legacy store sync: canonical content is indexed artifacts + pgvector.
+                pass
             except Exception as exc:  # pragma: no cover
                 logger.error("Failed to sync store after job %s: %s", job_id, exc, exc_info=True)
 
@@ -167,8 +158,6 @@ def _index_worker_loop(
     from src.core.rag_core import (
         index_path as _worker_index_path,
         upsert_document as _worker_upsert,
-        load_store as _worker_load_store,
-        save_store as _worker_save_store,
         rebuild_index as _worker_rebuild,
     )
     while True:
@@ -179,7 +168,6 @@ def _index_worker_loop(
             break
         job_id = job.get("id")
         try:
-            _worker_load_store()
             started_at = _iso_now()
             result_queue.put({
                 "id": job_id,
@@ -239,7 +227,6 @@ def _index_worker_loop(
             else:
                 res = {"error": f"unknown job type {job['type']}"}
             _worker_rebuild()
-            _worker_save_store()
             finished_at = _iso_now()
             result_queue.put({
                 "id": job_id,

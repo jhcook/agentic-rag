@@ -1,13 +1,19 @@
 """Tests for RAG core functionality."""
 import logging
-import tempfile
+from pathlib import Path
 
 import pytest
 
+from src.core import document_repo, pgvector_store
 from src.core.rag_core import (
-    Store, save_store, load_store, upsert_document,
-    index_path, search, rerank, synthesize_answer,
-    grounded_answer, verify_grounding_simple, verify_grounding, get_store
+    upsert_document,
+    index_path,
+    search,
+    rerank,
+    synthesize_answer,
+    grounded_answer,
+    verify_grounding_simple,
+    verify_grounding,
 )
 
 # Set up logging
@@ -15,83 +21,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @pytest.fixture
-def sample_store():
-    store = Store()
-    store.add("doc1.txt", "This is a sample document about AI.")
-    store.add("doc2.txt", "Another document about machine learning.")
-    return store
+def temp_indexed_dir(tmp_path, monkeypatch):
+    indexed = tmp_path / "indexed"
+    monkeypatch.setattr("src.core.document_repo.INDEXED_DIR", str(indexed))
+    indexed.mkdir(parents=True, exist_ok=True)
+    return indexed
 
-@pytest.fixture
-def temp_db_path():
-    with tempfile.NamedTemporaryFile(suffix='.jsonl') as f:
-        yield f.name
+def test_upsert_document(temp_indexed_dir, require_pgvector):
+    """Upsert writes canonical artifact and updates pgvector."""
 
-def test_store_initialization():
-    """Test store initialization."""
-    store = Store()
-    assert store.docs == {}
-    assert store.last_loaded == 0.0
-
-
-def test_store_add():
-    """Test adding documents to store."""
-    store = Store()
-    store.add("test.txt", "Test content")
-    assert "test.txt" in store.docs
-    assert store.docs["test.txt"] == "Test content"
-
-def test_save_and_load_store(temp_db_path, monkeypatch):
-    """Test saving and loading store with proper cleanup."""
-    # Configure test environment
-    monkeypatch.setattr("src.core.rag_core.DB_PATH", temp_db_path)
-    logger.info("Using temporary DB path: %s", temp_db_path)
-
-    # Reset global store
-    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
-    rag_core._STORE = Store()  # pylint: disable=protected-access
-
-    # Add test content
-    test_content = "Test content for persistence"
-    rag_core._STORE.add("test.txt", test_content)  # pylint: disable=protected-access
-    logger.info("Added test document to store")
-
-    # Save store
-    save_store()
-    logger.info("Saved store to disk")
-
-    # Create new store instance
-    rag_core._STORE = Store()  # pylint: disable=protected-access
-    assert len(rag_core._STORE.docs) == 0, "Expected empty store after reset"  # pylint: disable=protected-access
-
-    # Load from disk
-    load_store()
-    logger.info("Loaded store. Contents: %s", rag_core._STORE.docs)  # pylint: disable=protected-access
-
-    # Verify
-    assert "test.txt" in rag_core._STORE.docs, (  # pylint: disable=protected-access
-        f"Expected 'test.txt' in {list(rag_core._STORE.docs.keys())}")  # pylint: disable=protected-access
-    assert rag_core._STORE.docs["test.txt"] == test_content  # pylint: disable=protected-access
-
-def test_upsert_document(temp_db_path, monkeypatch, require_pgvector):
-    """Test document upsert with proper store reset."""
-    monkeypatch.setattr("src.core.rag_core.DB_PATH", temp_db_path)
-
-    # Reset store
-    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
-    rag_core._STORE = Store()  # pylint: disable=protected-access
-
-    # Perform upsert
+    test_uri = "test_doc.txt"
     test_content = "Test content for upsert"
-    result = upsert_document("test_doc.txt", test_content)
-    logger.info("Upsert result: %s", result)
-
-    # Verify
+    result = upsert_document(test_uri, test_content)
     assert result["upserted"] is True
-    assert "test_doc.txt" in rag_core._STORE.docs  # pylint: disable=protected-access
-    assert rag_core._STORE.docs["test_doc.txt"] == test_content  # pylint: disable=protected-access
+
+    artifact_path = document_repo.artifact_path_for_uri(test_uri)
+    assert artifact_path.exists()
+    assert artifact_path.read_text(encoding="utf-8") == test_content
+
+    # Verify pgvector sees the document
+    docs = pgvector_store.list_documents()
+    assert any(d.get("uri") == test_uri for d in docs)
 
 
-def test_index_path(tmp_path, require_pgvector):
+def test_index_path(tmp_path, temp_indexed_dir, require_pgvector):
     """Test indexing a directory path."""
     # Create temporary directory with test files
     (tmp_path / "test1.txt").write_text("Content 1")
@@ -100,28 +53,22 @@ def test_index_path(tmp_path, require_pgvector):
     result = index_path(str(tmp_path))
     assert result["indexed"] == 2
 
-def test_search(require_pgvector):
+def test_search(monkeypatch):
     """Test search functionality."""
-    # Clear the store first
-    from src.core.rag_core import _STORE  # pylint: disable=import-outside-toplevel
-    global _STORE  # pylint: disable=global-statement
-    _STORE = Store()  # pylint: disable=protected-access
+    # Avoid external dependencies by mocking retrieval + LLM completion.
+    def mock_build(*_args, **_kwargs):
+        candidates = [{"uri": "doc1.txt", "text": "This is a passage about artificial intelligence.", "score": 1.0}]
+        return ("context", ["doc1.txt"], candidates)
 
-    # Add test document
-    test_doc = "This is a test document about artificial intelligence"
-    _STORE.add("test.txt", test_doc)  # pylint: disable=protected-access
-    logger.info("Added test document to store: %s", test_doc)
+    monkeypatch.setattr("src.core.rag_core._build_rag_context", mock_build)
+    monkeypatch.setattr(
+        "src.core.rag_core.completion",
+        lambda **_kwargs: {"choices": [{"message": {"content": "Answer"}}]},
+    )
 
-    # Perform search
     results = search("artificial intelligence", top_k=5)
-    logger.info("Search results: %s", results)
-
-    # Verify results
-    # search returns a dict with 'choices' (LLM response) or 'answer' (fallback)
-    # It does NOT return a list of results directly anymore.
-    assert isinstance(results, dict) or hasattr(results, 'choices')
-    if isinstance(results, dict):
-        assert "choices" in results or "answer" in results or "error" in results
+    assert isinstance(results, dict)
+    assert "answer" in results or "choices" in results or "error" in results
 
 
 def test_rerank():
@@ -146,11 +93,24 @@ def test_synthesize_answer():
     assert "citations" in result
 
 
-def test_grounded_answer(require_pgvector):
+def test_grounded_answer(monkeypatch, temp_indexed_dir):
     """Test grounded answer generation."""
-    import src.core.rag_core as rag_core  # pylint: disable=import-outside-toplevel
-    rag_core._STORE = Store()  # pylint: disable=protected-access
-    rag_core._STORE.add("ai_doc.txt", "AI is artificial intelligence")  # pylint: disable=protected-access
+    # Provide an indexed artifact for grounding verification.
+    document_repo.write_indexed_text(uri="ai_doc.txt", text="AI is artificial intelligence")
+
+    monkeypatch.setattr(
+        "src.core.rag_core._vector_search",
+        lambda *_args, **_kwargs: [{
+            "uri": "ai_doc.txt",
+            "text": "AI is artificial intelligence and widely used in software.",
+            "score": 1.0,
+        }],
+    )
+    monkeypatch.setattr(
+        "src.core.rag_core.completion",
+        lambda **_kwargs: {"choices": [{"message": {"content": "AI is artificial intelligence.\n\nSources:\n[1] ai_doc.txt"}}]},
+    )
+
     result = grounded_answer("What is AI?", k=1)
     assert "answer" in result
     assert "sources" in result
@@ -174,10 +134,7 @@ def test_verify_grounding_simple():
 
 def test_verify_grounding():
     """Test grounding verification."""
-    from src.core.rag_core import _STORE  # pylint: disable=import-outside-toplevel
-    global _STORE  # pylint: disable=global-statement
-    _STORE = Store()  # pylint: disable=protected-access
-    _STORE.add("doc1.txt", "AI is artificial intelligence")  # pylint: disable=protected-access
+    document_repo.write_indexed_text(uri="doc1.txt", text="AI is artificial intelligence")
     result = verify_grounding(
         "What is AI?",
         "AI is artificial intelligence [1].",
@@ -198,9 +155,8 @@ def test_grounded_answer_with_config(monkeypatch):
     mock_completion.return_value = {"choices": [{"message": {"content": "Test answer"}}]}
     monkeypatch.setattr("src.core.rag_core.completion", mock_completion)
     
-    # Setup store
-    rag_core._STORE = Store()
-    rag_core._STORE.add("doc1.txt", "Content")
+    # Ensure artifact exists for any grounding calls.
+    document_repo.write_indexed_text(uri="doc1.txt", text="Content")
     
     # Mock vector search to return hits so we don't hit "I don't know" early return
     # Text must be long enough to pass _is_low_signal filter (>= 12 words)

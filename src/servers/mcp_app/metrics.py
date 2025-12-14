@@ -11,7 +11,7 @@ from prometheus_client import (
 from starlette.responses import Response
 
 from src.servers.mcp_app.memory import get_memory_usage, MAX_MEMORY_MB
-from src.core.rag_core import get_store, EMBED_MODEL_NAME
+from src.core.rag_core import EMBED_MODEL_NAME
 from src.core import pgvector_store
 from src.servers.mcp_app.memory import get_system_memory_mb
 
@@ -124,8 +124,8 @@ def _set_labeled_gauge(gauge: Gauge, labels: Dict[str, str], value: Optional[int
 def refresh_prometheus_metrics(ollama_base: str):
     """Update Prometheus gauges with current server state."""
     try:
-        store = get_store()
-        MCP_DOCUMENTS_INDEXED.set(len(getattr(store, "docs", {})))
+        stats = pgvector_store.stats(embedding_model=EMBED_MODEL_NAME)
+        MCP_DOCUMENTS_INDEXED.set(int(stats.get("documents", 0) or 0))
     except Exception as exc:
         logger.debug("Failed to update document metrics: %s", exc)
 

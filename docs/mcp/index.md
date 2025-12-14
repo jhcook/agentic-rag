@@ -28,7 +28,7 @@ Everything runs on the same machine. The MCP server accesses the document store 
                        ┌─────────────────┐
                        │ Document Store  │
                        │ (pgvector +     │
-                       │    JSONL)       │
+                       │ cache/indexed)  │
                        └─────────────────┘
 ```
 

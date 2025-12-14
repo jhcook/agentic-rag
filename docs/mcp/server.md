@@ -20,7 +20,7 @@ src/servers/mcp_server.py
 │   └── list_indexed_documents_tool()
 ├── Core Integration
 │   ├── RAG Core (src/core/rag_core.py)
-│   ├── Document Store
+│   ├── Indexed Artifacts (cache/indexed)
 │   └── Embedding System
 └── Server Configuration
     ├── Streamable HTTP Transport
@@ -130,13 +130,13 @@ src/servers/mcp_server.py
 
 ### Server Configuration
 
-### Initialization and Background Indexing
+### Initialization
 
-To ensure the server starts up immediately and remains responsive, the pgvector index rebuilding process runs in a background thread upon startup.
+The MCP server starts immediately. There is no JSONL/in-memory document store.
 
-- **Non-blocking Startup**: The server accepts connections immediately.
-- **Background Loading**: The `_background_load_store` method handles loading the document store and rebuilding the vector index asynchronously.
-- **Status Availability**: Search operations will use the currently available index while the rebuild completes.
+- Canonical extracted text is persisted as artifacts under `cache/indexed/`.
+- Vector search lives in PostgreSQL + pgvector.
+- Index rebuilds are triggered explicitly via the rebuild operation (or by re-indexing).
 
 ### Transport Layer
 
@@ -168,7 +168,8 @@ mcp.settings.port = int(os.getenv("MCP_PORT", "8000"))
 
 The MCP server integrates with the core RAG system:
 
-- **Document Store**: Uses `get_store()` and `load_store()`
+- **Indexed artifacts**: Canonical extracted text under `cache/indexed/`
+- **Vector index**: PostgreSQL + pgvector
 - **Search Functions**: Calls `search()`, `rerank()`, `grounded_answer()`
 - **Indexing**: Uses `upsert_document()` for storage
 - **Embeddings**: Leverages configured embedding model
@@ -176,7 +177,7 @@ The MCP server integrates with the core RAG system:
 ### Configuration System
 
 - Environment variables for server settings
-- Dynamic store loading
+- No store lifecycle; configuration is loaded from settings/env
 - Model configuration through LiteLLM
 - Path resolution for document directories
 
@@ -195,8 +196,8 @@ The MCP server integrates with the core RAG system:
 - Batch processing for multiple documents
 
 ### Concurrent Access
-- Single-writer, multiple-reader document store
-- Thread-safe operations through store locking
+- PostgreSQL provides concurrency control for vector/index metadata.
+- Artifact writes are atomic (write-then-rename) to keep text durable and consistent.
 - Connection pooling for external services
 
 ## Development and Testing

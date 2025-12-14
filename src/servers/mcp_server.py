@@ -127,42 +127,11 @@ mcp = FastMCP("retrieval-server")
 
 # Track if we're already shutting down to prevent duplicate saves
 shutting_down = False
-store_loading = False
-store_loaded = False
-store_load_thread: Optional[threading.Thread] = None
 
 # Memory management settings
 MEMORY_CHECK_INTERVAL = 30  # seconds
 MEMORY_LOG_STEP_MB = 256  # log memory usage whenever it crosses another 256MB bucket
 
-
-def _background_load_store():
-    # pylint: disable=global-statement
-    global store_loading, store_loaded
-    if store_loading or store_loaded:
-        return
-    store_loading = True
-    try:
-        # Load store and rebuild index in background
-        backend.load_store()
-        # load_store() performs a pgvector stats check and rebuilds only if needed.
-        refresh_prometheus_metrics(OLLAMA_API_BASE)
-        store_loaded = True
-        logger.info("Background store load and index rebuild complete")
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error("Background store load failed: %s", exc, exc_info=True)
-    finally:
-        store_loading = False
-
-
-def start_background_store_load():
-    """Kick off store load/rebuild in a background thread so startup is fast."""
-    # pylint: disable=global-statement
-    global store_load_thread
-    if store_load_thread and store_load_thread.is_alive():
-        return
-    store_load_thread = threading.Thread(target=_background_load_store, daemon=True)
-    store_load_thread.start()
 
 def _safe_int(value: Any) -> Optional[int]:
     """Convert a value to int when possible, otherwise None."""
@@ -198,15 +167,9 @@ def graceful_shutdown(signum: Optional[int] = None, _frame: Any = None):
     else:
         logger.info("Initiating graceful shutdown...")
 
-    try:
-        backend.save_store()
-        logger.info("Store saved successfully")
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Error saving store during shutdown: %s", e, exc_info=True)
-    finally:
-        logger.info("Shutdown complete")
-        if signum:
-            sys.exit(0)
+    logger.info("Shutdown complete")
+    if signum:
+        sys.exit(0)
 
 # Register signal handlers for graceful shutdown
 signal.signal(signal.SIGINT, graceful_shutdown)   # Ctrl+C
@@ -689,10 +652,6 @@ if __name__ == "__main__":
 
         # Start memory monitoring
         start_memory_monitor(graceful_shutdown)
-
-        # Load store asynchronously to speed startup
-        logger.info("Starting background store load...")
-        start_background_store_load()
 
         # Log server configuration and memory info
         memory_mb = get_memory_usage()

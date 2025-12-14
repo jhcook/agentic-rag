@@ -48,7 +48,7 @@ from prometheus_client import (
 
 from src.core.factory import get_rag_backend
 from src.core.models import (
-    IndexPathReq, SearchReq, UpsertReq, IndexUrlReq, LoadStoreReq,
+    IndexPathReq, SearchReq, UpsertReq, IndexUrlReq,
     GroundedAnswerReq, RerankReq, VerifyReq, VerifySimpleReq,
     HealthResp, DocumentInfo, DocumentsResp, DeleteDocsReq,
     ConfigModeReq, QualityMetricsResp, Job, OpenAIConfigModel,
@@ -784,10 +784,6 @@ async def lifespan(_fastapi_app: FastAPI):
 
     yield
     logger.info("REST server shutting down")
-    try:
-        backend.save_store()
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Error saving store on shutdown: %s", e)
 
 app = FastAPI(title="retrieval-rest-server", lifespan=lifespan)
 
@@ -1156,17 +1152,6 @@ def api_search(req: SearchReq):
             status_code=502,
             detail={"error": "search failed", "detail": str(e)}
         ) from e
-
-@app.post(f"/{pth}/load_store")
-def api_load(_req: LoadStoreReq):
-    """Send the current store to the LLM."""
-    logger.info("Loading store to LLM")
-    try:
-        backend.load_store()
-        return {"status": "loaded"}
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        logger.error("Error loading store to LLM: %s", e)
-        raise
 
 @app.get("/metrics")
 def metrics_endpoint():
@@ -1644,7 +1629,7 @@ def api_search_job(job_id: str):
 
 @app.post(f"/{pth}/flush_cache")
 def api_flush_cache(_request: Request, _admin: None = Depends(require_admin_access)):
-    """Flush the document store and delete the backing DB file."""
+    """Flush indexed content (pgvector + cache/indexed artifacts)."""
     try:
         return backend.flush_cache()
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -2244,7 +2229,7 @@ def api_pgvector_migrate(_request: Request, _admin: None = Depends(require_admin
 
 @app.post(f"/{pth}/pgvector/backfill")
 def api_pgvector_backfill(_request: Request, _admin: None = Depends(require_admin_access)):
-    """Backfill pgvector from the JSONL store."""
+    """Rebuild pgvector vectors from indexed artifacts."""
     try:
         result = rag_core.rebuild_index()
         return JSONResponse(result)

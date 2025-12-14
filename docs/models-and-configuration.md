@@ -249,7 +249,16 @@ async def send_to_llm(query: List[str]) -> Any:
 **Document Store Processing**:
 ```python
 def send_store_to_llm() -> str:
-    texts = list(get_store().docs.values())
+    from src.core import rag_core, document_repo
+    docs = rag_core.list_documents()
+    texts = []
+    for doc in docs:
+        uri = doc.get("uri")
+        if not uri:
+            continue
+        text = document_repo.read_indexed_text(uri)
+        if text:
+            texts.append(text)
     # Handle both sync and async execution contexts
     if running_loop and running_loop.is_running():
         future = asyncio.run_coroutine_threadsafe(send_to_llm(texts), running_loop)
@@ -384,7 +393,7 @@ For retrieval-augmented generation, low temperature (0.1) ensures responses stay
 - Consider smaller models for resource-constrained environments
 
 **Empty Search Results**:
-- Verify documents have been indexed: check `cache/rag_store.jsonl`
+- Verify documents have been indexed: check `cache/indexed/` contains extracted text artifacts
 - Confirm pgvector is running and has vectors
 - Check debug logs for embedding failures
 

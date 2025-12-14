@@ -197,6 +197,8 @@ def migrate_schema(embed_dim: int) -> None:
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_uri ON rag_documents(uri);",
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_uri ON rag_chunks(uri);",
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_model ON rag_chunks(embedding_model);",
+        # Composite index for efficient DELETE during upsert (WHERE uri=%s AND embedding_model=%s)
+        "CREATE INDEX IF NOT EXISTS idx_rag_chunks_uri_model ON rag_chunks(uri, embedding_model);",
         # HNSW index for normalized inner-product search
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_hnsw "
         "  ON rag_chunks USING hnsw (embedding vector_ip_ops);",
@@ -218,6 +220,7 @@ def _now_ts() -> float:
 def upsert_document_chunks(
     *,
     uri: str,
+    text_sha256: Optional[str] = None,
     chunks: Sequence[str],
     offsets: Sequence[Tuple[int, int]],
     embeddings: np.ndarray,
@@ -234,10 +237,10 @@ def upsert_document_chunks(
         with conn.cursor() as cur:
             # Upsert document
             cur.execute(
-                "INSERT INTO rag_documents(uri, updated_at) VALUES (%s, NOW()) "
-                "ON CONFLICT (uri) DO UPDATE SET updated_at = EXCLUDED.updated_at "
+                "INSERT INTO rag_documents(uri, text_sha256, updated_at) VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (uri) DO UPDATE SET text_sha256 = EXCLUDED.text_sha256, updated_at = EXCLUDED.updated_at "
                 "RETURNING id",
-                (uri,),
+                (uri, text_sha256),
             )
             row = cur.fetchone()
             if not row:
@@ -272,6 +275,30 @@ def upsert_document_chunks(
         conn.commit()
 
     return len(chunks)
+
+
+def list_documents() -> List[Dict[str, Any]]:
+    """List documents tracked in rag_documents."""
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        _configure_connection(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT uri, text_sha256, updated_at FROM rag_documents ORDER BY updated_at DESC"
+            )
+            rows = cur.fetchall() or []
+
+    out: List[Dict[str, Any]] = []
+    for uri, text_sha256, updated_at in rows:
+        out.append(
+            {
+                "uri": str(uri),
+                "text_sha256": str(text_sha256) if text_sha256 is not None else None,
+                "updated_at": str(updated_at) if updated_at is not None else None,
+            }
+        )
+    return out
 
 
 def delete_documents(uris: Sequence[str], embedding_model: Optional[str] = None) -> int:

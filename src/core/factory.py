@@ -24,14 +24,12 @@ def _ollama_backend_enabled() -> bool:
 # Initialize optional modules to None
 ollama_core = None  # pylint: disable=invalid-name
 extract_text_from_file_fn: Optional[Callable[[pathlib.Path], str]] = None
-DB_PATH = None
 GoogleGeminiBackend = None  # pylint: disable=invalid-name
 OpenAIAssistantsBackend = None  # pylint: disable=invalid-name
 
 # Import Ollama implementation
 try:
     import src.core.rag_core as ollama_core
-    from src.core.store import DB_PATH
     from src.core.extractors import extract_text_from_file
     HAS_OLLAMA_CORE = True
     extract_text_from_file_fn = extract_text_from_file
@@ -172,25 +170,10 @@ class OllamaBackend:
         self._check_core()
         return ollama_core.grounded_answer(question, k=k, **kwargs)
 
-    def load_store(self) -> bool:
-        """Load the document store."""
-        self._check_core()
-        ollama_core.load_store()
-        return True
-
-    def save_store(self) -> bool:
-        """Save the document store."""
-        self._check_core()
-        ollama_core.save_store()
-        return True
-
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents with metadata."""
         self._check_core()
-        # Ensure store is synced with disk before listing
-        ollama_core.ensure_store_synced()
-        store = ollama_core.get_store()
-        return [{"uri": uri, "size": len(text)} for uri, text in store.docs.items()]
+        return ollama_core.list_documents()
 
     def rebuild_index(self) -> None:
         """Rebuild the vector index."""
@@ -222,26 +205,9 @@ class OllamaBackend:
                     with self._deletion_lock:
                         self._deletion_status["processing"] = True
 
-                    # Perform deletion
-                    store = ollama_core.get_store()
-                    deleted = 0
-                    for uri in uris:
-                        if uri in store.docs:
-                            del store.docs[uri]
-                            deleted += 1
-
-                    ollama_core.save_store()
-                    try:
-                        ollama_core.pgvector_store.delete_documents(
-                            uris,
-                            embedding_model=ollama_core.EMBED_MODEL_NAME,
-                        )
-                    except Exception as exc:  # pylint: disable=broad-exception-caught
-                        try:
-                            msg = ollama_core.pgvector_store.redact_error_message(str(exc))
-                        except Exception:  # pylint: disable=broad-exception-caught
-                            msg = "pgvector delete_documents failed"
-                        logger.warning("pgvector delete_documents failed: %s", msg)
+                    # Perform deletion (pgvector + indexed artifacts)
+                    result = ollama_core.delete_documents(list(uris))
+                    deleted = int(result.get("deleted", 0) or 0)
 
                     with self._deletion_lock:
                         self._deletion_status["processing"] = False
@@ -289,50 +255,28 @@ class OllamaBackend:
     def flush_cache(self) -> Dict[str, Any]:
         """Clear the document cache."""
         self._check_core()
-        try:
-            ollama_core.pgvector_store.wipe_all()
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            try:
-                msg = ollama_core.pgvector_store.redact_error_message(str(exc))
-            except Exception:  # pylint: disable=broad-exception-caught
-                msg = "pgvector wipe_all failed"
-            logger.warning("pgvector wipe_all failed: %s", msg)
-        store = ollama_core.get_store()
-        store.docs.clear()
-        removed = False
-        if DB_PATH and pathlib.Path(DB_PATH).exists():
-            try:
-                pathlib.Path(DB_PATH).unlink()
-                removed = True
-            except OSError:
-                removed = False
-        ollama_core.save_store()
-        return {"status": "flushed", "db_removed": removed, "documents": 0}
+        return ollama_core.flush_cache()
 
     def get_stats(self) -> Dict[str, Any]:
         """Get system statistics."""
         self._check_core()
-        store = ollama_core.get_store()
-        docs = len(getattr(store, "docs", {}))
         try:
-            vectors = int(
-                ollama_core.pgvector_store.stats(embedding_model=ollama_core.EMBED_MODEL_NAME).get(
-                    "chunks", 0
-                )
-            )
+            stats = ollama_core.pgvector_store.stats(embedding_model=ollama_core.EMBED_MODEL_NAME)
+            docs = int(stats.get("documents", 0) or 0)
+            vectors = int(stats.get("chunks", 0) or 0)
         except Exception:  # pylint: disable=broad-exception-caught
+            docs = 0
             vectors = 0
 
-        # Calculate total size of indexed text
-        total_size_bytes = sum(len(text.encode('utf-8')) for text in store.docs.values())
+        # Calculate total size of indexed artifacts
+        total_size_bytes = 0
+        try:
+            for doc in ollama_core.list_documents():
+                total_size_bytes += int(doc.get("size", 0) or 0)
+        except Exception:  # pylint: disable=broad-exception-caught
+            total_size_bytes = 0
 
-        # Get store file size
         store_file_bytes = 0
-        if ollama_core.DB_PATH and os.path.exists(ollama_core.DB_PATH):
-            try:
-                store_file_bytes = os.path.getsize(ollama_core.DB_PATH)
-            except OSError:
-                pass
 
         return {
             "status": "ok",
@@ -428,18 +372,6 @@ class RemoteBackend:
             timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
-
-    def load_store(self) -> bool:
-        """Load the document store."""
-        resp = requests.post(
-            f"{self.base_url}/load_store",
-            json={},
-            timeout=self.timeout)
-        return resp.status_code == 200
-
-    def save_store(self) -> bool:
-        """Save the document store."""
-        return True
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents with metadata."""
@@ -541,14 +473,6 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
         def list_documents(self) -> List[Dict[str, Any]]:
             """List all documents with metadata (returns empty list for NullBackend)."""
             return []
-
-        def save_store(self) -> bool:
-            """Save the document store (no-op for NullBackend)."""
-            return True
-
-        def load_store(self) -> bool:
-            """Load the document store (no-op for NullBackend)."""
-            return True
 
     def __init__(self, initial_mode: str = "ollama"):
         """Initialize hybrid backend with available backends."""
@@ -889,14 +813,6 @@ class HybridBackend:  # pylint: disable=too-many-public-methods
             return self._backend.grounded_answer(question, k, **filtered_kwargs)
 
         return {"error": "Grounded answer not supported"}
-
-    def load_store(self) -> bool:
-        """Load the document store."""
-        return self._backend.load_store()
-
-    def save_store(self) -> bool:
-        """Save the document store."""
-        return self._backend.save_store()
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """List all documents with metadata."""
