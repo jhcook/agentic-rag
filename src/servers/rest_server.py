@@ -875,6 +875,36 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return await request_validation_exception_handler(request, exc)
 
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors to performance metrics."""
+    path = _get_route_path_template(request)
+    operation = None
+    if path.endswith("/search"):
+        operation = "search"
+    elif path.endswith("/grounded_answer"):
+        operation = "grounded_answer"
+    elif path.endswith("/chat"):
+        operation = "chat"
+    elif path.endswith("/upsert_document"):
+        operation = "upsert_document"
+    
+    if operation:
+        try:
+            pgvector_store.insert_performance_metric(
+                operation=operation,
+                duration_ms=0,
+                error=str(exc),
+            )
+        except Exception as e:
+            logger.error("Failed to insert performance metric for validation error: %s", e)
+
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.exception_handler(ConfigurationError)
 async def configuration_exception_handler(request: Request, exc: ConfigurationError):
     """Convert configuration errors into a stable JSON error response."""
