@@ -17,6 +17,21 @@ export type Message = {
   timestamp: number
 }
 
+function formatDateDivider(timestamp: number) {
+  const date = new Date(timestamp)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  
+  if (date.toDateString() === today.toDateString()) {
+    return 'Today'
+  }
+  if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday'
+  }
+  return new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric' }).format(date)
+}
+
 function MarkdownRenderer({ content, sources }: { content: string, sources?: string[] }) {
   const [html, setHtml] = useState('')
   
@@ -411,57 +426,67 @@ export function ChatInterface({
               <p>Start a conversation...</p>
             </div>
           )}
-          {messages.map((m, i) => (
-            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'} group`}>
-              {m.role === 'assistant' && (
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback><Bot className="h-4 w-4" /></AvatarFallback>
-                </Avatar>
-              )}
-              
-              {m.role === 'user' && (
-                 <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => deleteMessage(i, m.id)} title="Delete message">
-                        <Trash className="h-3 w-3" />
-                    </Button>
-                 </div>
-              )}
 
-              <div className={`max-w-[80%] rounded-lg p-3 ${
-                m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
-              }`}>
-                <MarkdownRenderer content={m.displayContent || m.content} sources={m.sources} />
-                {m.role === 'assistant' && m.sources && m.sources.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-border">
-                    <div className="text-xs font-semibold text-muted-foreground mb-1">Sources:</div>
-                    <div className="space-y-1">
-                      {m.sources.map((source, idx) => (
-                        <div key={idx} className="text-xs text-muted-foreground">
-                          <span className="font-mono">[{idx + 1}]</span>{' '}
-                          <span className="hover:text-foreground transition-colors">{source}</span>
-                        </div>
-                      ))}
+          {messages.map((message, index) => {
+            const isUser = message.role === 'user'
+            const date = new Date(message.timestamp)
+            const showDateDivider = index === 0 || 
+              new Date(messages[index - 1].timestamp).toDateString() !== date.toDateString()
+
+            return (
+              <div key={index} className="group">
+                {showDateDivider && (
+                  <div className="flex items-center justify-center my-6 sticky top-0 z-10 pointer-events-none">
+                     <span className="bg-muted/80 backdrop-blur-sm border border-border px-3 py-1 rounded-full text-xs font-medium text-muted-foreground shadow-sm">
+                      {formatDateDivider(message.timestamp)}
+                    </span>
+                  </div>
+                )}
+                
+                <div className={`flex gap-3 mb-6 ${isUser ? 'justify-end' : 'justify-start'}`}>
+                  {!isUser && (
+                    <Avatar className="h-8 w-8 mt-1 shrink-0">
+                      <AvatarFallback className="bg-primary/10 text-primary">
+                        <Bot className="h-4 w-4" />
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                  
+                  <div className={`flex flex-col max-w-[85%] ${isUser ? 'items-end' : 'items-start'}`}>
+                    <div className={`rounded-2xl px-4 py-3 shadow-sm ${
+                      isUser 
+                        ? 'bg-primary text-primary-foreground rounded-tr-sm' 
+                        : 'bg-muted/50 border border-border rounded-tl-sm'
+                    }`}>
+                      <MarkdownRenderer content={message.displayContent || message.content} sources={message.sources} />
+                    </div>
+                    
+                    <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'flex-row-reverse' : ''}`}>
+                       <span className="text-[10px] text-muted-foreground px-1">
+                        {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                       {!isUser && (
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(message.content)} title="Download response">
+                            <Download className="h-3 w-3" />
+                          </Button>
+                       )}
+                       <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive/50 hover:text-destructive" onClick={() => deleteMessage(index, message.id)} title="Delete message">
+                         <Trash className="h-3 w-3" />
+                       </Button>
                     </div>
                   </div>
-                )}
-                {m.role === 'assistant' && (
-                  <div className="mt-2 flex justify-end gap-1">
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleDownload(m.content)} title="Download response">
-                      <Download className="h-3 w-3" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-6 w-6 hover:text-destructive" onClick={() => deleteMessage(i, m.id)} title="Delete message">
-                      <Trash className="h-3 w-3" />
-                    </Button>
-                  </div>
-                )}
+
+                  {isUser && (
+                    <Avatar className="h-8 w-8 mt-1 shrink-0">
+                      <AvatarFallback className="bg-secondary text-secondary-foreground">
+                        <User className="h-4 w-4" />
+                      </AvatarFallback>
+                    </Avatar>
+                  )}
+                </div>
               </div>
-              {m.role === 'user' && (
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback><User className="h-4 w-4" /></AvatarFallback>
-                </Avatar>
-              )}
-            </div>
-          ))}
+            )
+          })}
           {loading && (
             <div className="flex gap-3">
               <Avatar className="h-8 w-8">

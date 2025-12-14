@@ -181,8 +181,8 @@ function App() {
             id: s.id,
             title: s.title || 'New Conversation',
             messages: [],
-            createdAt: s.created_at * 1000,
-            updatedAt: s.updated_at * 1000
+            createdAt: new Date(s.created_at).getTime(),
+            updatedAt: new Date(s.updated_at).getTime()
           }))
           setConversations(conversations)
         }
@@ -276,7 +276,7 @@ function App() {
           content: m.content,
           displayContent: m.display_content || undefined,
           sources: Array.isArray(m.sources) ? m.sources : undefined,
-          timestamp: typeof m.created_at === 'number' ? Math.floor(m.created_at * 1000) : Date.now()
+          timestamp: new Date(m.created_at).getTime()
         })))
       }
     } catch (e) {
@@ -295,8 +295,8 @@ function App() {
         id: s.id,
         title: s.title || 'New Conversation',
         messages: [],
-        createdAt: s.created_at * 1000,
-        updatedAt: s.updated_at * 1000
+        createdAt: new Date(s.created_at).getTime(),
+        updatedAt: new Date(s.updated_at).getTime()
       }))
       setConversations(conversations)
     } catch {

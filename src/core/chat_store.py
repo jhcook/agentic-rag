@@ -1,103 +1,43 @@
-"""SQLite-backed chat persistence.
+"""PostgreSQL-backed chat persistence.
 
 Stores chat sessions and messages locally for transcript rehydration.
 """
 
-import sqlite3
 import json
 import logging
 import uuid
-import time
-from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+from src.core import pgvector_store
 
 logger = logging.getLogger(__name__)
 
+
 class ChatStore:
-    """Persistent storage for chat sessions and messages using SQLite."""
-    
-    def __init__(self, db_path: Path):
-        self.db_path = db_path
-        self._init_db()
+    """Persistent storage for chat sessions and messages using PostgreSQL."""
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection."""
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        # Ensure FK constraints like ON DELETE CASCADE are enforced.
-        try:
-            conn.execute("PRAGMA foreign_keys=ON;")
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-        return conn
+    def __init__(self, db_path: str = None):
+        # db_path is no longer used, but kept for backward compatibility during initialization.
+        pass
 
-    def _recompute_session_updated_at(self, conn: sqlite3.Connection, session_id: str) -> None:
+    def _get_connection(self):
+        """Get a database connection from the pool."""
+        return pgvector_store.get_pool().connection()
+
+    def _recompute_session_updated_at(self, conn, session_id: str) -> None:
         """Recompute a session's updated_at based on its remaining messages."""
-        conn.execute(
-            """
-            UPDATE sessions
-            SET updated_at = COALESCE(
-                (SELECT MAX(created_at) FROM messages WHERE session_id = ?),
-                created_at
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE conversations
+                SET updated_at = COALESCE(
+                    (SELECT MAX(created_at) FROM conversation_messages WHERE session_id = %s),
+                    created_at
+                )
+                WHERE id = %s
+                """,
+                (session_id, session_id),
             )
-            WHERE id = ?
-            """,
-            (session_id, session_id),
-        )
-
-    def _init_db(self):
-        """Initialize the database schema."""
-        try:
-            with self._get_connection() as conn:
-                # Enable WAL mode for better concurrency
-                conn.execute("PRAGMA journal_mode=WAL;")
-                
-                # Sessions table
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        id TEXT PRIMARY KEY,
-                        title TEXT,
-                        created_at REAL,
-                        updated_at REAL,
-                        metadata TEXT
-                    );
-                """)
-                
-                # Messages table
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id TEXT PRIMARY KEY,
-                        session_id TEXT,
-                        role TEXT,
-                        content TEXT,
-                        display_content TEXT,
-                        sources TEXT,
-                        kind TEXT,
-                        created_at REAL,
-                        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-                    );
-                """)
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);")
-
-                # Backward-compatible schema migration for existing databases.
-                # SQLite doesn't support IF NOT EXISTS for ADD COLUMN in all versions.
-                for column_name, column_type in (
-                    ("display_content", "TEXT"),
-                    ("sources", "TEXT"),
-                    ("kind", "TEXT"),
-                ):
-                    try:
-                        conn.execute(
-                            f"ALTER TABLE messages ADD COLUMN {column_name} {column_type};"
-                        )
-                    except sqlite3.OperationalError as exc:
-                        # Ignore "duplicate column name" (already migrated)
-                        if "duplicate column name" not in str(exc).lower():
-                            raise
-                
-        except Exception as e:
-            logger.error("Failed to initialize chat database: %s", e)
-            raise
 
     def create_session(
         self,
@@ -105,40 +45,57 @@ class ChatStore:
         metadata: Dict[str, Any] = None,
         session_id: Optional[str] = None,
     ) -> str:
-        """Create a new chat session.
-
-        If session_id is provided, it will be used (idempotency is handled by callers).
-        """
+        """Create a new chat session."""
         if session_id is None:
             session_id = str(uuid.uuid4())
-        now = time.time()
-        meta_json = json.dumps(metadata or {})
-        
+        meta_json = json.dumps(metadata) if metadata else None
+
         with self._get_connection() as conn:
-            conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)",
-                (session_id, title, now, now, meta_json)
-            )
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO conversations (id, title, metadata) VALUES (%s, %s, %s)",
+                    (session_id, title, meta_json),
+                )
+            conn.commit()
         return session_id
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session details."""
         with self._get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row:
-                return dict(row)
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, title, created_at, updated_at, metadata FROM conversations WHERE id = %s", (session_id,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "title": row[1],
+                        "created_at": row[2].isoformat(),
+                        "updated_at": row[3].isoformat(),
+                        "metadata": json.loads(row[4]) if row[4] else None,
+                    }
         return None
 
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """List recent chat sessions."""
         with self._get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (limit, offset)
-            ).fetchall()
-            return [dict(row) for row in rows]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, created_at, updated_at, metadata FROM conversations ORDER BY updated_at DESC LIMIT %s OFFSET %s",
+                    (limit, offset),
+                )
+                rows = cur.fetchall()
+                sessions = []
+                for row in rows:
+                    sessions.append(
+                        {
+                            "id": row[0],
+                            "title": row[1],
+                            "created_at": row[2].isoformat(),
+                            "updated_at": row[3].isoformat(),
+                            "metadata": row[4] if isinstance(row[4], dict) else json.loads(row[4]) if row[4] else None,
+                        }
+                    )
+                return sessions
 
     def add_message(
         self,
@@ -151,78 +108,80 @@ class ChatStore:
     ) -> str:
         """Add a message to a session."""
         msg_id = str(uuid.uuid4())
-        now = time.time()
 
         if display_content is None:
             display_content = content
 
-        sources_json = None
-        if sources is not None:
-            try:
-                sources_json = json.dumps(sources)
-            except Exception:  # pylint: disable=broad-exception-caught
-                sources_json = None
-        
+        sources_json = json.dumps(sources) if sources is not None else None
+
         with self._get_connection() as conn:
-            # Insert message
-            conn.execute(
-                (
-                    "INSERT INTO messages (id, session_id, role, content, "
-                    "display_content, sources, kind, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                ),
-                (msg_id, session_id, role, content, display_content, sources_json, kind, now)
-            )
-            self._recompute_session_updated_at(conn, session_id)
+            with conn.cursor() as cur:
+                cur.execute(
+                    (
+                        "INSERT INTO conversation_messages (id, session_id, role, content, display_content, sources, kind) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                    ),
+                    (msg_id, session_id, role, content, display_content, sources_json, kind),
+                )
+                self._recompute_session_updated_at(conn, session_id)
+            conn.commit()
         return msg_id
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all messages for a session, ordered by time."""
         with self._get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC",
-                (session_id,)
-            ).fetchall()
-            messages: List[Dict[str, Any]] = []
-            for row in rows:
-                d = dict(row)
-                # Normalize sources back to list for API consumers.
-                raw_sources = d.get("sources")
-                if isinstance(raw_sources, str) and raw_sources:
-                    try:
-                        parsed = json.loads(raw_sources)
-                        d["sources"] = parsed if isinstance(parsed, list) else []
-                    except Exception:  # pylint: disable=broad-exception-caught
-                        d["sources"] = []
-                elif raw_sources is None:
-                    d["sources"] = []
-                messages.append(d)
-            return messages
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, role, content, display_content, sources, kind, created_at FROM conversation_messages WHERE session_id = %s AND deleted_at IS NULL ORDER BY created_at ASC",
+                    (session_id,),
+                )
+                rows = cur.fetchall()
+                messages: List[Dict[str, Any]] = []
+                for row in rows:
+                    messages.append(
+                        {
+                            "id": row[0],
+                            "role": row[1],
+                            "content": row[2],
+                            "display_content": row[3],
+                            "sources": row[4] if isinstance(row[4], list) else json.loads(row[4]) if row[4] else [],
+                            "kind": row[5],
+                            "created_at": row[6].isoformat(),
+                        }
+                    )
+                return messages
 
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and all its messages."""
         with self._get_connection() as conn:
-            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            return cursor.rowcount > 0
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM conversations WHERE id = %s", (session_id,))
+                deleted_count = cur.rowcount
+            conn.commit()
+            return deleted_count > 0
 
     def delete_message(self, session_id: str, message_id: str) -> bool:
-        """Delete a single message from a session."""
+        """Mark a single message as deleted."""
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM messages WHERE id = ? AND session_id = ?",
-                (message_id, session_id),
-            )
-            deleted = cursor.rowcount > 0
-            if deleted:
-                self._recompute_session_updated_at(conn, session_id)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE conversation_messages SET deleted_at = NOW() WHERE id = %s AND session_id = %s",
+                    (message_id, session_id),
+                )
+                deleted = cur.rowcount > 0
+                if deleted:
+                    self._recompute_session_updated_at(conn, session_id)
+            conn.commit()
             return deleted
 
     def update_session_title(self, session_id: str, title: str) -> bool:
         """Update session title."""
         with self._get_connection() as conn:
-            cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
-                (title, session_id)
-            )
-            return cursor.rowcount > 0
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE conversations SET title = %s WHERE id = %s",
+                    (title, session_id),
+                )
+                updated_count = cur.rowcount
+            conn.commit()
+            return updated_count > 0

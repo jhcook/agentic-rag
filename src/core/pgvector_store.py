@@ -214,6 +214,26 @@ def migrate_schema(embed_dim: int) -> None:
         "  ON rag_chunks USING hnsw (embedding vector_ip_ops);",
         "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON performance_metrics(timestamp DESC);",
         "CREATE INDEX IF NOT EXISTS idx_metrics_operation ON performance_metrics(operation);",
+        "CREATE TABLE IF NOT EXISTS conversations ("
+        "  id TEXT PRIMARY KEY,"
+        "  title TEXT,"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "  metadata JSONB"
+        ");",
+        "CREATE TABLE IF NOT EXISTS conversation_messages ("
+        "  id TEXT PRIMARY KEY,"
+        "  session_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,"
+        "  role TEXT NOT NULL,"
+        "  content TEXT NOT NULL,"
+        "  display_content TEXT,"
+        "  sources JSONB,"
+        "  kind TEXT,"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "  deleted_at TIMESTAMPTZ"
+        ");",
+        "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON conversation_messages(session_id);",
+        "CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);",
     ]
 
     pool = get_pool()

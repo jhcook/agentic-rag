@@ -309,7 +309,7 @@ MASKED_SECRET = "***MASKED***"
 # Chat persistence
 try:
     from src.core.chat_store import ChatStore
-    chat_store = ChatStore(LOG_DIR.parent / "cache" / "chat_history.db")
+    chat_store = ChatStore()
     logger.info("ChatStore initialized")
 except Exception as exc:
     logger.error("Failed to initialize ChatStore: %s", exc)
@@ -805,7 +805,10 @@ class MetricsRoute(APIRoute):
             if hasattr(response, "body_iterator"):
                 response_body = b""
                 async for chunk in response.body_iterator:
-                    response_body += chunk
+                    if isinstance(chunk, str):
+                        response_body += chunk.encode('utf-8')
+                    else:
+                        response_body += chunk
             else:
                 response_body = getattr(response, "body", b"")
 
@@ -830,15 +833,14 @@ class MetricsRoute(APIRoute):
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
             
-            if hasattr(response, "body_iterator"):
-                return StarletteResponse(
-                    content=response_body,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=response.media_type,
-                )
-            return response
-
+            # Reconstruct the response with the original body
+            # This is crucial because the body_iterator can only be consumed once.
+            return StarletteResponse(
+                content=response_body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
         return custom_route_handler
 
 from fastapi.exceptions import RequestValidationError
