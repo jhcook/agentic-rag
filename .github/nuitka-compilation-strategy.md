@@ -10,7 +10,7 @@ This document outlines the strategy for compiling the Agentic RAG Python codebas
 - **Performance**: 10-30% speed improvement over interpreted Python
 - **Single Binary**: Can bundle entire application including dependencies
 - **Multi-Platform**: Native builds for macOS, Linux, Windows
-- **Ecosystem Compatibility**: Works with FAISS, LangChain, transformers, FastAPI
+- **Ecosystem Compatibility**: Works with pgvector, LangChain, transformers, FastAPI
 - **Active Development**: Well-maintained, commercial support available
 
 ## Architecture Components to Compile
@@ -179,8 +179,8 @@ python -m nuitka \
 
 ### Machine Learning Libraries
 
-**FAISS**:
-- Include via `--include-package-data=faiss`
+**Vector Search**:
+- Uses Postgres + pgvector (no extra native vector-store packaging required)
 - Test GPU support separately on each platform
 
 **Sentence Transformers**:

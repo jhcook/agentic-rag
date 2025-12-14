@@ -22,7 +22,7 @@ CONTEXT:
 WORKFLOW:
 
 1. LOAD RULES
-   - Load and apply all rules from .cursor/rules.md.
+   - Load and apply all rules from .cursor/rules/ (all `*.mdc` files).
    - Especially enforce:
      - Security, SOC 2, GDPR
      - Lint / code quality expectations
