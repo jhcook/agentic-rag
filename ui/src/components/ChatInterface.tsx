@@ -477,19 +477,6 @@ export function ChatInterface({
               variant="ghost"
               size="icon"
               onClick={() => {
-                setDraftTitle(activeConversationTitle || '')
-                setIsEditingTitle(true)
-              }}
-              title="Rename conversation"
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
-          )}
-          {onRenameConversation && activeConversationId && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
                 const currentTitle = messages.find(m => m.role === 'user')?.content?.slice(0, 50) || ''
                 const newTitle = window.prompt('Rename conversation', currentTitle)
                 if (newTitle && newTitle.trim()) {
