@@ -423,6 +423,7 @@ def insert_performance_metric(
     error: Optional[str] = None,
     model: Optional[str] = None,
     tokens: Optional[int] = None,
+    token_count: Optional[int] = None,
 ) -> None:
     """
     Placeholder for performance metrics persistence.
@@ -432,3 +433,16 @@ def insert_performance_metric(
     """
     # Intentionally a no-op for now.
     return
+
+
+def get_performance_metrics(
+    limit: int = 100,
+    offset: int = 0,
+    operation: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Placeholder for retrieving performance metrics.
+
+    Returns an empty list until metrics persistence is implemented.
+    """
+    return []
