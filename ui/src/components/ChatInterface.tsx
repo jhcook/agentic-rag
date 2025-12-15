@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, User, Bot, Download, Paperclip, X, Trash, Plus, Pencil } from 'lucide-react'
+import { Send, User, Bot, Download, Paperclip, X, Trash2, Plus, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -454,7 +454,7 @@ export function ChatInterface({
             }} 
             title={onDeleteConversation && activeConversationId ? "Delete conversation" : "Clear conversation"}
           >
-            <Trash className="h-4 w-4" />
+            <Trash2 className="h-4 w-4" />
           </Button>
           <ModelSelector config={config} onModelSelect={setSelectedModel} />
         </div>
