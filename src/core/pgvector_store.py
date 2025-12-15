@@ -202,6 +202,17 @@ def migrate_schema(embed_dim: int) -> None:
         # HNSW index for normalized inner-product search
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_hnsw "
         "  ON rag_chunks USING hnsw (embedding vector_ip_ops);",
+        "CREATE TABLE IF NOT EXISTS performance_metrics ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "  operation TEXT NOT NULL,"
+        "  duration_ms DOUBLE PRECISION NOT NULL,"
+        "  error TEXT NULL,"
+        "  model TEXT NULL,"
+        "  tokens INT NULL"
+        ");",
+        "CREATE INDEX IF NOT EXISTS idx_performance_metrics_operation ON performance_metrics(operation);",
+        "CREATE INDEX IF NOT EXISTS idx_performance_metrics_created_at ON performance_metrics(created_at DESC);",
     ]
 
     pool = get_pool()
@@ -426,23 +437,71 @@ def insert_performance_metric(
     token_count: Optional[int] = None,
 ) -> None:
     """
-    Placeholder for performance metrics persistence.
+    Persist a performance metric row.
 
-    The current deployment does not store metrics in pgvector. This stub prevents
-    call-site failures while allowing future implementations to persist metrics.
+    token_count is accepted for backward compatibility with call sites that
+    passed that name; it wins only when `tokens` is not provided.
     """
-    # Intentionally a no-op for now.
-    return
+    tokens_value = tokens if tokens is not None else token_count
+
+    pool = get_pool()
+    try:
+        with pool.connection() as conn:
+            _configure_connection(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO performance_metrics(operation, duration_ms, error, model, tokens) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (
+                        str(operation),
+                        float(duration_ms),
+                        str(error) if error is not None else None,
+                        str(model) if model is not None else None,
+                        int(tokens_value) if tokens_value is not None else None,
+                    ),
+                )
+            conn.commit()
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        # Let caller decide how to handle; redact potentially sensitive details.
+        raise RuntimeError(redact_error_message(str(exc))) from exc
 
 
 def get_performance_metrics(
-    limit: int = 100,
-    offset: int = 0,
-    operation: Optional[str] = None,
+    hours: int = 24,
 ) -> List[Dict[str, Any]]:
     """
-    Placeholder for retrieving performance metrics.
-
-    Returns an empty list until metrics persistence is implemented.
+    Retrieve performance metrics from the last N hours, newest first.
     """
-    return []
+    if hours <= 0:
+        hours = 24
+
+    pool = get_pool()
+    try:
+        with pool.connection() as conn:
+            _configure_connection(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT created_at, operation, duration_ms, error, model, tokens "
+                    "FROM performance_metrics "
+                    "WHERE created_at >= NOW() - INTERVAL %s "
+                    "ORDER BY created_at DESC "
+                    "LIMIT 1000",
+                    (f"{int(hours)} hours",),
+                )
+                rows = cur.fetchall() or []
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError(redact_error_message(str(exc))) from exc
+
+    results: List[Dict[str, Any]] = []
+    for created_at, operation, duration_ms, error, model, tokens in rows:
+        results.append(
+            {
+                "created_at": str(created_at),
+                "operation": str(operation),
+                "duration_ms": float(duration_ms),
+                "error": str(error) if error is not None else None,
+                "model": str(model) if model is not None else None,
+                "tokens": int(tokens) if tokens is not None else None,
+            }
+        )
+    return results
