@@ -44,10 +44,16 @@ src/servers/mcp_server.py
 - Returns indexing statistics
 
 **Supported Formats**:
-- PDF: Uses PyPDF2 for text extraction
-- DOCX: Uses python-docx for content extraction
-- TXT: Direct text reading with encoding detection
-- HTML: Uses BeautifulSoup for content extraction
+- PDF: Uses PyPDF for text extraction
+- DOC/DOCX: Uses python-docx for content extraction
+- TXT/Markdown: Direct UTF-8 decode (markdown left as-is)
+- HTML: Uses BeautifulSoup to strip markup/script/style and return readable text
+- CSV: UTF-8 decode of rows
+- XLS/XLSX: openpyxl (first few sheets) to extract cell text
+- PPT/PPTX: python-pptx to extract slide text
+- RTF: striprtf to convert to plain text
+- EPUB: ebooklib (+ BeautifulSoup if available) to extract document text
+- Images (png/jpg/jpeg/tiff/bmp): optional OCR via Pillow + pytesseract if installed
 
 **Error Handling**:
 - File not found errors

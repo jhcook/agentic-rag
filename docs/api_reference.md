@@ -72,6 +72,8 @@ The server treats `text` as the canonical extracted text to be indexed. It persi
 }
 ```
 
+If you provide `binary_base64` instead of `text`, the server will extract text based on file type. Supported formats include: PDF, DOC/DOCX, HTML, TXT/Markdown, CSV, XLS/XLSX, PPT/PPTX, RTF, EPUB, and (optionally) common images via OCR if Pillow + pytesseract are installed.
+
 **Example:**
 
 ```bash

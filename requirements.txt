@@ -15,6 +15,12 @@ sentence-transformers==3.3.1
 uv>=0.5.0
 uvicorn>=0.32.0
 beautifulsoup4>=4.12.3
+openpyxl>=3.1.5
+python-pptx>=0.6.23
+striprtf>=0.0.26
+ebooklib>=0.18
+Pillow>=10.3.0
+pytesseract>=0.3.10
 prometheus-client>=0.21.0
 google-generativeai>=0.8.0
 google-auth-oauthlib>=1.2.0
