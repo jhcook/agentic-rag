@@ -99,6 +99,8 @@ export function ChatInterface({
   const [attachments, setAttachments] = useState<{name: string, content: string}[]>([])
   const [sendHistory, setSendHistory] = useState(true)
   const [selectedModel, setSelectedModel] = useState<string>("")
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -434,12 +436,53 @@ export function ChatInterface({
     <div className="flex flex-col h-full min-h-0 border rounded-lg bg-background">
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
         <div className="text-sm font-medium text-muted-foreground truncate pr-2">
-          {activeConversationTitle || 'AI Chat'}
+          {isEditingTitle ? (
+            <input
+              autoFocus
+              className="bg-transparent border-b border-border focus:outline-none focus:border-primary text-foreground w-56"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onBlur={() => {
+                const newTitle = draftTitle.trim()
+                if (newTitle && onRenameConversation && activeConversationId) {
+                  onRenameConversation(activeConversationId, newTitle)
+                }
+                setIsEditingTitle(false)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const newTitle = draftTitle.trim()
+                  if (newTitle && onRenameConversation && activeConversationId) {
+                    onRenameConversation(activeConversationId, newTitle)
+                  }
+                  setIsEditingTitle(false)
+                }
+                if (e.key === 'Escape') {
+                  setIsEditingTitle(false)
+                }
+              }}
+            />
+          ) : (
+            activeConversationTitle || 'AI Chat'
+          )}
         </div>
         <div className="flex items-center gap-2">
           {onNewConversation && (
             <Button variant="ghost" size="icon" onClick={onNewConversation} title="New conversation">
               <Plus className="h-4 w-4" />
+            </Button>
+          )}
+          {onRenameConversation && activeConversationId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setDraftTitle(activeConversationTitle || '')
+                setIsEditingTitle(true)
+              }}
+              title="Rename conversation"
+            >
+              <Pencil className="h-4 w-4" />
             </Button>
           )}
           {onRenameConversation && activeConversationId && (

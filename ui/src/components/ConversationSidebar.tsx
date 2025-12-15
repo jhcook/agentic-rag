@@ -38,6 +38,8 @@ export function ConversationSidebar({
   isOpen
 }: ConversationSidebarProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState<string>('')
 
   useEffect(() => {
     // Drop selections for conversations that no longer exist
@@ -187,17 +189,48 @@ export function ConversationSidebar({
                     />
                     <MessageSquare className="h-4 w-4 shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {getConversationTitle(conv)}
-                      </p>
-                      <p className={cn(
-                        'text-xs truncate',
-                        activeConversationId === conv.id
-                          ? 'text-primary-foreground/70'
-                          : 'text-muted-foreground'
-                      )}>
-                        {formatDate(conv.updatedAt)}
-                      </p>
+                      {editingId === conv.id ? (
+                        <input
+                          autoFocus
+                          className="w-full text-sm font-medium bg-transparent border-b border-border focus:outline-none focus:border-primary text-foreground"
+                          value={editingTitle}
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={() => {
+                            const newTitle = editingTitle.trim()
+                            if (newTitle && onRenameConversation) {
+                              onRenameConversation(conv.id, newTitle)
+                            }
+                            setEditingId(null)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              const newTitle = editingTitle.trim()
+                              if (newTitle && onRenameConversation) {
+                                onRenameConversation(conv.id, newTitle)
+                              }
+                              setEditingId(null)
+                            }
+                            if (e.key === 'Escape') {
+                              setEditingId(null)
+                            }
+                          }}
+                        />
+                      ) : (
+                        <>
+                          <p className="text-sm font-medium truncate">
+                            {getConversationTitle(conv)}
+                          </p>
+                          <p className={cn(
+                            'text-xs truncate',
+                            activeConversationId === conv.id
+                              ? 'text-primary-foreground/70'
+                              : 'text-muted-foreground'
+                          )}>
+                            {formatDate(conv.updatedAt)}
+                          </p>
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
                       {onRenameConversation && (
@@ -212,11 +245,8 @@ export function ConversationSidebar({
                           )}
                           onClick={(e) => {
                             e.stopPropagation()
-                            const suggested = getConversationTitle(conv)
-                            const newTitle = window.prompt('Rename conversation', suggested)
-                            if (newTitle && newTitle.trim()) {
-                              onRenameConversation(conv.id, newTitle.trim())
-                            }
+                            setEditingId(conv.id)
+                            setEditingTitle(getConversationTitle(conv))
                           }}
                           title="Rename conversation"
                         >
