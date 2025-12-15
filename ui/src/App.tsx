@@ -465,6 +465,54 @@ function App() {
     }
   }
 
+  const handleDeleteConversations = async (conversationIds: string[]) => {
+    const ids = Array.from(new Set(conversationIds)).filter(Boolean)
+    if (ids.length === 0) return
+
+    const { host, port, base } = getApiBase()
+    const sortedConvos = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+
+    const successful: string[] = []
+    for (const id of ids) {
+      try {
+        const res = await fetch(`http://${host}:${port}/${base}/chat/history/${id}`, { method: 'DELETE' })
+        if (res.ok) {
+          successful.push(id)
+        } else {
+          console.error('Failed to delete conversation', id)
+          toast.error(`Failed to delete ${id}`)
+        }
+      } catch (e) {
+        console.error('Failed to delete conversation', id, e)
+        toast.error(`Failed to delete ${id}`)
+      }
+    }
+
+    if (successful.length === 0) return
+
+    // Remove from local state
+    setConversations(prev => prev.filter(c => !successful.includes(c.id)))
+
+    const activeWasDeleted = activeConversationId ? successful.includes(activeConversationId) : false
+    let nextConversationId: string | null = null
+
+    const remainingSorted = sortedConvos.filter(c => !successful.includes(c.id))
+    if (activeWasDeleted) {
+      nextConversationId = remainingSorted.length > 0 ? remainingSorted[0].id : null
+    } else {
+      nextConversationId = activeConversationId
+    }
+
+    if (nextConversationId) {
+      handleSelectConversation(nextConversationId)
+    } else {
+      setActiveConversationId(null)
+      setChatMessages([])
+    }
+
+    toast.success(`Deleted ${successful.length} conversation${successful.length === 1 ? '' : 's'}`)
+  }
+
   // --- Handlers: Search ---
   const handleSearch = async () => {
     if (searchAbortRef.current) searchAbortRef.current.abort()
@@ -812,6 +860,7 @@ function App() {
               setChatMessages([])
             }}
             onDeleteConversation={handleDeleteConversation}
+            onDeleteConversations={handleDeleteConversations}
             onRenameConversation={handleRenameConversation}
             isSidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}

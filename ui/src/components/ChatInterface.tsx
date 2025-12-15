@@ -77,6 +77,7 @@ export function ChatInterface({
   setMessages,
   onNewConversation,
   onDeleteConversation,
+  onDeleteConversations,
   onRenameConversation,
   activeConversationId,
   onSessionId
@@ -86,6 +87,7 @@ export function ChatInterface({
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
   onNewConversation?: () => void
   onDeleteConversation?: (id: string) => void
+  onDeleteConversations?: (ids: string[]) => void
   onRenameConversation?: (id: string, title: string) => void
   activeConversationId?: string | null
   onSessionId?: (sessionId: string) => void

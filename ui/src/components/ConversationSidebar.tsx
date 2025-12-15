@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { Message } from './ChatInterface'
+import { Checkbox } from '@/components/ui/checkbox'
 
 export type Conversation = {
   id: string
@@ -18,6 +19,7 @@ interface ConversationSidebarProps {
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
   onDeleteConversation: (id: string) => void
+  onDeleteConversations?: (ids: string[]) => void
   onRenameConversation?: (id: string, title: string) => void
   onNewConversation: () => void
   onClose?: () => void
@@ -29,12 +31,33 @@ export function ConversationSidebar({
   activeConversationId,
   onSelectConversation,
   onDeleteConversation,
+  onDeleteConversations,
   onRenameConversation,
   onNewConversation,
   onClose,
   isOpen
 }: ConversationSidebarProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    // Drop selections for conversations that no longer exist
+    const existing = new Set(conversations.map(c => c.id))
+    setSelectedIds(prev => {
+      const next = new Set<string>()
+      prev.forEach(id => { if (existing.has(id)) next.add(id) })
+      return next
+    })
+  }, [conversations])
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const getConversationTitle = (conv: Conversation) => {
     if (conv.title && conv.title !== 'New Conversation') {
@@ -91,6 +114,22 @@ export function ConversationSidebar({
         <div className="flex items-center justify-between p-4 border-b">
           <h2 className="text-lg font-semibold">Conversations</h2>
           <div className="flex items-center gap-1">
+            {onDeleteConversations && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title="Delete selected"
+                disabled={selectedIds.size === 0}
+                onClick={() => {
+                  if (selectedIds.size === 0) return
+                  onDeleteConversations(Array.from(selectedIds))
+                  setSelectedIds(new Set())
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -138,6 +177,17 @@ export function ConversationSidebar({
                     onMouseLeave={() => setHoveredId(null)}
                     onClick={() => onSelectConversation(conv.id)}
                   >
+                    <Checkbox
+                      checked={selectedIds.has(conv.id)}
+                      onCheckedChange={() => toggleSelect(conv.id)}
+                      className={cn(
+                        'h-4 w-4',
+                        activeConversationId === conv.id
+                          ? 'border-primary-foreground data-[state=checked]:bg-primary-foreground'
+                          : ''
+                      )}
+                      onClick={(e) => e.stopPropagation()}
+                    />
                     <MessageSquare className="h-4 w-4 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">

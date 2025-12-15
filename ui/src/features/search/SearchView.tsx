@@ -31,6 +31,7 @@ interface SearchViewProps {
     onSelectConversation: (id: string) => void
     onNewConversation: () => void
     onDeleteConversation: (id: string) => void
+    onDeleteConversations: (ids: string[]) => void
     onRenameConversation: (id: string, title: string) => void
 
     isSidebarOpen: boolean
@@ -57,6 +58,7 @@ export function SearchView(props: SearchViewProps) {
         onSelectConversation,
         onNewConversation,
         onDeleteConversation,
+        onDeleteConversations,
         onRenameConversation,
         isSidebarOpen,
         onToggleSidebar
@@ -75,6 +77,7 @@ export function SearchView(props: SearchViewProps) {
                         onSelectConversation={onSelectConversation}
                         onNewConversation={onNewConversation}
                         onDeleteConversation={onDeleteConversation}
+                        onDeleteConversations={onDeleteConversations}
                         onRenameConversation={onRenameConversation}
                         isOpen={true} // Always open on desktop in this layout
                         onClose={() => { }}
@@ -182,6 +185,7 @@ export function SearchView(props: SearchViewProps) {
                         setMessages={setMessages}
                         onNewConversation={onNewConversation}
                         onDeleteConversation={onDeleteConversation}
+                        onDeleteConversations={onDeleteConversations}
                         onRenameConversation={onRenameConversation}
                         activeConversationId={activeConversationId}
                         onSessionId={onSessionId}
