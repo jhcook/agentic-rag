@@ -54,6 +54,7 @@ src/servers/mcp_server.py
 - RTF: striprtf to convert to plain text
 - EPUB: ebooklib (+ BeautifulSoup if available) to extract document text
 - Images (png/jpg/jpeg/tiff/bmp): optional OCR via Pillow + pytesseract if installed
+- Unsupported/binary files are rejected via extension allowlist plus content sniffing (magic headers/HTML/text heuristics); rejected paths are returned to the caller.
 
 **Error Handling**:
 - File not found errors

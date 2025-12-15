@@ -73,6 +73,7 @@ The server treats `text` as the canonical extracted text to be indexed. It persi
 ```
 
 If you provide `binary_base64` instead of `text`, the server will extract text based on file type. Supported formats include: PDF, DOC/DOCX, HTML, TXT/Markdown, CSV, XLS/XLSX, PPT/PPTX, RTF, EPUB, and (optionally) common images via OCR if Pillow + pytesseract are installed.
+Unsupported file types are rejected via allowlist + content sniffing; the response will include errors for skipped items.
 
 **Example:**
 
@@ -134,6 +135,20 @@ curl -X POST "http://localhost:8001/api/index_url" \
      -H "Content-Type: application/json" \
      -d '{"url": "https://example.com"}'
 ```
+
+### 5. Cancel Indexing Job
+
+Cancel a queued indexing job (pass-through to MCP).
+
+**Endpoint:** `POST /api/jobs/{job_id}/cancel`
+
+**Example:**
+
+```bash
+curl -X POST "http://localhost:8001/api/jobs/<job_id>/cancel"
+```
+
+### 6. Health Check
 
 ### 5. Health Check
 
