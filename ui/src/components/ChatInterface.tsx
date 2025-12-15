@@ -40,6 +40,12 @@ function MarkdownRenderer({ content, sources }: { content: string, sources?: str
        try {
          let processedContent = content
          
+         // Remove "Sources:" section if it exists (it's displayed separately)
+         const sourcesIndex = processedContent.indexOf('\n\nSources:')
+         if (sourcesIndex !== -1) {
+           processedContent = processedContent.substring(0, sourcesIndex).trim()
+         }
+         
          // If sources exist, annotate inline citations in the text
          // Look for patterns like [1], [2], etc. and make them superscript links
          if (sources && sources.length > 0) {
@@ -459,6 +465,17 @@ export function ChatInterface({
                         : 'bg-muted/50 border border-border rounded-tl-sm'
                     }`}>
                       <MarkdownRenderer content={message.displayContent || message.content} sources={message.sources} />
+                      {!isUser && message.sources && message.sources.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-border/50">
+                          <div className="text-xs text-muted-foreground/70 space-y-1">
+                            {message.sources.map((source, i) => (
+                              <div key={i} className="truncate">
+                                [{i + 1}] {source.split('/').pop()}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'flex-row-reverse' : ''}`}>
