@@ -331,6 +331,25 @@ function App() {
     refreshConversationList()
   }
 
+  const handleNewConversation = () => {
+    const newId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? (crypto as any).randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const now = Date.now()
+    const titleInput = window.prompt('Name this conversation')?.trim()
+    const initialTitle = titleInput && titleInput.length > 0 ? titleInput : 'New Conversation'
+
+    setActiveConversationId(newId)
+    setChatMessages([])
+    setConversations(prev => {
+      const filtered = prev.filter(c => c.id !== newId)
+      return [
+        { id: newId, title: initialTitle, messages: [], createdAt: now, updatedAt: now },
+        ...filtered,
+      ]
+    })
+  }
+
 
   const handleSavePgvectorConfig = async () => {
     const { host, port, base } = getApiBase()
@@ -511,6 +530,11 @@ function App() {
     }
 
     toast.success(`Deleted ${successful.length} conversation${successful.length === 1 ? '' : 's'}`)
+  }
+
+  const getActiveConversationTitle = (): string => {
+    const active = conversations.find(c => c.id === activeConversationId)
+    return active?.title || 'AI Chat'
   }
 
   // --- Handlers: Search ---
@@ -852,16 +876,11 @@ function App() {
             onSessionId={handleChatSessionId}
             conversations={conversations}
             onSelectConversation={handleSelectConversation}
-            onNewConversation={() => {
-              const newId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
-                ? (crypto as any).randomUUID()
-                : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-              setActiveConversationId(newId)
-              setChatMessages([])
-            }}
+            onNewConversation={handleNewConversation}
             onDeleteConversation={handleDeleteConversation}
             onDeleteConversations={handleDeleteConversations}
             onRenameConversation={handleRenameConversation}
+            activeConversationTitle={getActiveConversationTitle()}
             isSidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
           />

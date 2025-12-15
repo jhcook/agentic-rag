@@ -80,6 +80,7 @@ export function ChatInterface({
   onDeleteConversations,
   onRenameConversation,
   activeConversationId,
+  activeConversationTitle,
   onSessionId
 }: { 
   config: any
@@ -90,6 +91,7 @@ export function ChatInterface({
   onDeleteConversations?: (ids: string[]) => void
   onRenameConversation?: (id: string, title: string) => void
   activeConversationId?: string | null
+  activeConversationTitle?: string | null
   onSessionId?: (sessionId: string) => void
 }) {
   const [input, setInput] = useState('')
@@ -152,10 +154,11 @@ export function ChatInterface({
   }, [activeConversationId])
 
   const handleSend = async () => {
-    if (!input.trim() && attachments.length === 0) return
+    const trimmedInput = input.trim()
+    if (!trimmedInput && attachments.length === 0) return
 
     const conversationIdAtSend = activeConversationIdRef.current
-    
+    const userPromptForTitle = trimmedInput
     let content = input
     let displayContent = input
     
@@ -266,6 +269,17 @@ export function ChatInterface({
 
       let responseContent = data.content || data.answer || "No response";
       const sources = data.sources || [];
+
+      // If the conversation has no real title yet, derive one from the prompt (first 20 chars)
+      const needsTitle =
+        !activeConversationTitle ||
+        activeConversationTitle === 'New Conversation' ||
+        activeConversationTitle === 'AI Chat' ||
+        activeConversationTitle === 'Conversation';
+      if (needsTitle && userPromptForTitle && onRenameConversation && activeConversationIdRef.current) {
+        const fallbackTitle = userPromptForTitle.substring(0, 20).trim() || 'New Conversation'
+        onRenameConversation(activeConversationIdRef.current, fallbackTitle)
+      }
 
       // Defensive parsing to handle raw ModelResponse object string
       if (typeof responseContent === 'string' && responseContent.startsWith('ModelResponse(')) {
@@ -419,7 +433,9 @@ export function ChatInterface({
   return (
     <div className="flex flex-col h-full min-h-0 border rounded-lg bg-background">
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
-        <div className="text-sm font-medium text-muted-foreground">Conversation</div>
+        <div className="text-sm font-medium text-muted-foreground truncate pr-2">
+          {activeConversationTitle || 'AI Chat'}
+        </div>
         <div className="flex items-center gap-2">
           {onNewConversation && (
             <Button variant="ghost" size="icon" onClick={onNewConversation} title="New conversation">
