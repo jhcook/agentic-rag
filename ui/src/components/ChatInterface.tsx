@@ -435,7 +435,15 @@ export function ChatInterface({
   return (
     <div className="flex flex-col h-full min-h-0 border rounded-lg bg-background">
       <div className="flex items-center justify-between p-3 border-b bg-muted/30">
-        <div className="text-sm font-medium text-muted-foreground truncate pr-2">
+        <div
+          className="text-sm font-medium text-muted-foreground truncate pr-2 cursor-text"
+          onClick={() => {
+            if (onRenameConversation && activeConversationId) {
+              setDraftTitle(activeConversationTitle || '')
+              setIsEditingTitle(true)
+            }
+          }}
+        >
           {isEditingTitle ? (
             <input
               autoFocus
@@ -470,22 +478,6 @@ export function ChatInterface({
           {onNewConversation && (
             <Button variant="ghost" size="icon" onClick={onNewConversation} title="New conversation">
               <Plus className="h-4 w-4" />
-            </Button>
-          )}
-          {onRenameConversation && activeConversationId && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                const currentTitle = messages.find(m => m.role === 'user')?.content?.slice(0, 50) || ''
-                const newTitle = window.prompt('Rename conversation', currentTitle)
-                if (newTitle && newTitle.trim()) {
-                  onRenameConversation(activeConversationId, newTitle.trim())
-                }
-              }}
-              title="Rename conversation"
-            >
-              <Pencil className="h-4 w-4" />
             </Button>
           )}
           <Button 
