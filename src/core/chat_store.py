@@ -130,6 +130,15 @@ class ChatStore:
                 return dict(row)
         return None
 
+    def session_exists(self, session_id: str) -> bool:
+        """Return True if a session row exists."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return row is not None
+
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """List recent chat sessions."""
         with self._get_connection() as conn:

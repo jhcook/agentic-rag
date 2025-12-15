@@ -490,10 +490,10 @@ def get_performance_metrics(
                 cur.execute(
                     "SELECT created_at, operation, duration_ms, error, model, tokens "
                     "FROM performance_metrics "
-                    "WHERE created_at >= NOW() - INTERVAL %s "
+                    "WHERE created_at >= NOW() - (CAST(%s AS INT) * INTERVAL '1 hour') "
                     "ORDER BY created_at DESC "
                     "LIMIT 1000",
-                    (f"{int(hours)} hours",),
+                    (int(hours),),
                 )
                 rows = cur.fetchall() or []
     except Exception as exc:  # pylint: disable=broad-exception-caught
