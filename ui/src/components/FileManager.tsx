@@ -36,6 +36,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [urlToIndex, setUrlToIndex] = useState('')
   const [urlLoading, setUrlLoading] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [jobs, setJobs] = useState<any[]>([])
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [folderStack, setFolderStack] = useState<{id: string | null, name: string}[]>([{id: null, name: 'Root'}])
@@ -116,6 +117,21 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     } finally {
       clearTimeout(timeoutId)
       setLoading(false)
+    }
+  }
+
+  const fetchJobs = async () => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/jobs`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.jobs) setJobs(data.jobs)
+      }
+    } catch (e) {
+      // best-effort
     }
   }
 
@@ -437,6 +453,9 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
     toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
     fetchLocalFiles()
+    fetchJobs()
+    fetchJobs()
+    fetchJobs()
     // Reset input
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
@@ -477,6 +496,9 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
         if (!res.ok || data?.error) {
           throw new Error(data?.error || `HTTP ${res.status}`)
         }
+        if (Array.isArray(data?.rejected) && data.rejected.length > 0) {
+          toast.warning(`Rejected ${data.rejected.length} unsupported file(s)`, { id: toastId })
+        }
         success += 1
       } catch (err) {
         console.error('Upload failed for', file.name, err)
@@ -486,6 +508,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
     toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
     fetchLocalFiles()
+    fetchJobs()
     // Reset input
     if (directoryInputRef.current) {
       directoryInputRef.current.value = ''
@@ -514,9 +537,14 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       if (!res.ok || data?.error) {
         throw new Error(data?.error || `HTTP ${res.status}`)
       }
-      toast.success(`Indexed ${trimmed}`, { id: toastId })
+      if (Array.isArray(data?.rejected) && data.rejected.length > 0) {
+        toast.warning(`Rejected ${data.rejected.length} unsupported file(s)`, { id: toastId })
+      } else {
+        toast.success(`Indexed ${trimmed}`, { id: toastId })
+      }
       setUrlToIndex('')
       fetchLocalFiles()
+      fetchJobs()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to index URL'
       toast.error(message, { id: toastId })
@@ -544,6 +572,32 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     return uri.split('/').pop() || uri
   }
 
+  const cancelJob = async (jobId: string) => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/jobs/${jobId}/cancel`, {
+        method: 'POST'
+      })
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      toast.success(`Canceled job ${jobId}`)
+    } catch (e: any) {
+      toast.error(`Failed to cancel job ${jobId}: ${e?.message || e}`)
+    } finally {
+      fetchJobs()
+    }
+  }
+
+  useEffect(() => {
+    if (isLocalMode) {
+      fetchLocalFiles()
+      fetchJobs()
+    }
+  }, [isLocalMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="h-[600px]">
       <Card className="flex flex-col h-full">
@@ -564,6 +618,17 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                 )}
               </CardTitle>
               <div className="flex items-center gap-2">
+                {isLocalMode && jobs.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={fetchJobs}
+                    title="Refresh indexing jobs"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Jobs
+                  </Button>
+                )}
                 {isLocalMode ? (
                   <>
                     <input
@@ -571,7 +636,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                       ref={fileInputRef}
                       className="hidden"
                       multiple
-                      accept=".txt,.pdf,.doc,.docx,.md,.json,.csv,.xml"
+                      accept=".txt,.pdf,.doc,.docx,.md,.markdown,.json,.csv,.xml,.html,.htm,.ppt,.pptx,.rtf,.epub,.xlsx,.xls,.png,.jpg,.jpeg,.tiff,.bmp"
                       onChange={handleAddFiles}
                     />
                     <input
@@ -763,6 +828,34 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
           </div>
         </CardHeader>
         <CardContent className="flex-1 min-h-0">
+          {isLocalMode && jobs.length > 0 && (
+            <div className="mb-3">
+              <div className="text-sm font-semibold mb-1 flex items-center gap-2">
+                Indexing Jobs
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={fetchJobs}>
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="space-y-1">
+                {jobs.map((job) => (
+                  <div key={job.id} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm">
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate font-medium">{job.uri || job.path || job.id}</div>
+                      <div className="text-xs text-muted-foreground">Status: {job.status}</div>
+                      {Array.isArray(job.rejected) && job.rejected.length > 0 && (
+                        <div className="text-xs text-destructive">Rejected: {job.rejected.length} file(s)</div>
+                      )}
+                    </div>
+                    {job.status === 'queued' && (
+                      <Button variant="ghost" size="icon" onClick={() => cancelJob(job.id)} title="Cancel job">
+                        <Trash className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {isLocalMode ? (
             <div className="h-full">
               {sortedLocalFiles.length === 0 && !loading ? (
