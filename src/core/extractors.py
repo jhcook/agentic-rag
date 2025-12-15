@@ -63,6 +63,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_SUFFIXES = {
+    '.pdf', '.doc', '.docx', '.txt', '.md', '.markdown', '.html', '.htm',
+    '.csv', '.xlsx', '.xls', '.pptx', '.ppt', '.rtf', '.epub',
+    '.png', '.jpg', '.jpeg', '.tiff', '.bmp'
+}
+
+
+def is_supported_filename(filename: str) -> bool:
+    """Return True if the filename has a supported suffix (or no suffix)."""
+    suffix = pathlib.Path(filename).suffix.lower()
+    if not suffix:
+        return True
+    return suffix in SUPPORTED_SUFFIXES
+
 
 def _download_from_url(url: str) -> bytes:
     """Download content from a URL."""

@@ -49,6 +49,7 @@ STARTED = False
 # Search jobs map and lock (for async search heartbeats)
 SEARCH_JOBS: Dict[str, Dict[str, Any]] = {}
 SEARCH_JOBS_LOCK = threading.Lock()
+CANCELED: set[str] = set()
 
 
 def _iso_now() -> str:
@@ -141,6 +142,17 @@ def get_jobs() -> Dict[str, Dict[str, Any]]:
         return dict(JOBS)
 
 
+def cancel_job(job_id: str) -> bool:
+    """Mark a job as canceled if it hasn't started."""
+    with JOBS_LOCK:
+        if job_id not in JOBS:
+            return False
+        JOBS[job_id]["status"] = "canceled"
+        JOBS[job_id]["last_update"] = _iso_now()
+        CANCELED.add(job_id)
+    return True
+
+
 def get_search_jobs():
     return SEARCH_JOBS, SEARCH_JOBS_LOCK
 
@@ -168,6 +180,15 @@ def _index_worker_loop(
             break
         job_id = job.get("id")
         try:
+            if job_id in CANCELED:
+                finished_at = _iso_now()
+                result_queue.put({
+                    "id": job_id,
+                    "status": "canceled",
+                    "last_update": finished_at,
+                    "finished_at": finished_at,
+                })
+                continue
             started_at = _iso_now()
             result_queue.put({
                 "id": job_id,

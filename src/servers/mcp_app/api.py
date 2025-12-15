@@ -281,6 +281,14 @@ async def rest_jobs():
     jobs = worker_mod.get_jobs()
     return JSONResponse({"jobs": list(jobs.values())})
 
+@rest_api.post("/jobs/{job_id}/cancel")
+async def rest_cancel_job(job_id: str):
+    """Cancel a queued indexing job."""
+    success = worker_mod.cancel_job(job_id)
+    if not success:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return JSONResponse({"status": "canceled", "id": job_id})
+
 
 @rest_api.post("/index_url")
 async def rest_index_url(req: IndexUrlReq):

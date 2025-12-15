@@ -1795,6 +1795,17 @@ def api_jobs():
         # If MCP is not available, return local search jobs as fallback
         jobs = list(state.search_jobs.values())
         return {"jobs": jobs}
+
+@app.post(f"/{pth}/jobs/{{job_id}}/cancel", response_model=dict)
+def api_cancel_job(job_id: str):
+    """Cancel a queued indexing job via MCP."""
+    try:
+        return _proxy_to_mcp("POST", f"/rest/jobs/{job_id}/cancel")
+    except HTTPException as exc:
+        raise exc
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to cancel job %s: %s", job_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 @app.get(f"/{pth}/jobs/{{job_id}}", response_model=dict)
 def api_job(_job_id: str):
     """Get a single async indexing job (pass-through to MCP)."""

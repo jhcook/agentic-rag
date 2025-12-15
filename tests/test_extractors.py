@@ -42,3 +42,11 @@ def test_markdown_fallback_utf8():
     bad = "caf\u00e9".encode("latin-1")
     text = extractors.extract_text_from_bytes(bad, "note.md")
     assert "caf" in text
+
+
+def test_supported_filename_detection():
+    assert extractors.is_supported_filename("file.pdf")
+    assert extractors.is_supported_filename("file.html")
+    assert extractors.is_supported_filename("file.pptx")
+    assert extractors.is_supported_filename("noext")
+    assert not extractors.is_supported_filename("file.exe")

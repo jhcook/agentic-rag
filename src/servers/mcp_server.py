@@ -48,7 +48,7 @@ from src.core.rag_core import (
     resolve_input_path,
     OLLAMA_API_BASE
 )
-from src.core.extractors import extract_text_from_file
+from src.core.extractors import extract_text_from_file, is_supported_filename
 
 # Backwards compatibility for tests that patch this symbol.
 _extract_text_from_file = extract_text_from_file
@@ -332,8 +332,14 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
 
         indexed = 0
         indexed_uris = []
+        rejected = []
         for file_path in files:
             try:
+                suffix = file_path.suffix.lower()
+                if suffix and not is_supported_filename(str(file_path)):
+                    rejected.append(str(file_path))
+                    logger.info("Skipping unsupported file type: %s", file_path)
+                    continue
                 content = _extract_text_from_file(file_path)
                 if not content:
                     logger.warning("No text extracted from %s, skipping", file_path)
@@ -346,8 +352,8 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
             indexed += 1
             indexed_uris.append(str(file_path))
 
-        logger.info("Indexed %d documents from %s", indexed, base)
-        return {"indexed": indexed, "uris": indexed_uris}
+        logger.info("Indexed %d documents from %s (rejected=%d)", indexed, base, len(rejected))
+        return {"indexed": indexed, "uris": indexed_uris, "rejected": rejected}
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Error indexing path %s: %s", path, e)
         return {"error": str(e), "indexed": 0, "uris": []}
@@ -410,6 +416,11 @@ def index_url_tool(
 
         if not url:
             return {"error": "URL missing. Provide a url argument or a valid query.", "indexed": 0}
+
+        # Reject obvious unsupported extensions
+        suffix = Path(url).suffix.lower()
+        if suffix and not is_supported_filename(url):
+            return {"error": f"Unsupported file type: {suffix}", "indexed": 0, "uri": url, "rejected": [url]}
 
         # Pass URL directly as string to extract_text_from_file
         content = _extract_text_from_file(url)
