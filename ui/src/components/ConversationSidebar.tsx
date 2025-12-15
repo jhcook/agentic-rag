@@ -37,7 +37,6 @@ export function ConversationSidebar({
   onClose,
   isOpen
 }: ConversationSidebarProps) {
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -173,8 +172,6 @@ export function ConversationSidebar({
                         ? 'bg-primary text-primary-foreground'
                         : 'hover:bg-muted'
                     )}
-                    onMouseEnter={() => setHoveredId(conv.id)}
-                    onMouseLeave={() => setHoveredId(null)}
                     onClick={() => onSelectConversation(conv.id)}
                   >
                     <Checkbox
@@ -202,31 +199,8 @@ export function ConversationSidebar({
                         {formatDate(conv.updatedAt)}
                       </p>
                     </div>
-                    {hoveredId === conv.id && (
-                      <div className="flex items-center gap-1">
-                        {onRenameConversation && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className={cn(
-                              'h-6 w-6 shrink-0',
-                              activeConversationId === conv.id
-                                ? 'text-primary-foreground hover:bg-primary-foreground/20'
-                                : ''
-                            )}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              const suggested = getConversationTitle(conv)
-                              const newTitle = window.prompt('Rename conversation', suggested)
-                              if (newTitle && newTitle.trim()) {
-                                onRenameConversation(conv.id, newTitle.trim())
-                              }
-                            }}
-                            title="Rename conversation"
-                          >
-                            <Pencil className="h-3 w-3" />
-                          </Button>
-                        )}
+                    <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
+                      {onRenameConversation && (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -238,14 +212,35 @@ export function ConversationSidebar({
                           )}
                           onClick={(e) => {
                             e.stopPropagation()
-                            onDeleteConversation(conv.id)
+                            const suggested = getConversationTitle(conv)
+                            const newTitle = window.prompt('Rename conversation', suggested)
+                            if (newTitle && newTitle.trim()) {
+                              onRenameConversation(conv.id, newTitle.trim())
+                            }
                           }}
-                          title="Delete conversation"
+                          title="Rename conversation"
                         >
-                          <Trash2 className="h-3 w-3" />
+                          <Pencil className="h-3 w-3" />
                         </Button>
-                      </div>
-                    )}
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-6 w-6 shrink-0',
+                          activeConversationId === conv.id
+                            ? 'text-primary-foreground hover:bg-primary-foreground/20'
+                            : ''
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDeleteConversation(conv.id)
+                        }}
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </div>
                 ))
             )}
