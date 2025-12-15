@@ -1416,26 +1416,35 @@ def api_chat(req: ChatReq):
             except Exception:  # pylint: disable=broad-exception-caught
                 existing = None
             if not existing:
+                # Check if session exists but is soft-deleted, or if there's a conflict
                 try:
-                    last_msg = req.messages[-1] if req.messages else None
-                    last_content = (
-                        last_msg.display_content
-                        if last_msg and getattr(last_msg, "display_content", None)
-                        else (last_msg.content if last_msg else "New Chat")
-                    )
-                    title = last_content[:50] + "..."
-                    mode_str = None
-                    try:
-                        mode_str = str(backend.get_mode())
-                    except Exception:  # pylint: disable=broad-exception-caught
+                    if chat_store.session_exists(session_id):
+                        # Session exists but is soft-deleted - generate new ID to avoid conflict
+                        logger.warning("Session %s exists but is soft-deleted, generating new ID", session_id)
+                        session_id = None
+                    else:
+                        # Session doesn't exist at all - safe to create with this ID
+                        last_msg = req.messages[-1] if req.messages else None
+                        last_content = (
+                            last_msg.display_content
+                            if last_msg and getattr(last_msg, "display_content", None)
+                            else (last_msg.content if last_msg else "New Chat")
+                        )
+                        title = last_content[:50] + "..."
                         mode_str = None
-                    chat_store.create_session(
-                        title=title,
-                        metadata={"mode": mode_str},
-                        session_id=session_id,
-                    )
+                        try:
+                            mode_str = str(backend.get_mode())
+                        except Exception:  # pylint: disable=broad-exception-caught
+                            mode_str = None
+                        chat_store.create_session(
+                            title=title,
+                            metadata={"mode": mode_str},
+                            session_id=session_id,
+                        )
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     logger.error("Failed to ensure chat session exists: %s", e)
+                    # Fall back to generating new session_id
+                    session_id = None
 
         # If new session needed
         if not session_id:

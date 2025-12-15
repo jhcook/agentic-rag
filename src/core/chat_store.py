@@ -75,6 +75,13 @@ class ChatStore:
                     }
         return None
 
+    def session_exists(self, session_id: str) -> bool:
+        """Check if session exists (including soft-deleted)."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM conversations WHERE id = %s", (session_id,))
+                return cur.fetchone() is not None
+
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """List recent chat sessions (excluding soft-deleted)."""
         with self._get_connection() as conn:
