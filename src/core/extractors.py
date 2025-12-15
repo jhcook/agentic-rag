@@ -61,6 +61,11 @@ try:
 except ImportError:
     requests = None
 
+try:
+    import cairosvg  # type: ignore
+except ImportError:
+    cairosvg = None
+
 logger = logging.getLogger(__name__)
 
 SUPPORTED_SUFFIXES = {
@@ -281,6 +286,30 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Failed to read HTML %s: %s", filename, exc)
             return ""
+    elif suffix == '.svg':
+        # First try to strip text content directly
+        if BeautifulSoup is not None:
+            try:
+                soup = BeautifulSoup(content, 'xml')
+                text_nodes = soup.get_text(separator='\n')
+                if text_nodes and text_nodes.strip():
+                    lines = (line.strip() for line in text_nodes.splitlines())
+                    chunks = (line.strip() for line in lines)
+                    text = '\n'.join(chunk for chunk in chunks if chunk)
+                    return text
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to parse SVG text for %s: %s", filename, exc)
+        # Fallback to rasterize + OCR if available
+        if cairosvg is not None and Image is not None and pytesseract is not None:
+            try:
+                png_bytes = cairosvg.svg2png(bytestring=content)
+                with Image.open(io.BytesIO(png_bytes)) as img:
+                    return pytesseract.image_to_string(img)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("SVG OCR failed for %s: %s", filename, exc)
+                return ""
+        logger.warning("SVG support limited: install cairosvg, Pillow, and pytesseract for OCR")
+        return ""
 
     else:
         # Fallback: sniff for HTML even if extension is missing

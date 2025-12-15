@@ -82,3 +82,11 @@ def test_svg_supported_and_parsed():
     svg = b"<?xml version='1.0'?><svg><text>Hi</text></svg>"
     text = extractors.extract_text_from_bytes(svg, "image.svg")
     assert "Hi" in text
+
+
+def test_svg_ocr_fallback_skip_if_missing():
+    if extractors.cairosvg is None or extractors.Image is None or extractors.pytesseract is None:
+        pytest.skip("SVG OCR deps not installed")
+    svg = b\"<svg height='100' width='100'><text x='10' y='20'>Hi</text></svg>\"
+    text = extractors.extract_text_from_bytes(svg, "image.svg")
+    assert "Hi" in text

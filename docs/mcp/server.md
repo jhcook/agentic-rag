@@ -53,6 +53,7 @@ src/servers/mcp_server.py
 - PPT/PPTX: python-pptx to extract slide text
 - RTF: striprtf to convert to plain text
 - EPUB: ebooklib (+ BeautifulSoup if available) to extract document text
+- SVG: inline text is extracted; image-only SVGs are rasterized and OCR'd if cairosvg + Pillow + pytesseract + system `tesseract-ocr` are installed; otherwise rejected.
 - Images (png/jpg/jpeg/tiff/bmp): OCR via Pillow + pytesseract if both the Python packages **and** the system `tesseract-ocr` binary are installed; otherwise these are rejected. Install the binary via your package manager (e.g., Homebrew: `brew install tesseract`, winget: `winget install tesseract`, apt: `sudo apt-get install tesseract-ocr`).
 - Unsupported/binary files are rejected via extension allowlist plus content sniffing (magic headers/HTML/text heuristics); rejected paths are returned to the caller.
 
