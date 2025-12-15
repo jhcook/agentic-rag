@@ -211,6 +211,13 @@ def migrate_schema(embed_dim: int) -> None:
         "  model TEXT NULL,"
         "  tokens INT NULL"
         ");",
+        # Backfill columns in case the table exists from an older schema
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();",
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS operation TEXT NOT NULL DEFAULT 'unknown';",
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS duration_ms DOUBLE PRECISION NOT NULL DEFAULT 0;",
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS error TEXT NULL;",
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS model TEXT NULL;",
+        "ALTER TABLE performance_metrics ADD COLUMN IF NOT EXISTS tokens INT NULL;",
         "CREATE INDEX IF NOT EXISTS idx_performance_metrics_operation ON performance_metrics(operation);",
         "CREATE INDEX IF NOT EXISTS idx_performance_metrics_created_at ON performance_metrics(created_at DESC);",
     ]
