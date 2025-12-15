@@ -1316,11 +1316,12 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         total_chars += len(text_content)
     context = "\n\n---\n\n".join(context_parts)
 
-    # If no LLM available, deterministic synthesis
+    # If no LLM available, return error
     if sync_completion is None:
-        synthesized = synthesize_answer(question, filtered)
-        synthesized["sources"] = sources
-        return synthesized
+        return {
+            "error": "LLM client not initialized. Please check your configuration.",
+            "sources": sources
+        }
 
     system_msg = (
         "You are a careful assistant. Write a concise professional summary using ONLY the "
@@ -1387,10 +1388,11 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         return _normalize_llm_response(resp, sources)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer completion failed: %s", exc)
-        synthesized = synthesize_answer(question, filtered)
-        synthesized["warning"] = "LLM unavailable; reply synthesized from retrieved passages."
-        synthesized["sources"] = sources
-        return synthesized
+        error_msg = str(exc)
+        return {
+            "error": f"Failed to generate answer: {error_msg}",
+            "sources": sources
+        }
 
 
 def verify_grounding_simple(_question: str, draft_answer: str,
