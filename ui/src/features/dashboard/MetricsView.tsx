@@ -95,18 +95,31 @@ export function MetricsView({ config }: { config: OllamaConfig }) {
       <Card>
         <CardHeader>
           <CardTitle>Token Count (Last 24 hours)</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            Tracks prompt and completion tokens from LLM API calls
+          </p>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data.filter(d => d.token_count !== null)}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="timestamp" tickFormatter={(ts) => new Date(ts).toLocaleTimeString()} />
-              <YAxis label={{ value: 'Tokens', angle: -90, position: 'insideLeft' }} />
-              <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="token_count" name="Token Count" stroke="#82ca9d" />
-            </LineChart>
-          </ResponsiveContainer>
+          {data.filter(d => d.token_count !== null).length === 0 ? (
+            <div className="h-[300px] flex items-center justify-center text-muted-foreground">
+              <div className="text-center space-y-2">
+                <p className="font-medium">No token count data yet</p>
+                <p className="text-sm">Token usage will appear here after chat or search operations</p>
+                <p className="text-xs">Supported: Ollama, Google Gemini, OpenAI, and compatible APIs</p>
+              </div>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={data.filter(d => d.token_count !== null)}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="timestamp" tickFormatter={(ts) => new Date(ts).toLocaleTimeString()} />
+                <YAxis label={{ value: 'Tokens', angle: -90, position: 'insideLeft' }} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="token_count" name="Token Count" stroke="#82ca9d" />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </CardContent>
       </Card>
 

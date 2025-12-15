@@ -1116,10 +1116,22 @@ class GoogleGeminiBackend(RAGBackend):
                 answer_text = candidates[0]['content']['parts'][0]['text']
                 if api_error_msg:
                     answer_text += api_error_msg
-                return {
+                
+                # Extract usage metadata if available (Gemini API format)
+                result = {
                     "role": "assistant",
                     "content": answer_text
                 }
+                
+                usage_metadata = response.get('usageMetadata')
+                if usage_metadata:
+                    result["usage"] = {
+                        "prompt_tokens": usage_metadata.get('promptTokenCount', 0),
+                        "completion_tokens": usage_metadata.get('candidatesTokenCount', 0),
+                        "total_tokens": usage_metadata.get('totalTokenCount', 0)
+                    }
+                
+                return result
             # pylint: disable=no-else-return
             return {"error": "No response generated"}
 

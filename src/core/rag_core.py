@@ -1689,7 +1689,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
             f"(Retrieval: {retrieval_time:.2f}s, Generation: {llm_duration:.2f}s)"
         )
 
-        return {
+        result = {
             "role": "assistant", 
             "content": content_with_citations, 
             "sources": cited_sources,
@@ -1699,6 +1699,12 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
                 "generation_time": llm_duration
             }
         }
+        
+        # Include usage/token counts if available
+        if "usage" in normalized:
+            result["usage"] = normalized["usage"]
+        
+        return result
 
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Chat completion failed: %s", exc)
