@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MessageSquare, Plus, Trash2, X } from 'lucide-react'
+import { MessageSquare, Plus, Trash2, X, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
@@ -18,6 +18,7 @@ interface ConversationSidebarProps {
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
   onDeleteConversation: (id: string) => void
+  onRenameConversation?: (id: string, title: string) => void
   onNewConversation: () => void
   onClose?: () => void
   isOpen: boolean
@@ -28,6 +29,7 @@ export function ConversationSidebar({
   activeConversationId,
   onSelectConversation,
   onDeleteConversation,
+  onRenameConversation,
   onNewConversation,
   onClose,
   isOpen
@@ -151,23 +153,48 @@ export function ConversationSidebar({
                       </p>
                     </div>
                     {hoveredId === conv.id && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn(
-                          'h-6 w-6 shrink-0',
-                          activeConversationId === conv.id
-                            ? 'text-primary-foreground hover:bg-primary-foreground/20'
-                            : ''
+                      <div className="flex items-center gap-1">
+                        {onRenameConversation && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                              'h-6 w-6 shrink-0',
+                              activeConversationId === conv.id
+                                ? 'text-primary-foreground hover:bg-primary-foreground/20'
+                                : ''
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const suggested = getConversationTitle(conv)
+                              const newTitle = window.prompt('Rename conversation', suggested)
+                              if (newTitle && newTitle.trim()) {
+                                onRenameConversation(conv.id, newTitle.trim())
+                              }
+                            }}
+                            title="Rename conversation"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
                         )}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onDeleteConversation(conv.id)
-                        }}
-                        title="Delete conversation"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={cn(
+                            'h-6 w-6 shrink-0',
+                            activeConversationId === conv.id
+                              ? 'text-primary-foreground hover:bg-primary-foreground/20'
+                              : ''
+                          )}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onDeleteConversation(conv.id)
+                          }}
+                          title="Delete conversation"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
                     )}
                   </div>
                 ))
@@ -178,4 +205,3 @@ export function ConversationSidebar({
     </div>
   )
 }
-

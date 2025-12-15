@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, User, Bot, Download, Paperclip, X, Trash, Plus } from 'lucide-react'
+import { Send, User, Bot, Download, Paperclip, X, Trash, Plus, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -77,6 +77,7 @@ export function ChatInterface({
   setMessages,
   onNewConversation,
   onDeleteConversation,
+  onRenameConversation,
   activeConversationId,
   onSessionId
 }: { 
@@ -85,6 +86,7 @@ export function ChatInterface({
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
   onNewConversation?: () => void
   onDeleteConversation?: (id: string) => void
+  onRenameConversation?: (id: string, title: string) => void
   activeConversationId?: string | null
   onSessionId?: (sessionId: string) => void
 }) {
@@ -420,6 +422,22 @@ export function ChatInterface({
           {onNewConversation && (
             <Button variant="ghost" size="icon" onClick={onNewConversation} title="New conversation">
               <Plus className="h-4 w-4" />
+            </Button>
+          )}
+          {onRenameConversation && activeConversationId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                const currentTitle = messages.find(m => m.role === 'user')?.content?.slice(0, 50) || ''
+                const newTitle = window.prompt('Rename conversation', currentTitle)
+                if (newTitle && newTitle.trim()) {
+                  onRenameConversation(activeConversationId, newTitle.trim())
+                }
+              }}
+              title="Rename conversation"
+            >
+              <Pencil className="h-4 w-4" />
             </Button>
           )}
           <Button 

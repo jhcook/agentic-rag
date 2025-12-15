@@ -31,6 +31,7 @@ interface SearchViewProps {
     onSelectConversation: (id: string) => void
     onNewConversation: () => void
     onDeleteConversation: (id: string) => void
+    onRenameConversation: (id: string, title: string) => void
 
     isSidebarOpen: boolean
     onToggleSidebar: () => void
@@ -56,6 +57,7 @@ export function SearchView(props: SearchViewProps) {
         onSelectConversation,
         onNewConversation,
         onDeleteConversation,
+        onRenameConversation,
         isSidebarOpen,
         onToggleSidebar
     } = props
@@ -73,6 +75,7 @@ export function SearchView(props: SearchViewProps) {
                         onSelectConversation={onSelectConversation}
                         onNewConversation={onNewConversation}
                         onDeleteConversation={onDeleteConversation}
+                        onRenameConversation={onRenameConversation}
                         isOpen={true} // Always open on desktop in this layout
                         onClose={() => { }}
                     />
@@ -176,14 +179,15 @@ export function SearchView(props: SearchViewProps) {
                         <ChatInterface
                             config={config}
                             messages={chatMessages}
-                            setMessages={setMessages}
-                            onNewConversation={onNewConversation}
-                            onDeleteConversation={onDeleteConversation}
-                            activeConversationId={activeConversationId}
-                            onSessionId={onSessionId}
-                        />
-                    </div>
-                )}
+                        setMessages={setMessages}
+                        onNewConversation={onNewConversation}
+                        onDeleteConversation={onDeleteConversation}
+                        onRenameConversation={onRenameConversation}
+                        activeConversationId={activeConversationId}
+                        onSessionId={onSessionId}
+                    />
+                </div>
+            )}
             </div>
         </div>
     )
