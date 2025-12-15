@@ -60,10 +60,10 @@ class ChatStore:
         return session_id
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get session details."""
+        """Get session details (excluding soft-deleted)."""
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, title, created_at, updated_at, metadata FROM conversations WHERE id = %s", (session_id,))
+                cur.execute("SELECT id, title, created_at, updated_at, metadata FROM conversations WHERE id = %s AND deleted_at IS NULL", (session_id,))
                 row = cur.fetchone()
                 if row:
                     return {
@@ -76,11 +76,11 @@ class ChatStore:
         return None
 
     def list_sessions(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """List recent chat sessions."""
+        """List recent chat sessions (excluding soft-deleted)."""
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, title, created_at, updated_at, metadata FROM conversations ORDER BY updated_at DESC LIMIT %s OFFSET %s",
+                    "SELECT id, title, created_at, updated_at, metadata FROM conversations WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT %s OFFSET %s",
                     (limit, offset),
                 )
                 rows = cur.fetchall()
@@ -152,10 +152,13 @@ class ChatStore:
                 return messages
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all its messages."""
+        """Soft delete a session (marks as deleted without removing data)."""
         with self._get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM conversations WHERE id = %s", (session_id,))
+                cur.execute(
+                    "UPDATE conversations SET deleted_at = NOW() WHERE id = %s AND deleted_at IS NULL",
+                    (session_id,),
+                )
                 deleted_count = cur.rowcount
             conn.commit()
             return deleted_count > 0

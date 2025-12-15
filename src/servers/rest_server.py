@@ -1566,9 +1566,29 @@ def api_chat_history_delete_message(session_id: str, message_id: str):
         logger.error("Failed to delete message: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.patch(f"/{pth}/chat/history/{{session_id}}/title")
+def api_chat_history_update_title(session_id: str, request: dict):
+    """Update the title of a chat session."""
+    if not chat_store:
+        raise HTTPException(status_code=503, detail="Chat storage not available")
+    try:
+        title = request.get("title", "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        
+        updated = chat_store.update_session_title(session_id, title)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"success": True, "session_id": session_id, "title": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update session title: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete(f"/{pth}/chat/history/{{session_id}}")
 def api_chat_history_delete(session_id: str):
-    """Delete a chat session and all its messages."""
+    """Soft delete a chat session (marks as deleted, data retained for compliance)."""
     if not chat_store:
         raise HTTPException(status_code=503, detail="Chat storage not available")
     try:

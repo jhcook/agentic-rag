@@ -219,7 +219,8 @@ def migrate_schema(embed_dim: int) -> None:
         "  title TEXT,"
         "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
         "  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-        "  metadata JSONB"
+        "  metadata JSONB,"
+        "  deleted_at TIMESTAMPTZ"
         ");",
         "CREATE TABLE IF NOT EXISTS conversation_messages ("
         "  id TEXT PRIMARY KEY,"
@@ -242,6 +243,19 @@ def migrate_schema(embed_dim: int) -> None:
         with conn.cursor() as cur:
             for stmt in ddl:
                 cur.execute(stmt)
+            
+            # Migration: Add deleted_at column to conversations if it doesn't exist
+            cur.execute("""
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='conversations' AND column_name='deleted_at'
+                    ) THEN
+                        ALTER TABLE conversations ADD COLUMN deleted_at TIMESTAMPTZ;
+                    END IF;
+                END $$;
+            """)
         conn.commit()
 
 

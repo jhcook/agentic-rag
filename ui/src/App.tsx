@@ -382,6 +382,31 @@ function App() {
       throw new Error(data.error || 'Failed to fetch stats')
     }
   }
+  const handleRenameConversation = async (conversationId: string, newTitle: string) => {
+    const { host, port, base } = getApiBase()
+    
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}/title`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle })
+      })
+      
+      if (res.ok) {
+        // Update local state
+        setConversations(prev => prev.map(c => 
+          c.id === conversationId ? { ...c, title: newTitle } : c
+        ))
+        toast.success('Conversation renamed')
+      } else {
+        throw new Error('Failed to rename conversation')
+      }
+    } catch (e) {
+      console.error('Failed to rename conversation', e)
+      toast.error('Failed to rename conversation')
+    }
+  }
+
   const handleDeleteConversation = async (conversationId: string) => {
     const { host, port, base } = getApiBase()
     
@@ -724,6 +749,7 @@ function App() {
               setChatMessages([])
             }}
             onDeleteConversation={handleDeleteConversation}
+            onRenameConversation={handleRenameConversation}
             isSidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
           />
