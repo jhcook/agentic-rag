@@ -480,6 +480,19 @@ export function ChatInterface({
               <Plus className="h-4 w-4" />
             </Button>
           )}
+          {onRenameConversation && activeConversationId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setDraftTitle(activeConversationTitle || '')
+                setIsEditingTitle(true)
+              }}
+              title="Rename conversation"
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+          )}
           <Button 
             variant="ghost" 
             size="icon" 

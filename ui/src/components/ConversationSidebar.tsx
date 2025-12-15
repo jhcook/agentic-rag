@@ -169,7 +169,7 @@ export function ConversationSidebar({
                   <div
                     key={conv.id}
                     className={cn(
-                      'group relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors',
+                      'group relative flex items-center gap-2 p-2 pr-12 rounded-lg cursor-pointer transition-colors',
                       activeConversationId === conv.id
                         ? 'bg-primary text-primary-foreground'
                         : 'hover:bg-muted'
@@ -180,7 +180,7 @@ export function ConversationSidebar({
                       checked={selectedIds.has(conv.id)}
                       onCheckedChange={() => toggleSelect(conv.id)}
                       className={cn(
-                        'h-4 w-4 shrink-0',
+                        'h-4 w-4',
                         activeConversationId === conv.id
                           ? 'border-primary-foreground data-[state=checked]:bg-primary-foreground'
                           : ''
@@ -188,11 +188,14 @@ export function ConversationSidebar({
                       onClick={(e) => e.stopPropagation()}
                     />
                     <MessageSquare className="h-4 w-4 shrink-0" />
-                    <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex-1 min-w-0 max-w-[65%]">
                       {editingId === conv.id ? (
                         <input
                           autoFocus
-                          className="w-full max-w-full text-sm font-medium bg-transparent border-b border-border focus:outline-none focus:border-primary text-foreground truncate"
+                          className={cn(
+                            'w-full text-sm font-medium bg-transparent border-b border-border focus:outline-none focus:border-primary',
+                            activeConversationId === conv.id ? 'text-black' : 'text-foreground'
+                          )}
                           value={editingTitle}
                           onChange={(e) => setEditingTitle(e.target.value)}
                           onClick={(e) => e.stopPropagation()}
@@ -232,7 +235,12 @@ export function ConversationSidebar({
                         </>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity shrink-0">
+                    <div
+                      className={cn(
+                        'flex items-center gap-1 transition-opacity absolute right-2 top-1/2 -translate-y-1/2',
+                        activeConversationId === conv.id ? 'opacity-100' : 'opacity-0'
+                      )}
+                    >
                       {onRenameConversation && (
                         <Button
                           variant="ghost"
