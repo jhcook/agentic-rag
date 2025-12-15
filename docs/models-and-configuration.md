@@ -147,6 +147,7 @@ and hides Ollama from `available_modes` until you save a new configuration—mat
 - `ollamaLocalModel` / `ollamaCloudModel`: distinct model names for local vs. cloud. The UI populates dropdowns by fetching local or cloud models independently.
 - `proxy`: shared HTTPS proxy applied to outbound requests (including Ollama Cloud) where supported.
 - `caBundlePath` / `ollamaCloudCABundle`: PEM paths used for TLS verification; relative paths resolve from the repo root.
+- `CHAT_STORE_DB` (env): Optional SQLite path for chat history. Defaults to `data/chat_store.db` (created if missing).
 
 **Managing Configuration:**
 - **Web UI**: Use the "Settings" dashboard to view and modify configuration (including Debug toggle).

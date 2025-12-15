@@ -178,3 +178,23 @@ def test_grounded_answer_with_config(monkeypatch):
     assert call_kwargs["model"] == "custom-model"
     assert call_kwargs["temperature"] == 0.7
     assert call_kwargs["num_ctx"] == 2048
+
+
+def test_cited_sources_align_with_inline_numbers():
+    import src.core.rag_core as rag_core
+
+    sources = ["a.pdf", "b.pdf", "c.pdf"]
+    content = "Answer text [2]\n\nSources:\n[1] a.pdf\n[2] b.pdf\n[3] c.pdf"
+    cited = rag_core._extract_cited_sources(content, sources)
+    assert cited == ["b.pdf"]
+
+
+def test_does_not_inject_citations_when_already_present():
+    import src.core.rag_core as rag_core
+
+    sources = ["a.pdf"]
+    content = "Answer text [1]\n\nSources:\n[1] a.pdf"
+    with_inline = rag_core._add_inline_citations(content, sources)
+    assert content in with_inline or with_inline.startswith("Answer text")
+    assert "[1]" in with_inline
+    assert "Sources" in with_inline

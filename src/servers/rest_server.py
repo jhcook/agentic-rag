@@ -269,14 +269,17 @@ def load_app_config():
                 os.environ["MCP_PATH"] = config["mcpPath"]
 
             # Update RAG Core configuration
-            # Map settings.json keys to rag_core variables
+            # Map settings.json keys to rag_core variables (per-mode fields preferred)
             if "apiEndpoint" in config:
                 rag_core.OLLAMA_API_BASE = config["apiEndpoint"]
-
-            if "model" in config:
-                rag_core.LLM_MODEL_NAME = config["model"]
-                rag_core.ASYNC_LLM_MODEL_NAME = config["model"].split("/")[-1]
-
+            if "ollamaMode" in config:
+                os.environ["OLLAMA_MODE"] = str(config["ollamaMode"])
+            if "ollamaLocalModel" in config:
+                rag_core.LLM_MODEL_NAME = config["ollamaLocalModel"]
+                rag_core.ASYNC_LLM_MODEL_NAME = str(config["ollamaLocalModel"]).split("/")[-1]
+            elif "ollamaCloudModel" in config:
+                rag_core.LLM_MODEL_NAME = config["ollamaCloudModel"]
+                rag_core.ASYNC_LLM_MODEL_NAME = str(config["ollamaCloudModel"]).split("/")[-1]
             if "embeddingModel" in config:
                 rag_core.EMBED_MODEL_NAME = config["embeddingModel"]
 
