@@ -984,10 +984,12 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
             normalized_resp["usage"] = resp.usage_metadata
         elif hasattr(resp, "response_metadata") and isinstance(resp.response_metadata, dict):
             if "total_duration" in resp.response_metadata and "prompt_eval_count" in resp.response_metadata:
+                prompt_count = resp.response_metadata.get("prompt_eval_count") or 0
+                completion_count = resp.response_metadata.get("eval_count") or 0
                 normalized_resp["usage"] = {
-                    "total_tokens": resp.response_metadata.get("prompt_eval_count", 0) + resp.response_metadata.get("eval_count", 0),
-                    "prompt_tokens": resp.response_metadata.get("prompt_eval_count"),
-                    "completion_tokens": resp.response_metadata.get("eval_count"),
+                    "total_tokens": prompt_count + completion_count,
+                    "prompt_tokens": prompt_count,
+                    "completion_tokens": completion_count,
                 }
         return normalized_resp
 
