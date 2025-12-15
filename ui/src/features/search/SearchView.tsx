@@ -158,11 +158,11 @@ export function SearchView(props: SearchViewProps) {
                                     {searchSources.length > 0 && (
                                         <div className="pt-6 border-t border-white/5">
                                             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Sources</h4>
-                                            <div className="flex flex-wrap gap-2">
+                                            <div className="space-y-1 text-sm text-muted-foreground/80">
                                                 {searchSources.map((source, i) => (
-                                                    <Badge variant="secondary" key={i} className="bg-secondary/50 hover:bg-secondary transition-colors cursor-pointer px-3 py-1.5">
-                                                        {source.split('/').pop()}
-                                                    </Badge>
+                                                    <div key={i} className="font-mono">
+                                                        [{i + 1}] {source.split('/').pop()}
+                                                    </div>
                                                 ))}
                                             </div>
                                         </div>

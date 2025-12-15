@@ -944,8 +944,15 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
 
     # Handle LangChain AIMessage (or any object with content attribute)
     if hasattr(resp, "content"):
+        content = resp.content
+        
+        # Strip "Sources:" section from content if present (it's provided separately)
+        sources_index = content.find('\n\nSources:')
+        if sources_index != -1:
+            content = content[:sources_index].strip()
+        
         normalized_resp = {
-            "answer": resp.content,
+            "answer": content,
             "sources": sources or [],
             "model": "unknown"
         }
