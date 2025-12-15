@@ -309,8 +309,10 @@ MASKED_SECRET = "***MASKED***"
 # Chat persistence
 try:
     from src.core.chat_store import ChatStore
-    chat_store = ChatStore()
-    logger.info("ChatStore initialized")
+    db_path = Path(os.getenv("CHAT_STORE_DB", "data/chat_store.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    chat_store = ChatStore(db_path=db_path)
+    logger.info("ChatStore initialized at %s", db_path)
 except Exception as exc:
     logger.error("Failed to initialize ChatStore: %s", exc)
     chat_store = None
@@ -2630,19 +2632,52 @@ async def update_app_config(req: AppConfigReq, _request: Request, _admin: None =
     config_path = config_dir / "settings.json"
 
     try:
-        payload = req.model_dump(by_alias=True)
-        required_fields = ("apiEndpoint", "model")
+        # Drop unset/None values so we don't overwrite existing settings with nulls
+        payload = {k: v for k, v in req.model_dump(by_alias=True).items() if v is not None}
+
+        existing: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to read existing app config for merge: %s", exc)
 
         def _has_value(field_name: str) -> bool:
             value = payload.get(field_name)
+            if value is None:
+                value = existing.get(field_name)
             if isinstance(value, str):
                 return bool(value.strip())
             return bool(value)
 
+        # Resolve mode and per-mode model selection
+        mode = payload.get("ollamaMode") or existing.get("ollamaMode") or "local"
+        local_model = (
+            payload.get("ollamaLocalModel")
+            or existing.get("ollamaLocalModel")
+        )
+        cloud_model = (
+            payload.get("ollamaCloudModel")
+            or existing.get("ollamaCloudModel")
+        )
+
+        if mode == "cloud":
+            active_model = cloud_model or local_model
+        elif mode == "auto":
+            active_model = cloud_model or local_model
+        else:
+            active_model = local_model or cloud_model
+
+        if local_model:
+            payload["ollamaLocalModel"] = local_model
+        if cloud_model:
+            payload["ollamaCloudModel"] = cloud_model
+
         # Treat Ollama as configured if we have a model and either:
         # - a local endpoint, or
         # - a stored Ollama Cloud API key (cloud-only users)
-        has_model = _has_value("model")
+        has_model = bool(active_model)
         has_local_endpoint = _has_value("apiEndpoint")
         try:
             from src.core import ollama_config
@@ -2659,13 +2694,9 @@ async def update_app_config(req: AppConfigReq, _request: Request, _admin: None =
         else:
             payload["ragMode"] = "none"
 
-        existing: Dict[str, Any] = {}
-        if config_path.exists():
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f) or {}
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to read existing app config for merge: %s", exc)
+        # Remove legacy model key if present in existing/payload to avoid confusion
+        existing.pop("model", None)
+        payload.pop("model", None)
 
         existing.update(payload)
         with open(config_path, "w", encoding="utf-8") as f:
@@ -2949,6 +2980,21 @@ def api_list_ollama_models_post(req: OllamaModelsReq):
 def api_test_ollama_connection(req: OllamaTestConnectionReq, _request: Request, _admin: None = Depends(require_admin_access)):
     """Test connection to Ollama Cloud with API key."""
     try:
+        # Fast-path: allow local endpoints without HTTPS/API key requirements
+        if req.endpoint:
+            from urllib.parse import urlparse
+            parsed = urlparse(req.endpoint if "://" in req.endpoint else f"http://{req.endpoint}")
+            host = parsed.hostname or ""
+            if host in ("127.0.0.1", "localhost", "0.0.0.0") or host.startswith("192.168.") or host.startswith("10.") or host.startswith("172."):
+                import requests
+                ep = parsed.geturl()
+                if not ep.startswith(("http://", "https://")):
+                    ep = f"http://{ep}"
+                resp = requests.get(f"{ep.rstrip('/')}/api/tags", timeout=5)
+                if resp.ok:
+                    return OllamaTestConnectionResp(success=True, message="Local connection successful")
+                return OllamaTestConnectionResp(success=False, message=f"Connection failed: HTTP {resp.status_code}")
+
         from src.core.ollama_config import (
             test_cloud_connection,
             save_ollama_cloud_config,
@@ -2989,6 +3035,28 @@ def api_test_ollama_connection(req: OllamaTestConnectionReq, _request: Request, 
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error("Failed to test Ollama connection: %s", e)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+@app.post(f"/{pth}/ollama/local-test")
+def api_test_ollama_local(req: OllamaTestConnectionReq, _request: Request, _admin: None = Depends(require_admin_access)):
+    """Test connection to a local/self-hosted Ollama endpoint (no API key, allow HTTP)."""
+    import requests
+    endpoint = req.endpoint or "http://127.0.0.1:11434"
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = f"http://{endpoint}"
+
+    try:
+        resp = requests.get(f"{endpoint.rstrip('/')}/api/tags", timeout=5)
+        if resp.ok:
+            return {"success": True, "message": "Local connection successful"}
+        return {
+            "success": False,
+            "message": f"Connection failed: HTTP {resp.status_code}"
+        }
+    except requests.exceptions.RequestException as exc:
+        return {"success": False, "message": f"Connection error: {exc}"}
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Unexpected error testing local Ollama: %s", exc)
+        return {"success": False, "message": "Unexpected error"}
 
 @app.get(f"/{pth}/ollama/cloud-config")
 def api_get_ollama_cloud_config(_request: Request, _admin: None = Depends(require_admin_access)):

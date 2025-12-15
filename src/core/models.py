@@ -194,7 +194,8 @@ class OllamaTestConnectionResp(BaseModel):
 class AppConfigReq(BaseModel):
     """Request model for application configuration."""
     api_endpoint: str = Field(alias="apiEndpoint")
-    model: str
+    ollama_local_model: Optional[str] = Field(default=None, alias="ollamaLocalModel")
+    ollama_cloud_model: Optional[str] = Field(default=None, alias="ollamaCloudModel")
     embedding_model: str = Field(alias="embeddingModel")
     temperature: str
     top_p: str = Field(alias="topP")
@@ -209,7 +210,7 @@ class AppConfigReq(BaseModel):
     rag_port: str = Field(alias="ragPort")
     rag_path: str = Field(alias="ragPath")
     debug_mode: Optional[bool] = Field(default=False, alias="debugMode")
-    ollama_cloud_proxy: Optional[str] = Field(default=None, alias="ollamaCloudProxy")
+    proxy: Optional[str] = Field(default=None, alias="proxy")
     ollama_cloud_endpoint: Optional[str] = Field(default=None, alias="ollamaCloudEndpoint")
     ollama_mode: Optional[str] = Field(default=None, alias="ollamaMode")
     ollama_cloud_api_key: Optional[str] = Field(default=None, alias="ollamaCloudApiKey")
@@ -227,4 +228,3 @@ class QualityMetricsResp(BaseModel):
     fallback_responses: int
     success_rate: float
     avg_sources: float
-

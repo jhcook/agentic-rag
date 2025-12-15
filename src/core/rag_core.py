@@ -55,6 +55,16 @@ from src.core.llm_client import sync_completion, safe_completion, reload_llm_con
 # Backwards compatibility: some tests monkeypatch `rag_core.completion`.
 completion = sync_completion
 
+# Set up logging early so it is available during module import (e.g. while
+# loading settings).
+logger = logging.getLogger(__name__)
+# Avoid adding duplicate handlers when imported by servers that configure logging.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
 # Load .env early so configuration is available at module import time
 load_dotenv()
 
@@ -99,7 +109,25 @@ def _apply_settings() -> None:
         "EMBED_MODEL_NAME",
         "sentence-transformers/paraphrase-MiniLM-L3-v2",
     )
-    
+
+    mode = (_SETTINGS.get("ollamaMode") or os.getenv("OLLAMA_MODE", "local")).lower()
+    local_model = _SETTINGS.get("ollamaLocalModel")
+    cloud_model = _SETTINGS.get("ollamaCloudModel")
+    env_model = os.getenv("LLM_MODEL_NAME")
+
+    if env_model:
+        chosen_model = env_model
+    elif mode == "cloud":
+        chosen_model = cloud_model or local_model
+    elif mode == "auto":
+        # Prefer cloud, fall back to local if not set
+        chosen_model = cloud_model or local_model
+    else:
+        chosen_model = local_model or cloud_model
+
+    if not chosen_model:
+        chosen_model = "ollama/llama3.2:1b"
+
     # Use new ollama_config module for endpoint resolution
     try:
         from src.core.ollama_config import get_ollama_endpoint
@@ -112,11 +140,7 @@ def _apply_settings() -> None:
             "http://127.0.0.1:11434",
         )
     
-    LLM_MODEL_NAME = _get_config_value(
-        "model",
-        "LLM_MODEL_NAME",
-        "ollama/llama3.2:1b",
-    )
+    LLM_MODEL_NAME = chosen_model
     ASYNC_LLM_MODEL_NAME = os.getenv(
         "ASYNC_LLM_MODEL_NAME",
         LLM_MODEL_NAME.replace("ollama/", ""),
@@ -152,15 +176,6 @@ except ImportError:
     Counter = None  # type: ignore
     Histogram = None  # type: ignore
 
-# Set up logging
-# Avoid adding duplicate handlers when imported by servers that configure logging.
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-logger = logging.getLogger(__name__)
-
 # -------- Configuration --------
 DEBUG_MODE = os.getenv("RAG_DEBUG_MODE", "false").lower() == "true"
 MAX_MEMORY_MB = int(os.getenv("MAX_MEMORY_MB", "1024"))
@@ -170,7 +185,19 @@ EMBED_DIM_OVERRIDE = int(os.getenv("EMBED_DIM_OVERRIDE", "0")) or None
 
 def get_llm_model_name() -> str:
     """Get the current LLM model name from settings or env."""
-    return _SETTINGS.get("model") or os.getenv("LLM_MODEL_NAME", "ollama/llama3.2:1b")
+    env_model = os.getenv("LLM_MODEL_NAME")
+    if env_model:
+        return env_model
+
+    mode = (_SETTINGS.get("ollamaMode") or os.getenv("OLLAMA_MODE", "local")).lower()
+    local_model = _SETTINGS.get("ollamaLocalModel")
+    cloud_model = _SETTINGS.get("ollamaCloudModel")
+
+    if mode == "cloud":
+        return cloud_model or local_model or "ollama/llama3.2:1b"
+    if mode == "auto":
+        return cloud_model or local_model or "ollama/llama3.2:1b"
+    return local_model or cloud_model or "ollama/llama3.2:1b"
 
 # Cache pgvector schema migration so we don't run idempotent DDL on every query.
 _PGVECTOR_SCHEMA_LOCK = threading.Lock()
@@ -945,12 +972,7 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
     # Handle LangChain AIMessage (or any object with content attribute)
     if hasattr(resp, "content"):
         content = resp.content
-        
-        # Strip "Sources:" section from content if present (it's provided separately)
-        sources_index = content.find('\n\nSources:')
-        if sources_index != -1:
-            content = content[:sources_index].strip()
-        
+
         normalized_resp = {
             "answer": content,
             "sources": sources or [],
@@ -985,6 +1007,19 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
 
     # Fallback: convert to string
     return {"answer": str(resp), "sources": sources or []}
+
+
+def _strip_sources_block(text: str) -> str:
+    """
+    Remove trailing Sources section from model content while leaving inline
+    citations intact. This avoids displaying redundant source lists from the LLM.
+    """
+    if not text:
+        return text
+    sources_idx = text.find("\n\nSources:")
+    if sources_idx != -1:
+        text = text[:sources_idx].strip()
+    return text
 
 
 def _build_rag_context(
@@ -1087,6 +1122,8 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
     )
     user_msg = f"Document Content:\n{context}\n\nQuestion: {query}"
 
+    fallback_used = False
+    fallback_reason: Optional[str] = None
     try:
         # Use sync completion for simplicity in this flow, reusing existing config
 
@@ -1139,14 +1176,16 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
         try:
             resp = completion(**completion_kwargs)  # type: ignore
             return _normalize_llm_response(resp, sources)
-        except (APIConnectionError, Timeout) as exc:  # type: ignore
-            # Connection/timeout errors - try fallback if available
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # Any cloud failure in auto mode should attempt local fallback once.
             if fallback_endpoint:
+                fallback_used = True
+                fallback_reason = str(exc)
                 logger.warning(
-                    "Cloud endpoint failed (%s), falling back to local endpoint",
-                    type(exc).__name__
+                    "Primary endpoint failed (%s): %s; attempting local fallback",
+                    type(exc).__name__,
+                    exc,
                 )
-                # Retry with local endpoint (no headers) and normalize model for local to drop any -cloud suffix
                 if effective_model.startswith("ollama/"):
                     raw_model = effective_model[len("ollama/") :]
                     try:
@@ -1155,15 +1194,21 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
                         completion_kwargs["model"] = f"ollama/{local_model}"
                     except Exception:  # pylint: disable=broad-exception-caught
                         pass
-                # Retry with local endpoint
                 completion_kwargs["api_base"] = fallback_endpoint
-                completion_kwargs.pop("extra_headers", None)  # Remove headers for local
+                completion_kwargs.pop("extra_headers", None)
                 try:
                     resp = completion(**completion_kwargs)  # type: ignore
-                    return _normalize_llm_response(resp, sources)
+                    result = _normalize_llm_response(resp, sources)
+                    result["fallback_used"] = True
+                    if fallback_reason:
+                        result["fallback_reason"] = fallback_reason
+                    return result
                 except Exception as fallback_exc:  # pylint: disable=broad-exception-caught
-                    logger.error("Fallback to local endpoint also failed: %s", fallback_exc)
-                    raise exc  # Raise original exception
+                    logger.error(
+                        "Fallback to local endpoint also failed: %s",
+                        fallback_exc,
+                    )
+                    raise exc
             raise
     except (ValueError, OllamaError, APIConnectionError) as exc:  # type: ignore
         logger.error("Ollama API Error: %s", exc)
@@ -1437,6 +1482,15 @@ _SOURCES_SECTION_PATTERN = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+def _has_inline_citations(content: str) -> bool:
+    """
+    Detect inline numeric citations in the response body (excluding the Sources block).
+    """
+    if not content:
+        return False
+    body_only = _SOURCES_SECTION_PATTERN.sub("", content)
+    return bool(re.search(r"\[\d+\]", body_only))
+
 
 def _dedupe_preserve_order(items: List[str]) -> List[str]:
     """Return items with duplicates removed, preserving order."""
@@ -1453,9 +1507,12 @@ def _extract_cited_sources(content: str, all_sources: List[str]) -> List[str]:
     """
     Extract unique sources from LLM response in order of citation.
 
-    Parses the 'Sources:' section to get the ordered, deduplicated list.
-    Falls back to all_sources if parsing fails.
+    Uses inline citation numbers to filter the Sources block so only
+    actually cited sources are returned. Falls back to all_sources if
+    parsing fails.
     """
+    inline_nums = {int(n) for n in re.findall(r"\[(\d+)\]", content)}
+
     sources_match = _CITATION_BLOCK_PATTERN.search(content)
     if not sources_match:
         return _dedupe_preserve_order(all_sources)
@@ -1469,6 +1526,10 @@ def _extract_cited_sources(content: str, all_sources: List[str]) -> List[str]:
             continue
         match = _CITATION_LINE_PATTERN.match(line)
         if not match:
+            continue
+
+        num = int(match.group(1))
+        if inline_nums and num not in inline_nums:
             continue
 
         source_name = match.group(2).strip().lower()
@@ -1495,7 +1556,7 @@ def _add_inline_citations(content: str, sources: List[str]) -> str:
     Automatically add inline citation markers to the response text.
     If the LLM didn't include [1], [2] style citations, we add them at paragraph boundaries.
     """
-    if _INLINE_CITATION_PATTERN.search(content):
+    if _has_inline_citations(content):
         return content
     if not sources:
         return content
@@ -1596,18 +1657,12 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         "2. Place the citation immediately after each claim or fact from a source\n"
         "3. If a sentence uses information from multiple sources, cite all: [1][2]\n"
         "4. Assign a unique number to each source document and reuse it consistently\n"
-        "\n"
-        "Example response format:\n"
-        "John has 10 years of experience in software engineering [1]. He specialized in "
-        "cloud architecture [2] and led several major projects [1][3]. His expertise includes "
-        "Kubernetes and AWS [2].\n"
-        "\n"
+        "5. At the end, include a 'Sources:' section listing the numbered sources on separate lines\n"
+        "Example:\n"
+        "Text of the answer [1][2]\n"
         "Sources:\n"
         "[1] resume.pdf\n"
         "[2] cover_letter.docx\n"
-        "[3] portfolio.pdf\n"
-        "\n"
-        "You MUST include inline citations [1], [2], etc. in your response text."
     )
 
     # Build messages with context: keep conversation history but add document context
@@ -1638,6 +1693,10 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
             num_ctx = int(num_ctx)
         except (ValueError, TypeError):
             num_ctx = None
+    # Resolve local model for fallback in auto mode
+    local_model_for_fallback = _SETTINGS.get("ollamaLocalModel")
+    if local_model_for_fallback and not str(local_model_for_fallback).startswith("ollama/"):
+        local_model_for_fallback = f"ollama/{local_model_for_fallback}"
 
     # Get endpoint and headers from ollama_config with fallback support
     try:
@@ -1662,6 +1721,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         if headers:
             completion_kwargs["extra_headers"] = headers
         
+        fallback_reason: Optional[str] = None
         # Try primary endpoint
         try:
             resp = completion(**completion_kwargs)
@@ -1669,11 +1729,16 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
             # Connection/timeout errors - try fallback if available
             if fallback_endpoint:
                 logger.warning(
-                    "Cloud endpoint failed (%s), falling back to local endpoint",
-                    type(exc).__name__
+                    "Primary endpoint failed (%s): %s; attempting local fallback",
+                    type(exc).__name__,
+                    exc
                 )
+                fallback_reason = str(exc)
                 completion_kwargs["api_base"] = fallback_endpoint
                 completion_kwargs.pop("extra_headers", None)
+                # If we have a configured local model, use it for fallback
+                if local_model_for_fallback:
+                    completion_kwargs["model"] = local_model_for_fallback
                 resp = completion(**completion_kwargs)
             else:
                 raise
@@ -1683,11 +1748,14 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
         normalized = _normalize_llm_response(resp, sources)
         content = normalized.get("answer") or normalized.get("content") or str(resp)
 
-        # Extract and deduplicate sources based on what was actually cited
+        # Extract and deduplicate sources based on what was actually cited (from Sources block or fallback list)
         cited_sources = _extract_cited_sources(content, sources)
 
+        # Remove Sources block from displayed content, but keep inline citations
+        content_clean = _strip_sources_block(content)
+
         # Add inline citations if the LLM didn't include them
-        content_with_citations = _add_inline_citations(content, cited_sources)
+        content_with_citations = _add_inline_citations(content_clean, cited_sources)
         
         total_duration = time.time() - start_time
         llm_duration = time.time() - llm_start_time
@@ -1708,6 +1776,10 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
                 "generation_time": llm_duration
             }
         }
+        if fallback_endpoint and completion_kwargs.get("api_base") == fallback_endpoint:
+            result["fallback_used"] = True
+            if fallback_reason:
+                result["fallback_reason"] = fallback_reason
         
         # Include usage/token counts if available
         if "usage" in normalized:

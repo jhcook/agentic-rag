@@ -140,7 +140,6 @@ def get_ollama_mode() -> OllamaMode:
     """
     settings = _read_settings_file()
     mode = settings.get("ollamaMode") or os.getenv("OLLAMA_MODE", "local")
-    
     if mode not in ["local", "cloud", "auto"]:
         logger.warning("Invalid ollamaMode: %s, defaulting to 'local'", mode)
         return "local"
@@ -176,15 +175,15 @@ def get_ollama_api_key() -> Optional[str]:
 
 def get_ollama_cloud_proxy() -> Optional[str]:
     """
-    Get proxy URL for Ollama Cloud connections.
+    Get proxy URL for Ollama Cloud connections (and shared outbound requests).
     
     Priority:
-    1. settings.json (ollamaCloudProxy)
+    1. settings.json (proxy)
     2. secrets/ollama_cloud_config.json (proxy)
     3. HTTPS_PROXY or HTTP_PROXY environment variables
     """
     settings = _read_settings_file()
-    proxy = settings.get("ollamaCloudProxy")
+    proxy = settings.get("proxy")
     
     if not proxy:
         secrets = _read_ollama_cloud_secrets()
@@ -199,17 +198,16 @@ def get_ollama_cloud_proxy() -> Optional[str]:
 
 def save_ollama_cloud_proxy(proxy: Optional[str]) -> None:
     """
-    Persist Ollama Cloud proxy setting to config/settings.json.
+    Persist shared proxy setting to config/settings.json.
     
     Args:
         proxy: Proxy URL to save (None or empty string will clear it)
     """
     config: dict = _read_settings_file()
     if proxy:
-        config["ollamaCloudProxy"] = proxy.strip()
+        config["proxy"] = proxy.strip()
     else:
-        # Remove if empty/None
-        config.pop("ollamaCloudProxy", None)
+        config.pop("proxy", None)
     
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:

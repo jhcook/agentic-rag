@@ -212,6 +212,18 @@ export function ChatInterface({
       
       const data = await res.json()
 
+      // Track fallback for dual notifications (pre-response and reminder after render)
+      let fallbackUsed = false
+      let fallbackReason = ''
+      if (data.fallback_used) {
+        fallbackUsed = true
+        fallbackReason = data.fallback_reason ? ` (${data.fallback_reason})` : ''
+        toast.warning(`Cloud model unavailable; falling back to local model${fallbackReason}`)
+        // Do not persist fallback metadata in chat state/history; popup is enough.
+        delete data.fallback_used
+        delete data.fallback_reason
+      }
+
       if (data.session_id) {
         // Best-effort refresh of sidebar; does not force navigation.
         onSessionId?.(String(data.session_id))
@@ -269,6 +281,9 @@ export function ChatInterface({
       }
       if (shouldAppendToCurrentConversation) {
         setMessages(prev => [...prev, botMsg])
+        if (fallbackUsed) {
+          toast.info(`Response generated via local fallback${fallbackReason}`)
+        }
       }
     } catch (e: any) {
       console.error(e)

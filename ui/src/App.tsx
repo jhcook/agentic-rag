@@ -15,30 +15,37 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const MASKED_SECRET = '***MASKED***'
 
-const createDefaultOllamaConfig = (): OllamaConfig => ({
-  apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
-  model: import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b',
-  embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
-  temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
-  topP: '0.9',
-  topK: '40',
-  repeatPenalty: '1.1',
-  seed: '-1',
-  numCtx: '2048',
-  mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
-  mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
-  mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
-  ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
-  ragPort: import.meta.env.VITE_RAG_PORT || '8001',
-  ragPath: import.meta.env.VITE_RAG_PATH || 'api',
-  debugMode: false,
-  ollamaCloudApiKey: '',
-  ollamaCloudEndpoint: '',
-  ollamaCloudProxy: '',
-  ollamaCloudCABundle: '',
-  ollamaMode: 'local',
-  availableModels: [],
-})
+const createDefaultOllamaConfig = (): OllamaConfig => {
+  const defaultModel = import.meta.env.VITE_LLM_MODEL_NAME?.replace(/^ollama\//, '') || 'qwen2.5:7b'
+  const defaultCloudModel = import.meta.env.VITE_OLLAMA_CLOUD_MODEL || 'gemini-3-pro-preview'
+  return {
+    apiEndpoint: import.meta.env.VITE_OLLAMA_API_BASE || 'http://127.0.0.1:11434',
+    ollamaLocalModel: defaultModel,
+    ollamaCloudModel: defaultCloudModel,
+    activeModel: defaultModel,
+    embeddingModel: import.meta.env.VITE_EMBED_MODEL_NAME || 'Snowflake/arctic-embed-xs',
+    temperature: import.meta.env.VITE_LLM_TEMPERATURE || '0.7',
+    topP: '0.9',
+    topK: '40',
+    repeatPenalty: '1.1',
+    seed: '-1',
+    numCtx: '2048',
+    mcpHost: import.meta.env.VITE_MCP_HOST || '127.0.0.1',
+    mcpPort: import.meta.env.VITE_MCP_PORT || '8000',
+    mcpPath: import.meta.env.VITE_MCP_PATH || '/mcp',
+    ragHost: import.meta.env.VITE_RAG_HOST || 'localhost',
+    ragPort: import.meta.env.VITE_RAG_PORT || '8001',
+    ragPath: import.meta.env.VITE_RAG_PATH || 'api',
+    debugMode: false,
+    ollamaCloudApiKey: '',
+    ollamaCloudEndpoint: '',
+    proxy: '',
+    ollamaCloudCABundle: '',
+    ollamaMode: 'local',
+    availableModels: [],
+    availableCloudModels: [],
+  }
+}
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
@@ -106,7 +113,21 @@ function App() {
         const res = await fetch(`http://${host}:${port}/${base}/config/app`)
         if (res.ok) {
           const data = await res.json()
-          setOllamaConfig(prev => ({ ...prev, ...data }))
+          setOllamaConfig(prev => {
+            const localModel = data.ollamaLocalModel || data.model || prev.ollamaLocalModel || ''
+            const cloudModel = data.ollamaCloudModel || data.model || prev.ollamaCloudModel || ''
+            const mode = data.ollamaMode || prev.ollamaMode || 'local'
+            const effectiveModel = mode === 'cloud' ? (cloudModel || localModel) : (mode === 'auto' ? (cloudModel || localModel) : (localModel || cloudModel))
+            return {
+              ...prev,
+              ...data,
+              ollamaLocalModel: localModel,
+              ollamaCloudModel: cloudModel,
+              // Keep an effective model in state for consumers that display a single model name
+              // without persisting it back to the server.
+              activeModel: effectiveModel || prev.activeModel,
+            }
+          })
         }
 
         const modeRes = await fetch(`http://${host}:${port}/${base}/config/mode`)
@@ -123,7 +144,7 @@ function App() {
             ollamaCloudApiKey: hasKey ? MASKED_SECRET : (d.api_key ?? ''),
             ollamaCloudEndpoint: d.endpoint ?? '',
             ollamaCloudCABundle: d.ca_bundle ?? '',
-            ollamaCloudProxy: d.proxy ?? '',
+            proxy: d.proxy ?? prev.proxy ?? '',
           }))
         }
 
@@ -511,11 +532,20 @@ function App() {
   const handleSaveConfig = async () => {
     const { host, port, base } = getApiBase()
     try {
-      const { ollamaCloudApiKey, ...safe } = ollamaConfig
+      const { ollamaCloudApiKey, activeModel: derivedActive, ...safe } = ollamaConfig
+      const activeModel =
+        (safe.ollamaMode === 'cloud' || safe.ollamaMode === 'auto')
+          ? (safe.ollamaCloudModel || derivedActive || safe.ollamaLocalModel)
+          : (safe.ollamaLocalModel || derivedActive || safe.ollamaCloudModel)
+      const payload = {
+        ...safe,
+        ollamaLocalModel: safe.ollamaLocalModel || activeModel,
+        ollamaCloudModel: safe.ollamaCloudModel || safe.ollamaLocalModel || activeModel,
+      }
       await fetch(`http://${host}:${port}/${base}/config/app`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(safe)
+        body: JSON.stringify(payload)
       })
 
       // If cloud key provided, save it separately
@@ -656,6 +686,39 @@ function App() {
       if (res.ok) {
         const data = await res.json()
         const models = data.models || []
+        setOllamaConfig(prev => ({ ...prev, availableCloudModels: models }))
+        return models
+      }
+      return []
+    } catch { return [] }
+  }
+
+  const handleTestOllamaLocal = async (endpoint?: string) => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/ollama/local-test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: endpoint || ollamaConfig.apiEndpoint })
+      })
+      const data = await res.json()
+      return { success: data.success, message: data.message || (data.success ? 'Connection successful' : 'Failed') }
+    } catch (e: any) {
+      return { success: false, message: e.message }
+    }
+  }
+
+  const handleFetchOllamaLocalModels = async (endpoint?: string) => {
+    const { host, port, base } = getApiBase()
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/ollama/models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: endpoint || ollamaConfig.apiEndpoint })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const models = data.models || []
         setOllamaConfig(prev => ({ ...prev, availableModels: models }))
         return models
       }
@@ -780,6 +843,8 @@ function App() {
             onTestOpenAI={testOpenAI}
             onTestOllamaCloud={testOllamaCloud}
             onFetchOllamaModels={handleFetchOllamaModels}
+            onTestOllamaLocal={handleTestOllamaLocal}
+            onFetchOllamaLocalModels={handleFetchOllamaLocalModels}
             ollamaStatus={ollamaStatus}
 
             pgvectorConfig={pgvectorConfig}

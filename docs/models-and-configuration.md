@@ -141,6 +141,13 @@ Disconnecting a provider from the **Settings → AI Provider** panel also update
 Choosing **Disconnect** on the Ollama card clears the stored Ollama parameters, sets `ollamaConfigured: false`,
 and hides Ollama from `available_modes` until you save a new configuration—matching how the OpenAI and Google disconnect flows behave.
 
+**Key runtime fields**
+
+- `ollamaMode`: `local`, `cloud`, or `auto` (auto = cloud-first with local fallback).
+- `ollamaLocalModel` / `ollamaCloudModel`: distinct model names for local vs. cloud. The UI populates dropdowns by fetching local or cloud models independently.
+- `proxy`: shared HTTPS proxy applied to outbound requests (including Ollama Cloud) where supported.
+- `caBundlePath` / `ollamaCloudCABundle`: PEM paths used for TLS verification; relative paths resolve from the repo root.
+
 **Managing Configuration:**
 - **Web UI**: Use the "Settings" dashboard to view and modify configuration (including Debug toggle).
 - **API**: The REST API exposes endpoints (`/api/config`) to read and update settings.

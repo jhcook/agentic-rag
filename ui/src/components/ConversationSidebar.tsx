@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MessageSquare, Plus, Trash2, Trash, X, Pencil } from 'lucide-react'
+import { MessageSquare, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
@@ -18,7 +18,6 @@ interface ConversationSidebarProps {
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
   onDeleteConversation: (id: string) => void
-  onRenameConversation: (id: string, newTitle: string) => void
   onNewConversation: () => void
   onClose?: () => void
   isOpen: boolean
@@ -29,14 +28,11 @@ export function ConversationSidebar({
   activeConversationId,
   onSelectConversation,
   onDeleteConversation,
-  onRenameConversation,
   onNewConversation,
   onClose,
   isOpen
 }: ConversationSidebarProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editTitle, setEditTitle] = useState('')
 
   const getConversationTitle = (conv: Conversation) => {
     if (conv.title && conv.title !== 'New Conversation') {
@@ -93,33 +89,6 @@ export function ConversationSidebar({
         <div className="flex items-center justify-between p-4 border-b">
           <h2 className="text-lg font-semibold">Conversations</h2>
           <div className="flex items-center gap-1">
-            {activeConversationId && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={() => {
-                    const conv = conversations.find(c => c.id === activeConversationId)
-                    if (conv) {
-                      setEditingId(activeConversationId)
-                      setEditTitle(getConversationTitle(conv))
-                    }
-                  }}
-                  title="Rename conversation"
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onDeleteConversation(activeConversationId)}
-                  title="Delete conversation"
-                >
-                  <Trash className="h-4 w-4" />
-                </Button>
-              </>
-            )}
             <Button
               variant="ghost"
               size="icon"
@@ -154,89 +123,54 @@ export function ConversationSidebar({
             ) : (
               conversations
                 .sort((a, b) => b.updatedAt - a.updatedAt)
-                .map((conv) => {
-                  const isEditing = editingId === conv.id
-                  return (
-                    <div
-                      key={conv.id}
-                      className={cn(
-                        'group relative flex items-center gap-2 p-2 rounded-lg transition-colors',
-                        !isEditing && 'cursor-pointer',
+                .map((conv) => (
+                  <div
+                    key={conv.id}
+                    className={cn(
+                      'group relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors',
+                      activeConversationId === conv.id
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-muted'
+                    )}
+                    onMouseEnter={() => setHoveredId(conv.id)}
+                    onMouseLeave={() => setHoveredId(null)}
+                    onClick={() => onSelectConversation(conv.id)}
+                  >
+                    <MessageSquare className="h-4 w-4 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {getConversationTitle(conv)}
+                      </p>
+                      <p className={cn(
+                        'text-xs truncate',
                         activeConversationId === conv.id
-                          ? 'bg-primary text-primary-foreground'
-                          : 'hover:bg-muted'
-                      )}
-                      onMouseEnter={() => setHoveredId(conv.id)}
-                      onMouseLeave={() => setHoveredId(null)}
-                      onClick={() => !isEditing && onSelectConversation(conv.id)}
-                    >
-                      <MessageSquare className="h-4 w-4 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            className="w-full text-sm font-medium bg-background text-foreground px-2 py-1 rounded border border-input focus:outline-none focus:ring-2 focus:ring-ring"
-                            value={editTitle}
-                            onChange={(e) => setEditTitle(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.stopPropagation()
-                                if (editTitle.trim()) {
-                                  onRenameConversation(conv.id, editTitle.trim())
-                                }
-                                setEditingId(null)
-                              } else if (e.key === 'Escape') {
-                                e.stopPropagation()
-                                setEditingId(null)
-                              }
-                            }}
-                            onBlur={() => {
-                              if (editTitle.trim()) {
-                                onRenameConversation(conv.id, editTitle.trim())
-                              }
-                              setEditingId(null)
-                            }}
-                            autoFocus
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        ) : (
-                          <p className="text-sm font-medium truncate">
-                            {getConversationTitle(conv)}
-                          </p>
-                        )}
-                        {!isEditing && (
-                          <p className={cn(
-                            'text-xs truncate',
-                            activeConversationId === conv.id
-                              ? 'text-primary-foreground/70'
-                              : 'text-muted-foreground'
-                          )}>
-                            {formatDate(conv.updatedAt)}
-                          </p>
-                        )}
-                      </div>
-                      {hoveredId === conv.id && !isEditing && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={cn(
-                            'h-6 w-6 shrink-0',
-                            activeConversationId === conv.id
-                              ? 'text-primary-foreground hover:bg-primary-foreground/20'
-                              : ''
-                          )}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onDeleteConversation(conv.id)
-                          }}
-                          title="Delete conversation"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      )}
+                          ? 'text-primary-foreground/70'
+                          : 'text-muted-foreground'
+                      )}>
+                        {formatDate(conv.updatedAt)}
+                      </p>
                     </div>
-                  )
-                })
+                    {hoveredId === conv.id && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          'h-6 w-6 shrink-0',
+                          activeConversationId === conv.id
+                            ? 'text-primary-foreground hover:bg-primary-foreground/20'
+                            : ''
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDeleteConversation(conv.id)
+                        }}
+                        title="Delete conversation"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
+                ))
             )}
           </div>
         </ScrollArea>

@@ -1,6 +1,5 @@
 {
   "apiEndpoint": "http://127.0.0.1:11434",
-  "model": "ollama/qwen2.5:0.5b",
   "embeddingModel": "Snowflake/arctic-embed-xs",
   "temperature": "0.1",
   "topP": "0.9",
@@ -15,11 +14,8 @@
   "ragPort": "8001",
   "ragPath": "api",
   "debugMode": false,
-  "ollamaCloudProxy": null,
-  "ollamaCloudEndpoint": "https://ollama.com",
   "ollamaMode": "local",
-  "ollamaCloudApiKey": null,
-  "ollamaCloudCABundle": "",
+  "ollamaLocalModel": "ollama/qwen2.5:0.5b",
   "ollamaConfigured": true,
   "ragMode": "ollama"
 }

@@ -39,8 +39,8 @@ export type OllamaConfig = {
   ollamaMode?: 'local' | 'cloud' | 'auto'
   ollamaCloudApiKey?: string
   ollamaCloudEndpoint?: string
-   ollamaCloudProxy?: string
-   ollamaCloudCABundle?: string
+  proxy?: string
+  ollamaCloudCABundle?: string
 }
 
 export type VertexConfig = {
@@ -397,8 +397,8 @@ export function SettingsDashboard({
                               </div>
                               <Input
                                 id="ollama-cloud-proxy"
-                                value={config?.ollamaCloudProxy || ''}
-                                onChange={(e) => onConfigChange('ollamaCloudProxy', e.target.value)}
+                                value={config?.proxy || ''}
+                                onChange={(e) => onConfigChange('proxy', e.target.value)}
                                 placeholder="https://proxy.example.com:3128"
                               />
                             </div>

@@ -10,7 +10,8 @@ import { toast } from 'sonner'
 
 export type OllamaConfig = {
     apiEndpoint: string
-    model: string
+    ollamaLocalModel?: string
+    ollamaCloudModel?: string
     embeddingModel: string
     temperature: string
     topP: string //[0,1]
@@ -25,12 +26,14 @@ export type OllamaConfig = {
     ragPort: string
     ragPath: string
     debugMode?: boolean
+    activeModel?: string
     ollamaCloudApiKey?: string
     ollamaCloudEndpoint?: string
-    ollamaCloudProxy?: string
+    proxy?: string
     ollamaCloudCABundle?: string
-    ollamaMode?: 'local' | 'cloud' | 'sub-cloud'
+    ollamaMode?: 'local' | 'cloud' | 'auto'
     availableModels?: string[]
+    availableCloudModels?: string[]
     caBundlePath?: string
 }
 
@@ -60,6 +63,8 @@ interface SettingsViewProps {
     onTestOpenAI: () => void
     onTestOllamaCloud: (key: string, endpoint?: string) => Promise<{ success: boolean; message: string }>
     onFetchOllamaModels?: (key: string, endpoint?: string) => Promise<string[]>
+    onTestOllamaLocal?: (endpoint?: string) => Promise<{ success: boolean; message: string }>
+    onFetchOllamaLocalModels?: (endpoint?: string) => Promise<string[]>
     ollamaStatus: any
 
     pgvectorConfig: PgvectorConfig
@@ -90,6 +95,8 @@ export function SettingsView(props: SettingsViewProps) {
         onTestOpenAI,
         onTestOllamaCloud,
         onFetchOllamaModels,
+        onTestOllamaLocal,
+        onFetchOllamaLocalModels,
         ollamaStatus,
         pgvectorConfig,
         onPgvectorConfigChange,
@@ -109,6 +116,12 @@ export function SettingsView(props: SettingsViewProps) {
     const [editingOllamaKey, setEditingOllamaKey] = useState(false)
     const [editingOpenaiKey, setEditingOpenaiKey] = useState(false)
     const [editingPgvectorPassword, setEditingPgvectorPassword] = useState(false)
+
+    const localModel = config.ollamaLocalModel || ''
+    const cloudModel = config.ollamaCloudModel || ''
+    const isHybrid = (config.ollamaMode || 'local') === 'auto'
+    const showCloudModelField = ['cloud', 'auto'].includes(config.ollamaMode || 'local')
+    const isCloudOnly = (config.ollamaMode || 'local') === 'cloud'
 
     // Handlers
     const handleTestOllama = async () => {
@@ -156,23 +169,38 @@ export function SettingsView(props: SettingsViewProps) {
                             <div className="grid gap-2">
                                 <Label>Ollama Mode</Label>
                                 <div className="flex gap-2">
-                                    {['local', 'cloud', 'sub-cloud'].map((mode) => (
+                                    {['local', 'cloud', 'auto'].map((mode) => (
                                         <Button
                                             key={mode}
                                             variant={config.ollamaMode === mode ? 'default' : 'outline'}
                                             onClick={() => onConfigChange('ollamaMode', mode)}
                                             className="flex-1 capitalize"
                                         >
-                                            {mode === 'sub-cloud' ? 'Hybrid (Cloud + Local)' : mode}
+                                            {mode === 'auto' ? 'Hybrid (Cloud + Local)' : mode}
                                         </Button>
                                     ))}
                                 </div>
                             </div>
 
+                            {/* Hybrid summary: no inputs, just status */}
+                            {isHybrid && (
+                                <div className="p-4 rounded-lg border border-white/5 bg-secondary/30 flex items-center justify-between">
+                                    <div>
+                                        <h4 className="font-semibold text-sm">Hybrid (Cloud + Local)</h4>
+                                        <p className="text-xs text-muted-foreground">Uses cloud first with automatic local fallback. No extra settings needed here.</p>
+                                    </div>
+                                    {ollamaStatus?.cloud_available && ollamaStatus?.local_available ? (
+                                        <CheckCircle className="w-5 h-5 text-green-500" />
+                                    ) : (
+                                        <AlertCircle className="w-5 h-5 text-amber-500" />
+                                    )}
+                                </div>
+                            )}
+
                             {/* Cloud Config Section - Show if cloud or hybrid */}
-                            {['cloud', 'sub-cloud'].includes(config.ollamaMode || 'local') && (
+                            {!isHybrid && ['cloud', 'auto'].includes(config.ollamaMode || 'local') && (
                                 <div className="bg-secondary/20 p-4 rounded-lg border border-white/5 space-y-3 animate-in fade-in slide-in-from-top-1">
-                                    <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
                                         <h3 className="font-semibold text-sm">Ollama Cloud Configuration</h3>
                                         {ollamaStatus?.cloud_available && <CheckCircle className="w-4 h-4 text-green-500" />}
                                     </div>
@@ -208,7 +236,7 @@ export function SettingsView(props: SettingsViewProps) {
                                             onChange={(e) => onConfigChange('ollamaCloudEndpoint', e.target.value)}
                                         />
                                     </div>
-                                    <div className="flex justify-end gap-2">
+                                    <div className="flex gap-2">
                                         <Button variant="outline" size="sm" onClick={handleTestOllama}>Test Connection</Button>
                                         {onFetchOllamaModels && (
                                             <Button variant="secondary" size="sm" onClick={async () => {
@@ -227,70 +255,115 @@ export function SettingsView(props: SettingsViewProps) {
                                 User Requirement: "Ollama endpoint (local), cloud only, or cloud with local fallback"
                                 So if Cloud Only, maybe hide local endpoint?
                             */}
-                            {config.ollamaMode !== 'cloud' && (
+                            {!isHybrid && config.ollamaMode !== 'cloud' && (
                                 <div className="space-y-2">
                                     <Label>Local API Endpoint</Label>
                                     <Input
                                         value={config.apiEndpoint}
                                         onChange={(e) => onConfigChange('apiEndpoint', e.target.value)}
                                     />
+                                    <div className="flex gap-2 pt-2">
+                                        {onTestOllamaLocal && (
+                                            <Button variant="outline" size="sm" onClick={async () => {
+                                                const res = await onTestOllamaLocal(config.apiEndpoint)
+                                                res.success ? toast.success(res.message) : toast.error(res.message)
+                                            }}>Test Local</Button>
+                                        )}
+                                        {onFetchOllamaLocalModels && (
+                                            <Button variant="secondary" size="sm" onClick={async () => {
+                                                const models = await onFetchOllamaLocalModels(config.apiEndpoint)
+                                                if (models.length > 0) toast.success(`Found ${models.length} local models`)
+                                                else toast.warning('No local models found')
+                                            }}>Fetch Local Models</Button>
+                                        )}
+                                    </div>
                                 </div>
                             )}
 
                             {/* Model Selection */}
-                            <div className="space-y-2">
-                                <Label>Model Name</Label>
-                                {config.availableModels && config.availableModels.length > 0 ? (
-                                    <select
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                                        value={config.model}
-                                        onChange={(e) => onConfigChange('model', e.target.value)}
-                                    >
-                                        {config.availableModels.map(m => <option key={m} value={m}>{m}</option>)}
-                                        {/* Allow custom if not in list */}
-                                        {!config.availableModels.includes(config.model) && <option value={config.model}>{config.model}</option>}
-                                    </select>
-                                ) : (
-                                    <Input
-                                        value={config.model}
-                                        onChange={(e) => onConfigChange('model', e.target.value)}
-                                        placeholder="e.g. mistral, llama3"
-                                    />
-                                )}
-                                <p className="text-[10px] text-muted-foreground">
-                                    {config.ollamaMode === 'cloud' ? 'Select a model available in your cloud account.' : 'Name of the model to run.'}
-                                </p>
-                            </div>
-
-
-                            <Collapsible open={ollamaExpanded} onOpenChange={setOllamaExpanded}>
-                                <CollapsibleTrigger asChild>
-                                    <Button variant="ghost" className="w-full flex justify-between">
-                                        Generation Parameters
-                                        {ollamaExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                    </Button>
-                                </CollapsibleTrigger>
-                                <CollapsibleContent className="space-y-4 pt-4">
-                                    <div className="grid grid-cols-3 gap-4">
-                                        <div className="space-y-2">
-                                            <Label>Temperature</Label>
-                                            <Input value={config.temperature} onChange={(e) => onConfigChange('temperature', e.target.value)} />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <Label>Context Window</Label>
-                                            <Input value={config.numCtx} onChange={(e) => onConfigChange('numCtx', e.target.value)} />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <Label>Top K</Label>
-                                            <Input value={config.topK} onChange={(e) => onConfigChange('topK', e.target.value)} />
-                                        </div>
+                            {!isHybrid && (
+                              <div className="space-y-4">
+                                {!isCloudOnly && (
+                                    <div className="space-y-2">
+                                        <Label>Local Model</Label>
+                                        {config.availableModels && config.availableModels.length > 0 ? (
+                                            <select
+                                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                                value={localModel}
+                                                onChange={(e) => onConfigChange('ollamaLocalModel', e.target.value)}
+                                            >
+                                                {config.availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                                                {!config.availableModels.includes(localModel) && <option value={localModel}>{localModel}</option>}
+                                            </select>
+                                        ) : (
+                                            <Input
+                                                value={localModel}
+                                                onChange={(e) => onConfigChange('ollamaLocalModel', e.target.value)}
+                                                placeholder="e.g. ollama/qwen2.5:0.5b"
+                                            />
+                                        )}
+                                        <p className="text-[10px] text-muted-foreground">
+                                            Used in local mode and as fallback when auto mode is enabled.
+                                        </p>
                                     </div>
-                                </CollapsibleContent>
-                            </Collapsible>
+                                )}
 
-                            <div className="flex justify-between pt-4">
-                                <Button variant="destructive" onClick={() => onDisconnect('ollama')}>Disconnect</Button>
+                                {showCloudModelField && (
+                                    <div className="space-y-2">
+                                        <Label>Cloud Model</Label>
+                                        {config.availableCloudModels && config.availableCloudModels.length > 0 ? (
+                                            <select
+                                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                                value={cloudModel}
+                                                onChange={(e) => onConfigChange('ollamaCloudModel', e.target.value)}
+                                            >
+                                                {config.availableCloudModels.map(m => <option key={m} value={m}>{m}</option>)}
+                                                {!config.availableCloudModels.includes(cloudModel) && <option value={cloudModel}>{cloudModel}</option>}
+                                            </select>
+                                        ) : (
+                                            <Input
+                                                value={cloudModel}
+                                                onChange={(e) => onConfigChange('ollamaCloudModel', e.target.value)}
+                                                placeholder="e.g. gemini-3-pro-preview"
+                                            />
+                                        )}
+                                        <p className="text-[10px] text-muted-foreground">Used when Ollama Cloud mode is active.</p>
+                                    </div>
+                                )}
+                              </div>
+                            )}
+
+
+                            {!isHybrid && (
+                                <Collapsible open={ollamaExpanded} onOpenChange={setOllamaExpanded}>
+                                    <CollapsibleTrigger asChild>
+                                        <Button variant="ghost" className="w-full flex justify-between">
+                                            Generation Parameters
+                                            {ollamaExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                        </Button>
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent className="space-y-4 pt-4">
+                                        <div className="grid grid-cols-3 gap-4">
+                                            <div className="space-y-2">
+                                                <Label>Temperature</Label>
+                                                <Input value={config.temperature} onChange={(e) => onConfigChange('temperature', e.target.value)} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Context Window</Label>
+                                                <Input value={config.numCtx} onChange={(e) => onConfigChange('numCtx', e.target.value)} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>Top K</Label>
+                                                <Input value={config.topK} onChange={(e) => onConfigChange('topK', e.target.value)} />
+                                            </div>
+                                        </div>
+                                    </CollapsibleContent>
+                                </Collapsible>
+                            )}
+
+                            <div className="flex gap-2 pt-4">
                                 <Button onClick={onSaveConfig}>Save & Activate</Button>
+                                <Button variant="destructive" onClick={() => onDisconnect('ollama')}>Disconnect</Button>
                             </div>
                         </CardContent>
                     </Card>
@@ -437,8 +510,8 @@ export function SettingsView(props: SettingsViewProps) {
                                 <div className="space-y-2">
                                     <Label>HTTPS Proxy (Optional)</Label>
                                     <Input 
-                                        value={config.ollamaCloudProxy || ''} 
-                                        onChange={(e) => onConfigChange('ollamaCloudProxy', e.target.value)} 
+                                        value={config.proxy || ''} 
+                                        onChange={(e) => onConfigChange('proxy', e.target.value)} 
                                         placeholder="http://proxy.example.com:8080"
                                     />
                                 </div>

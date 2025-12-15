@@ -31,7 +31,6 @@ interface SearchViewProps {
     onSelectConversation: (id: string) => void
     onNewConversation: () => void
     onDeleteConversation: (id: string) => void
-    onRenameConversation: (id: string, newTitle: string) => void
 
     isSidebarOpen: boolean
     onToggleSidebar: () => void
@@ -57,7 +56,6 @@ export function SearchView(props: SearchViewProps) {
         onSelectConversation,
         onNewConversation,
         onDeleteConversation,
-        onRenameConversation,
         isSidebarOpen,
         onToggleSidebar
     } = props
@@ -75,7 +73,6 @@ export function SearchView(props: SearchViewProps) {
                         onSelectConversation={onSelectConversation}
                         onNewConversation={onNewConversation}
                         onDeleteConversation={onDeleteConversation}
-                        onRenameConversation={onRenameConversation}
                         isOpen={true} // Always open on desktop in this layout
                         onClose={() => { }}
                     />
@@ -158,11 +155,11 @@ export function SearchView(props: SearchViewProps) {
                                     {searchSources.length > 0 && (
                                         <div className="pt-6 border-t border-white/5">
                                             <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Sources</h4>
-                                            <div className="space-y-1 text-sm text-muted-foreground/80">
+                                            <div className="flex flex-wrap gap-2">
                                                 {searchSources.map((source, i) => (
-                                                    <div key={i} className="font-mono">
-                                                        [{i + 1}] {source.split('/').pop()}
-                                                    </div>
+                                                    <Badge variant="secondary" key={i} className="bg-secondary/50 hover:bg-secondary transition-colors cursor-pointer px-3 py-1.5">
+                                                        {source.split('/').pop()}
+                                                    </Badge>
                                                 ))}
                                             </div>
                                         </div>

@@ -194,16 +194,6 @@ def migrate_schema(embed_dim: int) -> None:
         "  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
         "  UNIQUE(uri, chunk_index, embedding_model)"
         ");",
-        "CREATE TABLE IF NOT EXISTS performance_metrics ("
-        "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
-        "  timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-        "  operation TEXT NOT NULL,"
-        "  duration_ms INTEGER NOT NULL,"
-        "  token_count INTEGER,"
-        "  model TEXT,"
-        "  error TEXT,"
-        "  metadata JSONB"
-        ");",
         "CREATE INDEX IF NOT EXISTS idx_rag_documents_uri ON rag_documents(uri);",
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_uri ON rag_chunks(uri);",
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_model ON rag_chunks(embedding_model);",
@@ -212,29 +202,6 @@ def migrate_schema(embed_dim: int) -> None:
         # HNSW index for normalized inner-product search
         "CREATE INDEX IF NOT EXISTS idx_rag_chunks_embedding_hnsw "
         "  ON rag_chunks USING hnsw (embedding vector_ip_ops);",
-        "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON performance_metrics(timestamp DESC);",
-        "CREATE INDEX IF NOT EXISTS idx_metrics_operation ON performance_metrics(operation);",
-        "CREATE TABLE IF NOT EXISTS conversations ("
-        "  id TEXT PRIMARY KEY,"
-        "  title TEXT,"
-        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-        "  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-        "  metadata JSONB,"
-        "  deleted_at TIMESTAMPTZ"
-        ");",
-        "CREATE TABLE IF NOT EXISTS conversation_messages ("
-        "  id TEXT PRIMARY KEY,"
-        "  session_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,"
-        "  role TEXT NOT NULL,"
-        "  content TEXT NOT NULL,"
-        "  display_content TEXT,"
-        "  sources JSONB,"
-        "  kind TEXT,"
-        "  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
-        "  deleted_at TIMESTAMPTZ"
-        ");",
-        "CREATE INDEX IF NOT EXISTS idx_messages_session_id ON conversation_messages(session_id);",
-        "CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);",
     ]
 
     pool = get_pool()
@@ -243,19 +210,6 @@ def migrate_schema(embed_dim: int) -> None:
         with conn.cursor() as cur:
             for stmt in ddl:
                 cur.execute(stmt)
-            
-            # Migration: Add deleted_at column to conversations if it doesn't exist
-            cur.execute("""
-                DO $$ 
-                BEGIN 
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='conversations' AND column_name='deleted_at'
-                    ) THEN
-                        ALTER TABLE conversations ADD COLUMN deleted_at TIMESTAMPTZ;
-                    END IF;
-                END $$;
-            """)
         conn.commit()
 
 
@@ -463,52 +417,18 @@ def stats(*, embedding_model: Optional[str] = None) -> Dict[str, Any]:
     return {"documents": docs, "chunks": chunks, "embedding_dim": embed_dim}
 
 
-def get_performance_metrics(hours: int = 24) -> List[Dict[str, Any]]:
-    """Return performance metrics from the last N hours."""
-
-    pool = get_pool()
-    with pool.connection() as conn:
-        _configure_connection(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT timestamp, operation, duration_ms, token_count, model, error "
-                "FROM performance_metrics "
-                "WHERE timestamp >= NOW() - INTERVAL '%s hours' "
-                "ORDER BY timestamp ASC",
-                (hours,),
-            )
-            rows = cur.fetchall() or []
-
-    results: List[Dict[str, Any]] = []
-    for row in rows:
-        results.append(
-            {
-                "timestamp": row[0].isoformat(),
-                "operation": row[1],
-                "duration_ms": row[2],
-                "token_count": row[3],
-                "model": row[4],
-                "error": row[5],
-            }
-        )
-    return results
-
-
 def insert_performance_metric(
     operation: str,
-    duration_ms: int,
-    token_count: Optional[int] = None,
-    model: Optional[str] = None,
+    duration_ms: float,
     error: Optional[str] = None,
+    model: Optional[str] = None,
+    tokens: Optional[int] = None,
 ) -> None:
-    """Insert a new performance metric into the database."""
-    pool = get_pool()
-    with pool.connection() as conn:
-        _configure_connection(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO performance_metrics (operation, duration_ms, token_count, model, error) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (operation, duration_ms, token_count, model, error),
-            )
-        conn.commit()
+    """
+    Placeholder for performance metrics persistence.
+
+    The current deployment does not store metrics in pgvector. This stub prevents
+    call-site failures while allowing future implementations to persist metrics.
+    """
+    # Intentionally a no-op for now.
+    return
