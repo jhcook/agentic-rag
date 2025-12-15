@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {
     '.pdf', '.doc', '.docx', '.txt', '.md', '.markdown', '.html', '.htm',
     '.csv', '.xlsx', '.xls', '.pptx', '.ppt', '.rtf', '.epub',
-    '.png', '.jpg', '.jpeg', '.tiff', '.bmp'
+    '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.svg'
 }
 
 
@@ -287,7 +287,7 @@ def extract_text_from_bytes(content: bytes, filename: str) -> str:
         if BeautifulSoup is not None:
             try:
                 prefix = content[:2048].lower()
-                if b"<html" in prefix or b"<!doctype html" in prefix:
+                if b"<html" in prefix or b"<!doctype html" in prefix or b"<svg" in prefix:
                     soup = BeautifulSoup(content, "html.parser")
                     for script in soup(["script", "style"]):
                         script.decompose()

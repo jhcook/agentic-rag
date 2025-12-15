@@ -827,37 +827,42 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
             )}
           </div>
         </CardHeader>
-        <CardContent className="flex-1 min-h-0">
+        <CardContent className="flex-1 min-h-0 relative">
           {isLocalMode && jobs.length > 0 && (
-            <div className="mb-3">
-              <div className="text-sm font-semibold mb-1 flex items-center gap-2">
-                Indexing Jobs
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={fetchJobs}>
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="space-y-1">
-                {jobs.map((job) => (
-                  <div key={job.id} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm">
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate font-medium">{job.uri || job.path || job.id}</div>
-                      <div className="text-xs text-muted-foreground">Status: {job.status}</div>
-                      {Array.isArray(job.rejected) && job.rejected.length > 0 && (
-                        <div className="text-xs text-destructive">Rejected: {job.rejected.length} file(s)</div>
-                      )}
-                    </div>
-                    {job.status === 'queued' && (
-                      <Button variant="ghost" size="icon" onClick={() => cancelJob(job.id)} title="Cancel job">
-                        <Trash className="h-4 w-4" />
-                      </Button>
-                    )}
+            <div className="absolute top-2 right-2 z-10 w-full md:w-80 drop-shadow-lg">
+              <div className="bg-card border rounded-lg p-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-sm font-semibold">Indexing Jobs</div>
+                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={fetchJobs} title="Refresh jobs">
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                </div>
+                <ScrollArea className="max-h-48">
+                  <div className="space-y-1 pr-1">
+                    {jobs.map((job) => (
+                      <div key={job.id} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm bg-background">
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate font-medium max-w-[200px]">{job.uri || job.path || job.id}</div>
+                          <div className="text-xs text-muted-foreground">Status: {job.status}</div>
+                          {Array.isArray(job.rejected) && job.rejected.length > 0 && (
+                            <div className="text-xs text-destructive">Rejected: {job.rejected.length} file(s)</div>
+                          )}
+                        </div>
+                        {job.status !== 'completed' && job.status !== 'failed' && job.status !== 'canceled' && (
+                          <Button variant="ghost" size="icon" onClick={() => cancelJob(job.id)} title="Cancel job">
+                            <Trash className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </ScrollArea>
               </div>
             </div>
           )}
-          {isLocalMode ? (
-            <div className="h-full">
+          <div className="flex flex-col h-full gap-3">
+            {isLocalMode ? (
+              <div className="flex-1 min-h-0">
               {sortedLocalFiles.length === 0 && !loading ? (
                 <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
                   <HardDrive className="h-10 w-10 mb-2 opacity-50" />
@@ -1021,6 +1026,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
               )}
             </div>
           )}
+          </div>
         </CardContent>
       </Card>
 

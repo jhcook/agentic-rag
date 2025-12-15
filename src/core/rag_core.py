@@ -501,7 +501,7 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
     logger.info("Rebuilding pgvector index from %d documents", len(docs))
 
     total_chunks = 0
-    for doc in tqdm(iterable=docs, desc="Rebuilding pgvector index", unit="doc"):  # pylint: disable=no-value-for-parameter
+    for doc in tqdm(iterable=docs, desc=None, unit="doc"):  # pylint: disable=no-value-for-parameter
         uri = str(doc.get("uri") or "")
         if _should_skip_uri(uri):
             continue
@@ -811,7 +811,7 @@ def index_path(  # pylint: disable=too-many-locals
 
     total_files = len(files)
     texts = []
-    for idx, file_path in enumerate(tqdm(files, desc="Indexing files", unit="file"), 1):
+    for idx, file_path in enumerate(tqdm(files, desc=None, unit="file"), 1):
         if progress_callback:
             progress_callback(idx, total_files)
         try:

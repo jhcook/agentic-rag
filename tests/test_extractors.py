@@ -76,3 +76,9 @@ def test_sniff_allows_html_without_ext():
 def test_sniff_allows_utf8_text():
     txt = b"hello world " * 10
     assert extractors._sniff_supported_content(txt, "note") is True
+
+
+def test_svg_supported_and_parsed():
+    svg = b"<?xml version='1.0'?><svg><text>Hi</text></svg>"
+    text = extractors.extract_text_from_bytes(svg, "image.svg")
+    assert "Hi" in text
