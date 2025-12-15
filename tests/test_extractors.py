@@ -50,3 +50,29 @@ def test_supported_filename_detection():
     assert extractors.is_supported_filename("file.pptx")
     assert extractors.is_supported_filename("noext")
     assert not extractors.is_supported_filename("file.exe")
+
+
+def test_sniff_rejects_exe_magic():
+    # MZ header for PE/EXE should be rejected despite no extension
+    exe_bytes = b"MZ" + b"\x00" * 10
+    assert extractors._sniff_supported_content(exe_bytes, "file") is False
+
+
+def test_sniff_allows_pdf_magic():
+    pdf_bytes = b"%PDF-1.4 something"
+    assert extractors._sniff_supported_content(pdf_bytes, "file") is True
+
+
+def test_sniff_allows_zip_office():
+    zip_bytes = b"PK\x03\x04" + b"\x00" * 10
+    assert extractors._sniff_supported_content(zip_bytes, "file") is True
+
+
+def test_sniff_allows_html_without_ext():
+    html = b"<!doctype html><html><body>Hi</body></html>"
+    assert extractors._sniff_supported_content(html, "noext") is True
+
+
+def test_sniff_allows_utf8_text():
+    txt = b"hello world " * 10
+    assert extractors._sniff_supported_content(txt, "note") is True

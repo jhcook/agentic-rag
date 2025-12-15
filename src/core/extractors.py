@@ -78,6 +78,48 @@ def is_supported_filename(filename: str) -> bool:
     return suffix in SUPPORTED_SUFFIXES
 
 
+def _sniff_supported_content(content: bytes, filename: str) -> bool:
+    """Heuristic check to reject clearly unsupported binaries regardless of extension."""
+    suffix = pathlib.Path(filename).suffix.lower()
+    if suffix and suffix in SUPPORTED_SUFFIXES:
+        return True
+
+    # Magic headers
+    head = content[:16]
+    if head.startswith(b"%PDF-"):
+        return True
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        # DOCX/XLSX/PPTX/EPUB are ZIP-based
+        return True
+    if head.startswith(b"\x89PNG") or head.startswith(b"\xff\xd8\xff"):
+        return True
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
+        return True
+    if head.startswith(b"BM"):  # BMP
+        return True
+    if head[:4] in (b"II*\x00", b"MM\x00*"):  # TIFF
+        return True
+    if head.startswith(b"{\\rtf"):
+        return True
+
+    # HTML sniff
+    lower_prefix = content[:4096].lower()
+    if b"<html" in lower_prefix or b"<!doctype html" in lower_prefix:
+        return True
+
+    # Plain text heuristic: mostly decodable as UTF-8
+    try:
+        text = content.decode("utf-8")
+        # If decoding succeeded and includes a reasonable amount of printable chars, allow.
+        printable = sum(c.isprintable() or c.isspace() for c in text[:200])
+        if printable >= 0.8 * max(1, len(text[:200])):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def _download_from_url(url: str) -> bytes:
     """Download content from a URL."""
     if requests is None:
@@ -284,6 +326,9 @@ def extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
         content = _download_from_url(file_str)
         if not content:
             return ""
+        if not _sniff_supported_content(content, file_str):
+            logger.warning("Unsupported content detected for URL %s", file_str)
+            return ""
         return extract_text_from_bytes(content, file_str)
 
     # If not URL, treat as path
@@ -297,6 +342,9 @@ def extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
     try:
         with open(file_path, "rb") as f:
             content = f.read()
+        if not _sniff_supported_content(content, file_path.name):
+            logger.warning("Unsupported content detected for file %s", file_path)
+            return ""
         return extract_text_from_bytes(content, file_path.name)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to read file %s: %s", file_path, exc)
