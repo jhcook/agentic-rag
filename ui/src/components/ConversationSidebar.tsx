@@ -169,7 +169,7 @@ export function ConversationSidebar({
                   <div
                     key={conv.id}
                     className={cn(
-                      'group relative flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors',
+                      'group relative flex items-center gap-2 p-2 pr-12 rounded-lg cursor-pointer transition-colors',
                       activeConversationId === conv.id
                         ? 'bg-primary text-primary-foreground'
                         : 'hover:bg-muted'
@@ -232,7 +232,7 @@ export function ConversationSidebar({
                         </>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity absolute right-2 top-1/2 -translate-y-1/2">
                       {onRenameConversation && (
                         <Button
                           variant="ghost"
