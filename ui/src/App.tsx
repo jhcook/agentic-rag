@@ -336,8 +336,7 @@ function App() {
       ? (crypto as any).randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`
     const now = Date.now()
-    const titleInput = window.prompt('Name this conversation')?.trim()
-    const initialTitle = titleInput && titleInput.length > 0 ? titleInput : 'New Conversation'
+    const initialTitle = 'New Conversation'
 
     setActiveConversationId(newId)
     setChatMessages([])
