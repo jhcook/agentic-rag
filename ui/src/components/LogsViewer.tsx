@@ -5,9 +5,9 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
-import { 
-  Zap as Lightning, 
-  Database, 
+import {
+  Zap as Lightning,
+  Database,
   CloudUpload as CloudArrowUp,
   Play,
   Pause,
@@ -33,24 +33,7 @@ type LogEntry = {
   message: string
 }
 
-type OllamaConfig = {
-  apiEndpoint: string
-  model: string
-  embeddingModel: string
-  temperature: string
-  topP: string
-  topK: string
-  repeatPenalty: string
-  seed: string
-  numCtx: string
-  mcpHost: string
-  mcpPort: string
-  mcpPath: string
-  ragHost: string
-  ragPort: string
-  ragPath: string
-  debugMode?: boolean
-}
+import { OllamaConfig } from '@/features/settings/SettingsView'
 
 type LogStreamState = {
   isStreaming: boolean
@@ -155,30 +138,30 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
   const [ollamaLogs, setOllamaLogs] = useState<LogEntry[]>([])
   const [mcpLogs, setMcpLogs] = useState<LogEntry[]>([])
   const [restLogs, setRestLogs] = useState<LogEntry[]>([])
-  
+
   const [ollamaState, setOllamaState] = useState<LogStreamState>({ isStreaming: false, isPaused: false })
   const [mcpState, setMcpState] = useState<LogStreamState>({ isStreaming: false, isPaused: false })
   const [restState, setRestState] = useState<LogStreamState>({ isStreaming: false, isPaused: false })
-  
+
   const [filterText, setFilterText] = useState('')
   const [selectedLevel, setSelectedLevel] = useState<LogLevel | 'all'>('all')
-  
+
   const ollamaScrollRef = useRef<HTMLDivElement>(null)
   const mcpScrollRef = useRef<HTMLDivElement>(null)
   const restScrollRef = useRef<HTMLDivElement>(null)
-  
+
   const intervalRefs = useRef<{
     ollama?: ReturnType<typeof setInterval>
     mcp?: ReturnType<typeof setInterval>
     rest?: ReturnType<typeof setInterval>
   }>({})
-  
+
   const eventSourceRefs = useRef<{
     ollama?: EventSource
     mcp?: EventSource
     rest?: EventSource
   }>({})
-  
+
   const lastLineCounts = useRef<{
     ollama: number
     mcp: number
@@ -198,12 +181,12 @@ export function LogsViewer({ config }: { config: OllamaConfig }) {
     }
   }, [])
 
-const stripAnsi = (input: string) => input.replace(/\u001b\[[0-9;]*m/g, '').replace(/\r/g, '')
+  const stripAnsi = (input: string) => input.replace(/\u001b\[[0-9;]*m/g, '').replace(/\r/g, '')
 
-const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
+  const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     const line = stripAnsi(rawLine)
     if (!line.trim()) return null
-    
+
     // 1. Ollama Key-Value Format: time=2025-11-27T11:46:48.251+11:00 level=INFO source=...
     const ollamaKvMatch = line.match(/^time=(\S+) level=(\w+) source=\S+ msg="(.+?)"/)
     if (ollamaKvMatch) {
@@ -226,7 +209,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
       // Format: 2025/11/27 - 11:46:49 -> 2025-11-27T11:46:49
       const isoStr = timestampStr.replace(/\//g, '-').replace(' - ', 'T')
       const timestamp = new Date(isoStr)
-      
+
       const status = parseInt(statusStr)
       let level: LogLevel = 'info'
       if (status >= 500) level = 'error'
@@ -257,7 +240,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         message: line.trim()
       }
     }
-    
+
     // 4. Access Logs: "YYYY-MM-DD HH:MM:SS,mmm - ..."
     const accessLogMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,\.]\d{3})?) - .+$/)
     if (accessLogMatch) {
@@ -279,7 +262,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         message: line.trim()
       }
     }
-    
+
     // Fallback: treat as info log with current timestamp
     return {
       id: `${source}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -296,27 +279,27 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const logTypeMap: Record<string, string> = {
       'ollama': 'ollama',
       'mcp': 'mcp',
       'rest': 'rest'
     }
-    
+
     const logType = logTypeMap[source]
     if (!logType) return
-    
+
     try {
       const url = `http://${host}:${port}/${base}/logs/${logType}?lines=500`
       const res = await fetch(url, { signal: controller.signal, cache: 'no-store' })
       clearTimeout(timeoutId)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      
+
       const data = await res.json()
       const lines = data.lines || []
-      
+
       const setLogs = source === 'ollama' ? setOllamaLogs : source === 'mcp' ? setMcpLogs : setRestLogs
-      
+
       // Only add new lines
       const currentCount = lastLineCounts.current[source]
       if (lines.length > currentCount) {
@@ -324,7 +307,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         const newLogs = newLines
           .map(line => parseLogLine(line, source))
           .filter((log): log is LogEntry => log !== null)
-        
+
         setLogs(prev => {
           // Use a Set to deduplicate by id, then combine
           const existingIds = new Set(prev.map(log => log.id))
@@ -332,7 +315,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
           const combined = [...prev, ...uniqueNewLogs]
           return combined.slice(-500) // Keep last 500 entries
         })
-        
+
         lastLineCounts.current[source] = lines.length
       } else if (lines.length < currentCount || lines.length === 0) {
         // Log file was rotated, cleared, or is empty - reload all
@@ -352,21 +335,21 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const logTypeMap: Record<string, string> = {
       'ollama': 'ollama',
       'mcp': 'mcp',
       'rest': 'rest'
     }
-    
+
     const logType = logTypeMap[source]
     if (!logType) return null
-    
+
     const url = `http://${host}:${port}/${base}/logs/${logType}/stream`
     const eventSource = new EventSource(url)
-    
+
     const setLogs = source === 'ollama' ? setOllamaLogs : source === 'mcp' ? setMcpLogs : setRestLogs
-    
+
     eventSource.onmessage = (event) => {
       const line = event.data
       if (line && line.trim()) {
@@ -384,7 +367,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         }
       }
     }
-    
+
     eventSource.onerror = (error) => {
       console.error(`EventSource error for ${source} logs:`, error)
       eventSource.close()
@@ -396,7 +379,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         }, 2000)
       }
     }
-    
+
     return eventSource
   }
 
@@ -414,7 +397,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     const setState = source === 'ollama' ? setOllamaState : source === 'mcp' ? setMcpState : setRestState
 
     setState(s => ({ ...s, isStreaming: true }))
-    
+
     // Try SSE streaming first, fallback to polling
     try {
       const eventSource = streamLogs(source)
@@ -428,7 +411,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     } catch (err) {
       if (!silent) console.warn(`SSE not available for ${source}, falling back to polling:`, err)
     }
-    
+
     // Fallback to polling
     fetchLogs(source).then(() => {
       intervalRefs.current[source] = setInterval(() => {
@@ -453,7 +436,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
 
     const setState = source === 'ollama' ? setOllamaState : source === 'mcp' ? setMcpState : setRestState
     setState(s => ({ ...s, isStreaming: false, isPaused: false }))
-    
+
     // Reset line count when stopped
     lastLineCounts.current[source] = 0
 
@@ -505,7 +488,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
 
   const downloadLogs = (logs: LogEntry[], source: string) => {
     const logText = logs.map(log => log.message).join('\n')
-    
+
     const blob = new Blob([logText], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -515,14 +498,14 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-    
+
     toast.success(`${source.toUpperCase()} logs downloaded`)
   }
 
   const filterLogs = (logs: LogEntry[]) => {
     return logs.filter(log => {
       const matchesLevel = selectedLevel === 'all' || log.level === selectedLevel
-      const matchesFilter = !filterText || 
+      const matchesFilter = !filterText ||
         log.message.toLowerCase().includes(filterText.toLowerCase())
       return matchesLevel && matchesFilter
     })

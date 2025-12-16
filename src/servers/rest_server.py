@@ -1418,11 +1418,15 @@ def api_chat(req: ChatReq):
     if chat_store:
         # If client supplied a session_id (pre-generated), ensure the session exists.
         if session_id:
+            fetch_error = None
             try:
                 existing = chat_store.get_session(session_id)
-            except Exception:  # pylint: disable=broad-exception-caught
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error("get_session failed for %s: %s", session_id, e)
                 existing = None
-            if not existing:
+                fetch_error = e
+
+            if not existing and not fetch_error:
                 # Check if session exists but is soft-deleted, or if there's a conflict
                 try:
                     if chat_store.session_exists(session_id):

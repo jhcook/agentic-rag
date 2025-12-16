@@ -202,8 +202,8 @@ function App() {
             id: s.id,
             title: s.title || 'New Conversation',
             messages: [],
-            createdAt: new Date(s.created_at).getTime(),
-            updatedAt: new Date(s.updated_at).getTime()
+            createdAt: new Date(s.created_at * 1000).getTime(),
+            updatedAt: new Date(s.updated_at * 1000).getTime()
           }))
           setConversations(conversations)
         }
@@ -286,8 +286,9 @@ function App() {
   // --- Handlers: Chat ---
   const handleSelectConversation = async (conversationId: string) => {
     setActiveConversationId(conversationId)
+    setChatMessages([])
     const { host, port, base } = getApiBase()
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}`)
       if (res.ok) {
@@ -317,8 +318,8 @@ function App() {
         id: s.id,
         title: s.title || 'New Conversation',
         messages: [],
-        createdAt: new Date(s.created_at).getTime(),
-        updatedAt: new Date(s.updated_at).getTime()
+        createdAt: new Date(s.created_at * 1000).getTime(),
+        updatedAt: new Date(s.updated_at * 1000).getTime()
       }))
       setConversations(conversations)
     } catch {
@@ -424,17 +425,17 @@ function App() {
   }
   const handleRenameConversation = async (conversationId: string, newTitle: string) => {
     const { host, port, base } = getApiBase()
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}/title`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: newTitle })
       })
-      
+
       if (res.ok) {
         // Update local state
-        setConversations(prev => prev.map(c => 
+        setConversations(prev => prev.map(c =>
           c.id === conversationId ? { ...c, title: newTitle } : c
         ))
         toast.success('Conversation renamed')
@@ -449,21 +450,21 @@ function App() {
 
   const handleDeleteConversation = async (conversationId: string) => {
     const { host, port, base } = getApiBase()
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/chat/history/${conversationId}`, {
         method: 'DELETE'
       })
-      
+
       if (res.ok) {
         // Find the next conversation to select
         const sortedConvos = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
         const currentIndex = sortedConvos.findIndex(c => c.id === conversationId)
         const nextConversation = sortedConvos[currentIndex + 1] || sortedConvos[currentIndex - 1]
-        
+
         // Remove from local state
         setConversations(prev => prev.filter(c => c.id !== conversationId))
-        
+
         // If this was the active conversation, select the next one
         if (activeConversationId === conversationId) {
           if (nextConversation) {
@@ -473,7 +474,7 @@ function App() {
             setChatMessages([])
           }
         }
-        
+
         toast.success('Conversation deleted')
       } else {
         throw new Error('Failed to delete conversation')
@@ -802,13 +803,13 @@ function App() {
     // Redirect to login endpoint
     const { host, port, base } = getApiBase()
     const url = `http://${host}:${port}/${base}/auth/login`
-    
+
     // Open in a popup window
     const width = 600
     const height = 700
     const left = window.screen.width / 2 - width / 2
     const top = window.screen.height / 2 - height / 2
-    
+
     window.open(
       url,
       'GoogleLogin',
@@ -825,7 +826,7 @@ function App() {
         // For now, just showing the toast is good feedback
       }
     }
-    
+
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
   }, [])
