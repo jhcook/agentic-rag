@@ -400,7 +400,7 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
     return eventSource
   }
 
-  const startStreaming = (source: 'ollama' | 'mcp' | 'rest') => {
+  const startStreaming = (source: 'ollama' | 'mcp' | 'rest', silent = false) => {
     // Close existing event source or interval
     if (eventSourceRefs.current[source]) {
       eventSourceRefs.current[source]?.close()
@@ -422,21 +422,21 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
         eventSourceRefs.current[source] = eventSource
         // Initial fetch to get existing logs
         fetchLogs(source)
-        toast.success(`${source.toUpperCase()} log streaming started (SSE)`)
+        if (!silent) toast.success(`${source.toUpperCase()} log streaming started (SSE)`)
         return
       }
     } catch (err) {
-      console.warn(`SSE not available for ${source}, falling back to polling:`, err)
+      if (!silent) console.warn(`SSE not available for ${source}, falling back to polling:`, err)
     }
     
     // Fallback to polling
     fetchLogs(source).then(() => {
       intervalRefs.current[source] = setInterval(() => {
         fetchLogs(source)
-      }, 2000)
+      }, 5000)
     })
 
-    toast.success(`${source.toUpperCase()} log streaming started (polling)`)
+    if (!silent) toast.success(`${source.toUpperCase()} log streaming started (polling)`)
   }
 
   const stopStreaming = (source: 'ollama' | 'mcp' | 'rest') => {
@@ -638,6 +638,8 @@ const parseLogLine = (rawLine: string, source: string): LogEntry | null => {
       restScrollRef.current.scrollTop = restScrollRef.current.scrollHeight
     }
   }, [restLogs, restState.isStreaming, restState.isPaused])
+
+  // Logs now start on-demand to reduce background load
 
   return (
     <div className="space-y-6">

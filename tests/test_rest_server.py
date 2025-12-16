@@ -1,7 +1,7 @@
 import os
 import json
 import pytest
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch, mock_open, AsyncMock
 
 # Set environment variables before importing the app
 os.environ["RAG_HOST"] = "127.0.0.1"
@@ -247,3 +247,48 @@ def test_flush_cache(mock_backend):
     assert data["status"] == "flushed"
     assert data["db_removed"] is True
     mock_backend.flush_cache.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_api_upsert_async_delegation():
+    """Test that the async api_upsert endpoint correctly awaits the proxy."""
+    with patch("src.servers.rest_server._proxy_to_mcp", new_callable=AsyncMock) as mock_proxy:
+        mock_proxy.return_value = {"job_id": "test-job-123", "status": "queued"}
+        
+        client = TestClient(app)
+        response = client.post("/api/upsert_document", json={
+            "uri": "test.txt",
+            "text": "hello world"
+        })
+        
+        assert response.status_code == 200
+        assert response.json() == {"job_id": "test-job-123", "status": "queued"}
+        mock_proxy.assert_called_with("POST", "/rest/upsert_document", {"uri": "test.txt", "text": "hello world", "binary_base64": None})
+
+@pytest.mark.asyncio
+async def test_api_index_url_async_delegation():
+    """Test that the async api_index_url endpoint correctly awaits the proxy."""
+    with patch("src.servers.rest_server._proxy_to_mcp", new_callable=AsyncMock) as mock_proxy:
+        mock_proxy.return_value = {"job_id": "url-job-456", "status": "queued"}
+        
+        client = TestClient(app)
+        response = client.post("/api/index_url", json={
+            "url": "http://example.com/doc.pdf"
+        })
+        
+        assert response.status_code == 200
+        assert response.json() == {"job_id": "url-job-456", "status": "queued"}
+        mock_proxy.assert_called_with("POST", "/rest/index_url", {"url": "http://example.com/doc.pdf", "doc_id": None})
+
+@pytest.mark.asyncio
+async def test_api_cancel_job_async_delegation():
+    """Test that the async api_cancel_job endpoint correctly awaits the proxy."""
+    with patch("src.servers.rest_server._proxy_to_mcp", new_callable=AsyncMock) as mock_proxy:
+        job_id = "cancel-job-789"
+        mock_proxy.return_value = {"status": "canceled", "id": job_id}
+        
+        client = TestClient(app)
+        response = client.post(f"/api/jobs/{job_id}/cancel")
+        
+        assert response.status_code == 200
+        assert response.json() == {"status": "canceled", "id": job_id}
+        mock_proxy.assert_called_with("POST", f"/rest/jobs/{job_id}/cancel")

@@ -85,6 +85,7 @@ This project follows (and will continue to enforce) the core enterprise-RAG guid
 5. No tenant isolation for enterprise use
 6. No time-series analytics storage
 7. No messaging platform integrations
+8. Admin access policy enforcement (e.g., `require_admin_access`) is deferred to a later phase.
 
 ### Known Issue (Chat Rehydration)
 

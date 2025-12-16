@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 
 import psutil
 import requests
+import httpx
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request, Form, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, RedirectResponse
@@ -326,10 +327,10 @@ def _mcp_base() -> str:
     base = f"http://{MCP_HOST}:{MCP_PORT}"
     return f"{base}/{prefix}" if prefix else base
 
-def _notify_mcp_logging_update(debug_mode: bool):
+async def _notify_mcp_logging_update(debug_mode: bool):
     """Notify MCP server to update its logging level."""
     try:
-        _proxy_to_mcp("POST", "/rest/config/logging", {"debug_mode": debug_mode})
+        await _proxy_to_mcp("POST", "/rest/config/logging", {"debug_mode": debug_mode})
         logger.info("Notified MCP server to update logging level (debug_mode=%s)", debug_mode)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # Don't fail config save if MCP notification fails
@@ -519,7 +520,7 @@ def require_admin_access(request: Request) -> None:
     if not provided or not hmac.compare_digest(provided, token):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
+async def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     """
     Proxy to MCP; tries prefixed path first, then fallback to root path if 404.
     Raises HTTPException on failure so callers can return proper errors.
@@ -540,21 +541,22 @@ def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = None):
     # Allow long-running searches: bump timeout for /search
     timeout = 300 if "/search" in path else 30
 
-    for url in urls:
-        try:
-            # Use configured CA bundle if available
-            verify_ssl = get_ca_bundle_path() or True
-            resp = requests.request(method, url, json=json_payload, timeout=timeout, verify=verify_ssl)
-            if resp.status_code == 404:
-                continue
-            resp.raise_for_status()
+    async with httpx.AsyncClient() as client:
+        for url in urls:
             try:
-                return resp.json()
-            except requests.exceptions.JSONDecodeError:
-                return {"status": "ok", "message": resp.text}
-        except requests.exceptions.RequestException as exc:
-            last_exc = exc
-            continue
+                # Use configured CA bundle if available
+                verify_ssl = get_ca_bundle_path() or True
+                resp = await client.request(method, url, json=json_payload, timeout=timeout, verify=verify_ssl)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                try:
+                    return resp.json()
+                except json.JSONDecodeError:
+                    return {"status": "ok", "message": resp.text}
+            except httpx.RequestError as exc:
+                last_exc = exc
+                continue
 
     # If all URLs failed, raise HTTPException
     error_msg = f"MCP proxy failed: {last_exc}" if last_exc else "MCP proxy failed: no response"
@@ -1186,7 +1188,7 @@ def _append_access_log(log_entry: str) -> None:
         os.fsync(f.fileno())
 
 @app.post(f"/{pth}/upsert_document")
-def api_upsert(req: UpsertReq):
+async def api_upsert(req: UpsertReq):
     """Upsert a document into the store."""
     logger.info("Upserting document: uri=%s", req.uri)
     try:
@@ -1211,7 +1213,7 @@ def api_upsert(req: UpsertReq):
             )
 
         # Proxy to MCP worker which creates jobs for progress tracking
-        result = _proxy_to_mcp(
+        result = await _proxy_to_mcp(
             "POST",
             "/rest/upsert_document",
             {"uri": req.uri, "text": req.text, "binary_base64": req.binary_base64}
@@ -1227,14 +1229,14 @@ def api_upsert(req: UpsertReq):
 
 
 @app.post(f"/{pth}/index_url")
-def api_index_url(req: IndexUrlReq):
+async def api_index_url(req: IndexUrlReq):
     """Download and index a remote URL via MCP worker."""
     logger.info("Index URL requested: %s", req.url)
     if not req.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="Only http and https URLs are supported")
     try:
         payload = {"url": req.url, "doc_id": req.doc_id}
-        return _proxy_to_mcp("POST", "/rest/index_url", payload)
+        return await _proxy_to_mcp("POST", "/rest/index_url", payload)
     except HTTPException:
         raise
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -1786,25 +1788,37 @@ def api_list_models():
     return {"models": []}
 
 @app.get(f"/{pth}/jobs", response_model=dict)
-def api_jobs():
+async def api_jobs():
     """List async indexing jobs (pass-through to MCP)."""
     # Proxy to MCP server for jobs
     try:
-        return _proxy_to_mcp("GET", "/rest/jobs")
+        return await _proxy_to_mcp("GET", "/rest/jobs")
     except HTTPException:
         # If MCP is not available, return local search jobs as fallback
         jobs = list(state.search_jobs.values())
         return {"jobs": jobs}
 
 @app.post(f"/{pth}/jobs/{{job_id}}/cancel", response_model=dict)
-def api_cancel_job(job_id: str):
+async def api_cancel_job(job_id: str):
     """Cancel a queued indexing job via MCP."""
     try:
-        return _proxy_to_mcp("POST", f"/rest/jobs/{job_id}/cancel")
+        return await _proxy_to_mcp("POST", f"/rest/jobs/{job_id}/cancel")
     except HTTPException as exc:
         raise exc
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to cancel job %s: %s", job_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post(f"/{pth}/jobs/cancel_all", response_model=dict)
+async def api_cancel_all_jobs():
+    """Cancel all non-terminal indexing jobs via MCP."""
+    # TODO(security): Add Depends(require_admin_access) in the next phase
+    try:
+        return await _proxy_to_mcp("POST", "/rest/jobs/cancel_all")
+    except HTTPException as exc:
+        raise exc
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error("Failed to cancel all jobs: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 @app.get(f"/{pth}/jobs/{{job_id}}", response_model=dict)
 def api_job(_job_id: str):
@@ -2731,7 +2745,7 @@ async def update_app_config(req: AppConfigReq, _request: Request, _admin: None =
         
         # Notify MCP server to update its logging level via proxy
         try:
-            _notify_mcp_logging_update(debug_mode)
+            await _notify_mcp_logging_update(debug_mode)
         except Exception as notify_err:  # pylint: disable=broad-exception-caught
             logger.warning("Failed to notify MCP server of logging change: %s", notify_err)
 

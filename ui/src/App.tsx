@@ -232,7 +232,7 @@ function App() {
         }
       } catch { setSystemStatus('error') }
     }
-    const id = setInterval(checkServices, 5000)
+    const id = setInterval(checkServices, 10000)
     checkServices()
     return () => clearInterval(id)
   }, [getApiBase])
@@ -246,14 +246,15 @@ function App() {
         if (!res.ok) return
         const data = await res.json()
         const jobs = data.jobs || []
+        const active = jobs.filter((j: any) => !['completed', 'failed', 'canceled'].includes(j.status))
         const total = jobs.length
         const completed = jobs.filter((j: any) => j.status === 'completed').length
         const failed = jobs.filter((j: any) => j.status === 'failed').length
-        const visible = total > 0 && (completed + failed) < total
+        const visible = active.length > 0
         setJobProgress({ total, completed, failed, visible })
       } catch { }
     }
-    const id = setInterval(pollJobs, 2500)
+    const id = setInterval(pollJobs, 5000)
     return () => clearInterval(id)
   }, [getApiBase])
 

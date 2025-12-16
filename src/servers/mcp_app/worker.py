@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
+import queue as pyqueue
+
 try:  # pragma: no cover - optional dependency guard
     from requests.exceptions import SSLError as RequestsSSLError  # type: ignore
 except Exception:  # pragma: no cover
@@ -151,6 +153,43 @@ def cancel_job(job_id: str) -> bool:
         JOBS[job_id]["last_update"] = _iso_now()
         CANCELED.add(job_id)
     return True
+
+
+def cancel_all_jobs() -> int:
+    """Mark all non-terminal jobs as canceled and drain queued work."""
+    canceled = 0
+    with JOBS_LOCK:
+        for job_id, job in JOBS.items():
+            if job.get("status") in ("completed", "failed", "canceled"):
+                continue
+            job["status"] = "canceled"
+            job["last_update"] = _iso_now()
+            CANCELED.add(job_id)
+            canceled += 1
+    # Drain pending items from the queue to prevent processing
+    if JOB_QUEUE is not None:
+        while True:
+            try:
+                queued_job = JOB_QUEUE.get_nowait()
+            except (pyqueue.Empty, OSError):
+                break
+            if not queued_job:
+                continue
+            jid = queued_job.get("id")
+            CANCELED.add(jid)
+            with JOBS_LOCK:
+                JOBS[jid] = {**queued_job, "status": "canceled", "last_update": _iso_now()}
+            if RESULT_QUEUE is not None:
+                try:
+                    RESULT_QUEUE.put({
+                        "id": jid,
+                        "status": "canceled",
+                        "last_update": _iso_now(),
+                        "finished_at": _iso_now(),
+                    })
+                except Exception:
+                    pass
+    return canceled
 
 
 def get_search_jobs():

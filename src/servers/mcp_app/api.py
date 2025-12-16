@@ -290,6 +290,13 @@ async def rest_cancel_job(job_id: str):
     return JSONResponse({"status": "canceled", "id": job_id})
 
 
+@rest_api.post("/jobs/cancel_all")
+async def rest_cancel_all_jobs():
+    """Cancel all non-terminal indexing jobs."""
+    count = worker_mod.cancel_all_jobs()
+    return JSONResponse({"status": "canceled", "count": count})
+
+
 @rest_api.post("/index_url")
 async def rest_index_url(req: IndexUrlReq):
     """Index a remote URL by delegating to MCP server tool."""

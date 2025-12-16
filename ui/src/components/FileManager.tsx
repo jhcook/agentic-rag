@@ -2,13 +2,26 @@ import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server, CheckSquare, Square, Link2 } from 'lucide-react'
+import { File as FileIcon, Folder, Upload, Cloud, HardDrive, RefreshCw, Trash, Eye, ArrowUp, ChevronRight, Calendar, ArrowDownAZ, ArrowUpAZ, Plus, Server, CheckSquare, Square, Link2, GripVertical } from 'lucide-react'
 import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
+
+const SUPPORTED_EXTENSIONS = new Set([
+  '.txt', '.pdf', '.doc', '.docx', '.md', '.markdown', '.json', '.csv', '.xml',
+  '.html', '.htm', '.ppt', '.pptx', '.rtf', '.epub', '.xlsx', '.xls',
+  '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.svg'
+])
+
+const isSupportedFile = (name: string) => {
+  const lower = name.toLowerCase()
+  const idx = lower.lastIndexOf('.')
+  if (idx === -1) return false
+  return SUPPORTED_EXTENSIONS.has(lower.slice(idx))
+}
 
 type DriveFile = {
   id: string
@@ -37,6 +50,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [urlLoading, setUrlLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [jobs, setJobs] = useState<any[]>([])
+  const [showJobsOverlay, setShowJobsOverlay] = useState<boolean>(false)
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
   const [folderStack, setFolderStack] = useState<{id: string | null, name: string}[]>([{id: null, name: 'Root'}])
@@ -48,6 +62,9 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [newFolderName, setNewFolderName] = useState('')
   const [searchText, setSearchText] = useState('')
   const [useRegex, setUseRegex] = useState(false)
+  const defaultJobsPos = { x: 20, y: 250 }
+  const [jobsPosition, setJobsPosition] = useState<{ x: number; y: number }>(defaultJobsPos)
+  const jobsDragRef = useRef<{ dragging: boolean; startX: number; startY: number; startRight: number; startTop: number }>({ dragging: false, startX: 0, startY: 0, startRight: 0, startTop: 0 })
   const fileInputRef = useRef<HTMLInputElement>(null)
   const directoryInputRef = useRef<HTMLInputElement>(null)
 
@@ -128,10 +145,22 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       const res = await fetch(`http://${host}:${port}/${base}/jobs`)
       if (res.ok) {
         const data = await res.json()
-        if (data?.jobs) setJobs(data.jobs)
+        const allJobs = data?.jobs || []
+        const activeStatuses = new Set(['queued', 'running', 'in_progress', 'pending'])
+        const activeJobs = allJobs.filter((j: any) => activeStatuses.has(String(j.status).toLowerCase()))
+        setJobs(activeJobs)
+        if (activeJobs.length === 0) {
+          setJobsPosition(defaultJobsPos)
+          setShowJobsOverlay(false)
+        } else {
+          setShowJobsOverlay(true)
+        }
       }
     } catch (e) {
       // best-effort
+      setJobs([])
+      setJobsPosition(defaultJobsPos)
+      setShowJobsOverlay(false)
     }
   }
 
@@ -425,8 +454,13 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
     let success = 0
     let skipped = files.length - visibleFiles.length
+    let rejected = 0
 
     for (const file of visibleFiles) {
+      if (!isSupportedFile(file.name)) {
+        rejected += 1
+        continue
+      }
       try {
         const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
         let payload: Record<string, unknown> = { uri: file.name }
@@ -451,10 +485,12 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       }
     }
 
-    toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    if (rejected > 0) {
+      toast.warning(`Rejected ${rejected} unsupported file(s)`, { id: toastId })
+    } else {
+      toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    }
     fetchLocalFiles()
-    fetchJobs()
-    fetchJobs()
     fetchJobs()
     // Reset input
     if (fileInputRef.current) {
@@ -476,8 +512,13 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
     let success = 0
     let skipped = files.length - visibleFiles.length
+    let rejected = 0
 
     for (const file of visibleFiles) {
+      if (!isSupportedFile(file.name)) {
+        rejected += 1
+        continue
+      }
       try {
         const isBinary = /\.(pdf|docx?|pages)$/i.test(file.name)
         // Always use just the filename, not the full path with directories
@@ -506,7 +547,11 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       }
     }
 
-    toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    if (rejected > 0) {
+      toast.warning(`Rejected ${rejected} unsupported file(s)`, { id: toastId })
+    } else {
+      toast.success(`Queued ${success} file(s) for indexing${skipped ? `, skipped ${skipped}` : ''}`, { id: toastId })
+    }
     fetchLocalFiles()
     fetchJobs()
     // Reset input
@@ -591,10 +636,56 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     }
   }
 
+  const cancelAllJobs = async () => {
+    const host = config?.ragHost || '127.0.0.1'
+    const port = config?.ragPort || '8001'
+    const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
+    try {
+      const res = await fetch(`http://${host}:${port}/${base}/jobs/cancel_all`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        const count = data?.count ?? 0
+        toast.success(`Canceled ${count} job${count === 1 ? '' : 's'}`)
+      } else {
+        throw new Error(data?.error || `HTTP ${res.status}`)
+      }
+    } catch (e: any) {
+      toast.error(`Failed to cancel all jobs: ${e?.message || e}`)
+    } finally {
+      fetchJobs()
+    }
+  }
+
   useEffect(() => {
+    const handleMouseUp = () => {
+      jobsDragRef.current.dragging = false
+      document.body.style.userSelect = ''
+    }
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!jobsDragRef.current.dragging) return
+      const deltaX = e.clientX - jobsDragRef.current.startX
+      const deltaY = e.clientY - jobsDragRef.current.startY
+      
+      const nextRight = Math.max(8, jobsDragRef.current.startRight - deltaX)
+      const nextTop = Math.max(8, jobsDragRef.current.startTop + deltaY)
+      
+      setJobsPosition({ x: nextRight, y: nextTop })
+    }
+    window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('mousemove', handleMouseMove)
     if (isLocalMode) {
       fetchLocalFiles()
       fetchJobs()
+    }
+    const interval = setInterval(() => {
+    if (isLocalMode) {
+      fetchJobs()
+    }
+  }, 8000)
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('mousemove', handleMouseMove)
+      clearInterval(interval)
     }
   }, [isLocalMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -618,7 +709,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                 )}
               </CardTitle>
               <div className="flex items-center gap-2">
-                {isLocalMode && jobs.length > 0 && (
+                {isLocalMode && showJobsOverlay && jobs.length > 0 && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -828,17 +919,72 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
           </div>
         </CardHeader>
         <CardContent className="flex-1 min-h-0 relative">
-          {isLocalMode && jobs.length > 0 && (
-            <div className="absolute top-2 right-2 z-10 w-full md:w-80 drop-shadow-lg">
-              <div className="bg-card border rounded-lg p-2">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="text-sm font-semibold">Indexing Jobs</div>
-                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={fetchJobs} title="Refresh jobs">
-                    <RefreshCw className="h-4 w-4" />
-                  </Button>
+          {isLocalMode && showJobsOverlay && jobs.length > 0 && (
+            <div
+              className="fixed z-50 w-full md:w-80 drop-shadow-lg pointer-events-auto max-h-[60vh] flex flex-col"
+              style={{ top: jobsPosition.y, right: jobsPosition.x }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-card border rounded-lg p-2 space-y-2 flex flex-col flex-1 overflow-hidden">
+                <div className="flex items-center justify-between sticky top-0 bg-card z-10 pb-1">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 cursor-move"
+                      title="Drag"
+                      onMouseDown={(e) => {
+                        e.stopPropagation()
+                        jobsDragRef.current = {
+                          dragging: true,
+                          startX: e.clientX,
+                          startY: e.clientY,
+                          startRight: jobsPosition.x,
+                          startTop: jobsPosition.y
+                        }
+                        document.body.style.userSelect = 'none'
+                      }}
+                    >
+                      <GripVertical className="h-4 w-4" />
+                    </Button>
+                    <div className="text-sm font-semibold select-none">Indexing Jobs</div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); setShowJobsOverlay(false); setJobs([]); }}
+                      title="Close"
+                    >
+                      ×
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); fetchJobs() }}
+                      title="Refresh jobs"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); cancelAllJobs() }}
+                      title="Cancel all jobs"
+                    >
+                      <Trash className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
                 </div>
-                <ScrollArea className="max-h-48">
-                  <div className="space-y-1 pr-1">
+                <ScrollArea className="flex-1 overflow-y-auto" scrollHideDelay={0}>
+                  <div className="space-y-1 pr-1 pb-1">
                     {jobs.map((job) => (
                       <div key={job.id} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm bg-background">
                         <div className="flex-1 min-w-0">
