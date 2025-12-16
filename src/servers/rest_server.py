@@ -541,12 +541,12 @@ async def _proxy_to_mcp(method: str, path: str, json_payload: Optional[dict] = N
     # Allow long-running searches: bump timeout for /search
     timeout = 300 if "/search" in path else 30
 
-    async with httpx.AsyncClient() as client:
+    # Use configured CA bundle if available
+    verify_ssl = get_ca_bundle_path() or True
+    async with httpx.AsyncClient(verify=verify_ssl) as client:
         for url in urls:
             try:
-                # Use configured CA bundle if available
-                verify_ssl = get_ca_bundle_path() or True
-                resp = await client.request(method, url, json=json_payload, timeout=timeout, verify=verify_ssl)
+                resp = await client.request(method, url, json=json_payload, timeout=timeout)
                 if resp.status_code == 404:
                     continue
                 resp.raise_for_status()

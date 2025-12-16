@@ -1513,7 +1513,9 @@ def _extract_cited_sources(content: str, all_sources: List[str]) -> List[str]:
     actually cited sources are returned. Falls back to all_sources if
     parsing fails.
     """
-    inline_nums = {int(n) for n in re.findall(r"\[(\d+)\]", content)}
+    # Only look for citations in the body, excluding the Sources section itself
+    body_only = _SOURCES_SECTION_PATTERN.sub("", content)
+    inline_nums = {int(n) for n in re.findall(r"\[(\d+)\]", body_only)}
 
     sources_match = _CITATION_BLOCK_PATTERN.search(content)
     if not sources_match:

@@ -21,7 +21,7 @@ mock_auth_instance = MagicMock()
 mock_auth_class.return_value = mock_auth_instance
 
 # Now import the app
-from src.servers.rest_server import app
+from src.servers.rest_server import app, _proxy_to_mcp
 
 # Stop patchers
 patcher_factory.stop()
@@ -292,3 +292,33 @@ async def test_api_cancel_job_async_delegation():
         assert response.status_code == 200
         assert response.json() == {"status": "canceled", "id": job_id}
         mock_proxy.assert_called_with("POST", f"/rest/jobs/{job_id}/cancel")
+
+@pytest.mark.asyncio
+async def test_proxy_to_mcp_httpx_usage():
+    # We want to mock httpx.AsyncClient to verify arguments passed to its constructor
+    with patch("httpx.AsyncClient") as MockClient:
+        # Setup the mock client instance
+        mock_instance = AsyncMock()
+        MockClient.return_value.__aenter__.return_value = mock_instance
+        
+        # Setup the request method return value
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"status": "ok"}
+        mock_instance.request.return_value = mock_response
+
+        # Mock get_ca_bundle_path
+        with patch("src.servers.rest_server.get_ca_bundle_path", return_value="/path/to/cert"):
+             # Call the function under test
+            await _proxy_to_mcp("GET", "/test")
+
+        # Verify AsyncClient was initialized with verify argument
+        MockClient.assert_called_once()
+        call_kwargs = MockClient.call_args.kwargs
+        assert "verify" in call_kwargs, "AsyncClient expected to be called with 'verify' kwarg"
+        assert call_kwargs["verify"] == "/path/to/cert"
+
+        # Verify request() was called WITHOUT verify argument
+        mock_instance.request.assert_called()
+        request_kwargs = mock_instance.request.call_args.kwargs
+        assert "verify" not in request_kwargs, "request() should NOT be called with 'verify' kwarg"
