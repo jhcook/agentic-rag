@@ -33,3 +33,4 @@ langchain-community>=0.0.10
 langchain-core>=0.1.10
 unstructured>=0.10.0
 litellm>=1.80.7
+websockets<14.0

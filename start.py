@@ -157,6 +157,27 @@ def load_env_file(env_file: Path) -> Dict[str, str]:
     return env_vars
 
 
+def load_settings() -> Dict[str, str]:
+    """Load application settings from config/settings.json."""
+    settings = {}
+    settings_file = CONFIG_DIR / "settings.json"
+    
+    if settings_file.exists():
+        try:
+            print_success(f"Loading settings from {settings_file}")
+            with open(settings_file, 'r') as f:
+                data = json.load(f)
+                # Map partial settings to env vars if needed
+                if "model" in data:
+                    model_name = data["model"]
+                    # Handle ollama/ prefix if present
+                    settings["LLM_MODEL_NAME"] = model_name
+                    print(f"  - Model: {model_name}")
+        except Exception as e:
+            print_warning(f"Warning: Could not read settings.json: {e}")
+    return settings
+
+
 def is_port_free(host: str, port: int) -> bool:
     """Check if a port is available."""
     try:
@@ -198,51 +219,45 @@ def get_python_executable(venv_path: Path = None) -> str:
     return sys.executable
 
 
-def create_venv(python_cmd: str = None, venv_path: Path = None) -> bool:
-    """Create virtual environment."""
-    if python_cmd is None:
-        python_cmd = sys.executable
-    
-    if venv_path is None:
-        venv_path = VENV_DIR
-    
-    print_warning(f"Creating virtual environment at {venv_path}...")
-    
-    # Remove old venv if it exists
-    if venv_path.exists():
-        import shutil
-        print_warning("Removing existing virtual environment...")
-        shutil.rmtree(venv_path)
-    
+def bootstrap_uv() -> bool:
+    """Ensure uv is installed."""
     try:
-        subprocess.run([python_cmd, "-m", "venv", str(venv_path)], check=True)
-        print_success("Virtual environment created successfully")
+        subprocess.run(["uv", "--version"], capture_output=True, check=True)
         return True
-    except subprocess.CalledProcessError as e:
-        print_error(f"Failed to create virtual environment: {e}")
-        return False
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print_warning("Installing uv (fast package installer)...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "uv"], check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed to install uv: {e}")
+            return False
 
 
-def install_requirements(venv_path: Path = None) -> bool:
-    """Install Python requirements."""
-    python_exe = get_python_executable(venv_path)
-    requirements_file = ROOT_DIR / "requirements.txt"
+def uv_sync() -> bool:
+    """Sync dependencies using uv."""
+    print_warning("Syncing dependencies with uv (auto-detecting platform)...")
     
-    if not requirements_file.exists():
-        print_error("Error: requirements.txt not found")
-        return False
-    
-    print_warning("Installing requirements...")
-    print(f"Python: {python_exe}")
+    # Platform-specific optimization logic for Intel Macs
+    env = os.environ.copy()
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        print_warning("Detected Intel Mac. Forcing Python 3.11 for legacy stability.")
+        env["UV_PYTHON"] = "3.11"
     
     try:
-        subprocess.run([python_exe, "-m", "pip", "install", "--upgrade", "pip"], check=True)
-        subprocess.run([python_exe, "-m", "pip", "install", "-r", str(requirements_file)], check=True)
-        print_success("Requirements installed successfully")
+        # Try frozen sync first (fastest)
+        subprocess.run(["uv", "sync", "--frozen"], env=env, check=True)
+        print_success("Dependencies synced successfully")
         return True
-    except subprocess.CalledProcessError as e:
-        print_error(f"Failed to install requirements: {e}")
-        return False
+    except subprocess.CalledProcessError:
+        print_warning("Lockfile might be out of date or missing, updating...")
+        try:
+            subprocess.run(["uv", "sync"], env=env, check=True)
+            print_success("Dependencies synced successfully")
+            return True
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed to sync requirements: {e}")
+            return False
 
 
 def check_ollama() -> bool:
@@ -530,6 +545,20 @@ def main():
     env_vars = load_env_file(env_file)
     os.environ.update(env_vars)
 
+    # Load settings.json and apply to environment (overrides defaults, but .env takes precedence if set explicitly there?)
+    # Usually config/settings.json is user pref, so we should allow it to set env vars if they aren't already set.
+    app_settings = load_settings()
+    for k, v in app_settings.items():
+        if k not in os.environ:
+            os.environ[k] = v
+        # If we wanted settings.json to override .env, we'd just use os.environ.update(app_settings) instead.
+        # But commonly .env is "system config" and settings.json is "app config".
+        # Let's ensure LLM_MODEL_NAME is set.
+        if k == "LLM_MODEL_NAME":
+             # Force update if it came from settings.json, unless the user passed it explicitly?
+             # Simple logic: keys in settings.json become env vars.
+             os.environ[k] = v
+
     # Ensure pgvector is running only when starting backend services.
     # Client/UI-only runs should not require Docker/pgvector.
     if (not args.skip_mcp) or (not args.skip_rest):
@@ -547,19 +576,18 @@ def main():
     ui_port = int(env_vars.get("UI_PORT", "5173"))
     
     # Setup virtual environment
-    if args.recreate_venv or not VENV_DIR.exists():
-        if not create_venv(args.python, VENV_DIR):
-            return 1
-        if not install_requirements(VENV_DIR):
-            return 1
-    elif not (VENV_DIR / ("Scripts" if IS_WINDOWS else "bin")).exists():
-        print_warning("Virtual environment appears invalid, recreating...")
-        if not create_venv(args.python, VENV_DIR):
-            return 1
-        if not install_requirements(VENV_DIR):
-            return 1
-    else:
-        print_success(f"Virtual environment exists: {VENV_DIR}")
+    # Setup virtual environment (using uv)
+    if not bootstrap_uv():
+        return 1
+        
+    if not uv_sync():
+        return 1
+        
+    if not (VENV_DIR / ("Scripts" if IS_WINDOWS else "bin")).exists():
+         print_error(f"Error: Virtual environment not found at {VENV_DIR} after sync")
+         return 1
+    
+    print_success(f"Virtual environment ready: {VENV_DIR}")
     
     print()
     print_success("=== Starting Services ===")
@@ -620,7 +648,6 @@ def main():
                 time.sleep(1)  # Give UI a moment to fully initialize
                 webbrowser.open(ui_url)
         print()
-        print("Press Ctrl+C to stop all services")
         print("Press Ctrl+C to stop all services")
         
         # Keep running until interrupted

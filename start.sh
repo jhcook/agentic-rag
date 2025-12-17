@@ -739,75 +739,46 @@ create_venv() {
     echo -e "${GREEN}Virtual environment created successfully${NC}"
 }
 
-# Check if venv exists, create if needed or if --venv was specified
-if check_venv; then
-    if [[ "$RECREATE_VENV" == true ]]; then
-        create_venv
-    else
-        echo -e "${GREEN}Virtual environment '$VENV_NAME' exists${NC}"
+# Check Architecture and RAM for Python/Torch optimization
+if [[ "$ARCH_NAME" == "x86_64" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
+    echo -e "${YELLOW}Detected Intel Mac. Forcing Python 3.11 for legacy stability.${NC}"
+    export UV_PYTHON="3.11"
+elif [[ "$ARCH_NAME" == "arm64" ]]; then
+    # Optional: Check for Low RAM on ARM to adjust settings (handled below in OLLAMA_NUM_CTX),
+    # but for Python version, we can default to latest stable (or keep 3.11 base).
+    # Since requires-python >= 3.11, uv will pick best available.
+    true
+fi
+
+# Bootstrap uv if not present
+if ! command -v uv &> /dev/null; then
+    echo -e "${YELLOW}Installing uv (fast package installer)...${NC}"
+    pip install uv
+fi
+echo "uv version: $(uv --version 2>&1 | head -1)"
+
+# Sync dependencies using pyproject.toml and uv.lock
+echo -e "${YELLOW}Syncing dependencies with uv (auto-detecting platform)...${NC}"
+# Use `uv sync` to create environment and install packages
+if ! uv sync --frozen; then
+    echo -e "${YELLOW}Lockfile might be out of date or missing, updating...${NC}"
+    if ! uv sync; then
+         echo -e "${RED}Error: Failed to sync requirements${NC}"
+         exit 1
     fi
+fi
+echo -e "${GREEN}Dependencies synced successfully${NC}"
+
+# Source the uv-created environment
+VENV_PATH=".venv"
+if [[ -f ".venv/bin/activate" ]]; then
+    source ".venv/bin/activate"
 else
-    echo -e "${YELLOW}Virtual environment '$VENV_NAME' not found${NC}"
-    create_venv
-fi
-
-# Activate virtual environment
-echo -e "${YELLOW}Activating virtual environment...${NC}"
-# shellcheck source=/dev/null
-if ! source "$VENV_NAME/bin/activate"; then
-    echo -e "${RED}Error: Failed to activate virtual environment${NC}"
+    # Should not happen after successful sync
+    echo -e "${RED}Error: .venv not found after sync${NC}"
     exit 1
 fi
-echo -e "${GREEN}Virtual environment activated${NC}"
-
-# Clear Python bytecode cache to ensure fresh code execution
-echo -e "${YELLOW}Clearing Python bytecode cache...${NC}"
-find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-find . -type f -name "*.pyc" -delete 2>/dev/null || true
-echo -e "${GREEN}Bytecode cache cleared${NC}"
-
-# Ensure PyTorch enables the NumPy array API so the `_ARRAY_API` warning disappears when torch loads NumPy.
-# export PYTORCH_ENABLE_NUMPY_ARRAY_API=1
-
-# Optional torch pinning based on platform
-TORCH_VERSION=${TORCH_VERSION:-}
-TORCH_INDEX_URL=${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
-if [[ -z "$TORCH_VERSION" ]]; then
-    if [[ "$ARCH_NAME" == "x86_64" ]]; then
-        TORCH_VERSION="2.2.2"
-        echo "Detected x86_64; preferring torch==$TORCH_VERSION (override with TORCH_VERSION env var)"
-    else
-        TORCH_VERSION="2.5.1"
-        echo "Detected non-x86; installing torch==$TORCH_VERSION from PyTorch wheels"
-    fi
-fi
-
-if [[ -n "$TORCH_VERSION" ]]; then
-    TORCH_ARGS=("torch==${TORCH_VERSION}")
-    # Prefer the CPU/MKL channel on Intel unless a custom index is provided
-    if [[ -n "$TORCH_INDEX_URL" ]]; then
-        TORCH_ARGS+=("--index-url" "$TORCH_INDEX_URL")
-    elif [[ "$ARCH_NAME" == "x86_64" ]]; then
-        TORCH_ARGS+=("--index-url" "https://download.pytorch.org/whl/cpu")
-    fi
-    echo -e "${YELLOW}Installing pinned torch: ${TORCH_ARGS[*]}${NC}"
-    if ! pip install "${TORCH_ARGS[@]}" 2>&1; then
-        echo -e "${RED}Warning: Failed to install torch (${TORCH_ARGS[*]}); will fall back to requirements.txt default${NC}"
-        TORCH_VERSION=""
-    fi
-fi
-
-# Install requirements
-echo -e "${YELLOW}Installing requirements...${NC}"
 echo "Python version: $(python --version 2>&1)"
-echo "Pip version: $(pip --version 2>&1)"
-if ! pip install -r requirements.txt 2>&1; then
-    echo -e "${RED}Error: Failed to install requirements${NC}"
-    echo -e "${YELLOW}Try running with --recreate-venv flag to recreate the virtual environment${NC}"
-    echo -e "${YELLOW}Requirements file: $(cat requirements.txt 2>&1 | head -20)${NC}"
-    exit 1
-fi
-echo -e "${GREEN}Requirements installed successfully${NC}"
 
 # Verify uv CLI after install (required for process launches)
 if ! command -v uv &> /dev/null; then

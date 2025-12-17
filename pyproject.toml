@@ -1,0 +1,55 @@
+[project]
+name = "agentic-rag"
+version = "0.1.0"
+description = "Agentic RAG with MCP and Ollama"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "pgvector>=0.4.1",
+    "psycopg[binary,pool]>=3.2.3",
+    "langgraph>=0.0.10",
+    "langchain-ollama>=0.0.1",
+    "mcp>=1.1.0",
+    "numpy<2.0",
+    "openai>=1.55.0",
+    "psutil>=6.1.0",
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.3",
+    "sentence-transformers==3.3.1",
+    "uv>=0.5.0",
+    "uvicorn>=0.32.0",
+    "beautifulsoup4>=4.12.3",
+    "openpyxl>=3.1.5",
+    "python-pptx>=0.6.23",
+    "striprtf>=0.0.26",
+    "ebooklib>=0.18",
+    "Pillow>=10.3.0",
+    "pytesseract>=0.3.10",
+    "cairosvg>=2.7.1",
+    "prometheus-client>=0.21.0",
+    "google-generativeai>=0.8.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-api-python-client>=2.150.0",
+    "google-cloud-aiplatform>=1.70.0",
+    "tqdm>=4.66.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10",
+    "langchain-core>=0.1.10",
+    "unstructured>=0.10.0",
+    "litellm>=1.80.7",
+    "websockets<14.0",
+    # Platform-specific dependencies
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torch>=2.5.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "torch>=2.2.2; sys_platform != 'darwin'", # Default for Linux/Windows
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
