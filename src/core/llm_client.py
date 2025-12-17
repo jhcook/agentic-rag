@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
+# from langchain_ollama import ChatOllama  <-- Removed
+from langchain_community.chat_models import ChatLiteLLM
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
 import httpx
 
@@ -137,97 +138,54 @@ def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
             lc_messages.append(HumanMessage(content=content))
     return lc_messages
 
-def _get_chat_model(
-    model: str,
-    api_base: str,
-    temperature: float,
-    timeout: int,
-    **kwargs
-) -> ChatOllama:
-    """Create a configured ChatOllama instance."""
-    # Handle model name: remove 'ollama/' prefix if present as ChatOllama likely expects just the model tag
-    # or keep it if that's what user configured. Typically ChatOllama takes "llama2" etc.
-    if model.startswith("ollama/"):
-        model = model.replace("ollama/", "", 1)
-        
-    headers = get_ollama_client_headers()
-    extra_headers = kwargs.pop("extra_headers", {})
-    if headers:
-        extra_headers.update(headers)
+    # Use LiteLLM Model Factory
+    from langchain_community.chat_models import ChatLiteLLM
 
-    if headers:
-        # Redact for logging
-        safe_headers = headers.copy()
-        if "Authorization" in safe_headers:
-            safe_headers["Authorization"] = "Bearer ***REDACTED***"
-        logger.debug(f"Initializing ChatOllama with headers: {safe_headers}")
+    # LiteLLM Configuration logic
+    # Ensure api_base is passed as 'api_base' (or base_url depending on version, but api_base is standard for OpenAI-compat)
+    # AND allow passing specific LiteLLM params like 'proxy' via kwargs or environment.
 
-    # Ensure api_base doesn't have trailing slash as ChatOllama might append /api/chat
-    if api_base and api_base.endswith("/"):
-        api_base = api_base[:-1]
-
-    # --- Transport config (proxy/TLS) ---
-    # For cloud mode, be explicit about proxy + CA bundle. This avoids relying on
-    # ambient env vars (which can break local mode) and improves reliability.
+    # Fix model name for Ollama: LiteLLM expects "ollama/modelname" to know it's Ollama.
+    # If the user configured just "llama3", we might need to prepend "ollama/" if we know the mode is local.
+    # However, to be "provider agnostic", we should ideally respect the configured model string directly.
+    # BUT, existing config (settings.json) might use plain "llama3.2:1b" while implying Ollama.
+    # Let's check the provider/mode.
+    
     mode = None
     try:
         mode = get_ollama_mode()
-    except Exception:  # pylint: disable=broad-exception-caught
-        mode = None
+    except Exception:
+        mode = "local"
 
-    is_https = bool(api_base and api_base.startswith("https://"))
-    is_cloud_like = is_https or (mode in ("cloud", "auto"))
+    final_model = model
+    # Heuristic: If we are in "local" mode and the model doesn't have a provider prefix (like 'gpt-', 'claude-', 'ollama/'), 
+    # assume it's an Ollama model and prepend 'ollama/' so LiteLLM handles it correctly.
+    if mode == "local" and "/" not in final_model and not final_model.startswith(("gpt-", "claude-", "gemini-")):
+        final_model = f"ollama/{final_model}"
+        logger.debug(f"Auto-prefixed model '{model}' with 'ollama/' for LiteLLM local mode")
 
-    proxy_url: Optional[str] = None
-    if is_cloud_like:
-        try:
-            proxy_url = get_ollama_cloud_proxy()
-        except Exception:  # pylint: disable=broad-exception-caught
-            proxy_url = None
-
-    # CA bundle: prefer cloud-specific resolver, fall back to shared config.
-    ca_bundle: Optional[str] = None
-    try:
-        ca_bundle = get_requests_ca_bundle() or get_ca_bundle_path()
-    except Exception:  # pylint: disable=broad-exception-caught
-        ca_bundle = get_ca_bundle_path()
-
-    verify: bool | ssl.SSLContext = True
-    if ca_bundle:
-        try:
-            ca_path = Path(ca_bundle)
-            # Resolve relative CA bundle paths against repo root.
-            if not ca_path.is_absolute():
-                ca_path = (Path(__file__).resolve().parents[2] / ca_path).resolve()
-            if ca_path.is_file():
-                verify = ssl.create_default_context(cafile=str(ca_path))
-                logger.debug("Using CA bundle for HTTP client: %s", str(ca_path))
-        except Exception:  # pylint: disable=broad-exception-caught
-            verify = True
-
-    # Build kwargs for httpx clients used internally by langchain-ollama.
-    # httpx 0.28 uses `proxy=` (not `proxies=`).
-    base_client_kwargs: dict = {
-        "trust_env": False,
-        "verify": verify,
-    }
+    client_kwargs = {}
     if proxy_url and is_https:
-        base_client_kwargs["proxy"] = proxy_url
+        client_kwargs["proxy"] = proxy_url
 
-    # Disable streaming for cloud-like endpoints. Some proxies/servers will
-    # disconnect early on streaming responses, surfacing as "Server disconnected".
-    if "disable_streaming" not in kwargs and is_cloud_like:
-        kwargs["disable_streaming"] = True
-
-    return ChatOllama(
-        model=model,
-        base_url=api_base,
+    # LiteLLM needs 'api_base' for Ollama/OpenAI-compatible endpoints
+    # It prioritizes 'api_base' over environment variables if passed explicitly.
+    # Note: For real OpenAI, we shouldn't pass our local Ollama API base.
+    # Only pass api_base if it is explicitly an Ollama endpoint or a custom proxy.
+    active_api_base = None
+    if final_model.startswith("ollama/"):
+        active_api_base = api_base
+    elif "openai/" in final_model and "localhost" in api_base:
+         # If using a local OpenAI-compatible proxy
+         active_api_base = api_base
+    
+    return ChatLiteLLM(
+        model=final_model,
+        api_base=active_api_base, # Pass None if standard OpenAI/Anthropic to let env vars handle it
         temperature=temperature,
         timeout=timeout,
-        headers=extra_headers if extra_headers else None,
-        async_client_kwargs=base_client_kwargs,
-        sync_client_kwargs=base_client_kwargs,
-        **kwargs
+        model_kwargs=extra_headers if extra_headers else {},
+        **kwargs # Pass other kwargs like 'proxy' if supported or via client_kwargs
     )
 
 async def safe_completion(
