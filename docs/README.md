@@ -12,6 +12,7 @@ This directory contains project documentation, guides, and specifications.
 ### Getting Started
 - [Main README](../README.md) - Project overview, installation, and setup
 - [Quick Start](../README.md#quick-start) - Fast setup guide
+- [High Performance ARM64](high-performance-arm64.md) - **NEW!** Optimization for Apple Silicon
 - [Models and Configuration](models-and-configuration.md) - AI models and their integration
 
 ### AI Backend Options
@@ -31,6 +32,7 @@ This directory contains project documentation, guides, and specifications.
 - [MCP Planner](mcp/planner.md) - AI assistant behavior configuration
 
 ### Development
+- [Developer Getting Started Guide](developer_guide.md) - **Start Here!** Setup and workflows
 - [MCP Server Implementation](mcp/server.md) - Technical implementation details
 - [Testing MCP Integration](mcp/testing.md) - Testing strategies and procedures
 

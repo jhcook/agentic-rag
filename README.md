@@ -28,7 +28,7 @@ stop.sh
 
 `start.sh`/`start.py` do the heavy lifting:
 1. create/activate `.venv`
-2. install dependencies (`pip install -r requirements.txt`)
+2. install dependencies via `uv sync` (reads `pyproject.toml` + `uv.lock`)
 3. start local PostgreSQL+pgvector via Docker Compose (data persisted under `cache/vector/`)
 3. install the correct `torch` wheel per-platform (Intel → `2.2.2`, others → PyTorch CPU wheel)
 4. respect `--skip-ollama`, `--skip-ui`, and role flags when launching services

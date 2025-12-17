@@ -185,7 +185,7 @@ def _vector_search(query: str, k: int = 10) -> List[Dict[str, Any]]:
 
 **Document Indexing**:
 ```python
-def _rebuild_faiss_index():
+def rebuild_index():
     embedder = get_embedder()
     for uri, text in _STORE.docs.items():
         chunks = _chunk_text(text)

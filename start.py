@@ -168,11 +168,23 @@ def load_settings() -> Dict[str, str]:
             with open(settings_file, 'r') as f:
                 data = json.load(f)
                 # Map partial settings to env vars if needed
-                if "model" in data:
-                    model_name = data["model"]
+                # Determine model based on mode
+                mode = data.get("ollamaMode", "local")
+                model_name = ""
+                
+                if mode == "local":
+                    model_name = data.get("ollamaLocalModel", "")
+                elif mode in ["cloud", "auto"]:
+                    model_name = data.get("ollamaCloudModel", "")
+                
+                # Fallback to legacy 'model' key if specific keys not found
+                if not model_name:
+                    model_name = data.get("model", "")
+
+                if model_name:
                     # Handle ollama/ prefix if present
                     settings["LLM_MODEL_NAME"] = model_name
-                    print(f"  - Model: {model_name}")
+                    print(f"  - Model ({mode}): {model_name}")
         except Exception as e:
             print_warning(f"Warning: Could not read settings.json: {e}")
     return settings
@@ -240,8 +252,17 @@ def uv_sync() -> bool:
     
     # Platform-specific optimization logic for Intel Macs
     env = os.environ.copy()
-    if platform.system() == "Darwin" and platform.machine() == "x86_64":
-        print_warning("Detected Intel Mac. Forcing Python 3.11 for legacy stability.")
+    
+    # Platform-specific optimization logic
+    if platform.system() == "Darwin":
+        if platform.machine() == "arm64":
+            print_warning("Detected macOS ARM64. Enabling High-Performance Python 3.13.")
+            env["UV_PYTHON"] = "3.13" 
+        elif platform.machine() == "x86_64":
+            print_warning("Detected Intel Mac. Forcing Python 3.11 for legacy stability.")
+            env["UV_PYTHON"] = "3.11"
+    else:
+        # Default for Linux/Windows to ensure stability
         env["UV_PYTHON"] = "3.11"
     
     try:
@@ -322,7 +343,19 @@ def pull_ollama_models() -> None:
         try:
             with open(settings_file) as f:
                 settings = json.load(f)
-                model_name = settings.get("model", "").replace("ollama/", "")
+                
+                # Determine model based on mode override or settings
+                mode = settings.get("ollamaMode", "local")
+                
+                if mode == "local":
+                    model_name = settings.get("ollamaLocalModel", "")
+                elif mode in ["cloud", "auto"]:
+                     model_name = settings.get("ollamaCloudModel", "")
+                
+                if not model_name:
+                    model_name = settings.get("model", "")
+                
+                model_name = model_name.replace("ollama/", "")
         except Exception as e:
             print_warning(f"Could not read settings.json: {e}")
     

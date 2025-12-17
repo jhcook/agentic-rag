@@ -14,9 +14,10 @@ This configuration enables the "Native RAG" mode, bypassing the local vector sto
 ## Setup
 
 1.  **Install Dependencies**:
-    The required packages are already in `requirements.txt`.
+    The required packages are defined in `pyproject.toml` and installed automatically by `start.sh`.
+    To install manually:
     ```bash
-    pip install -r requirements.txt
+    uv sync
     ```
 
 2.  **Environment Variables**:

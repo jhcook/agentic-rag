@@ -284,10 +284,10 @@ jobs:
       uses: actions/setup-python@v2
       with:
         python-version: '3.11'
+    - name: Install uv
+      run: pip install uv
     - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+      run: uv sync
     - name: Run MCP tests
       run: pytest tests/ -k "mcp" -v
     - name: Test MCP server startup

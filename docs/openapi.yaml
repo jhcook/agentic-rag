@@ -1,980 +1,98 @@
-openapi: 3.1.0
-info:
-  title: retrieval-rest-server
-  version: 0.1.0
-paths:
-  /api/upsert_document:
-    post:
-      summary: Api Upsert
-      description: Upsert a document into the store.
-      operationId: api_upsert_api_upsert_document_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpsertReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/index_path:
-    post:
-      summary: Api Index Path
-      description: Index a filesystem path into the retrieval store.
-      operationId: api_index_path_api_index_path_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IndexPathReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/search:
-    post:
-      summary: Api Search
-      description: Search the retrieval store.
-      operationId: api_search_api_search_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SearchReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/load_store:
-    post:
-      summary: Api Load
-      description: Send the current store to the LLM.
-      operationId: api_load_api_load_store_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoadStoreReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /metrics:
-    get:
-      summary: Metrics Endpoint
-      description: Expose Prometheus metrics for the REST server.
-      operationId: metrics_endpoint_metrics_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/grounded_answer:
-    post:
-      summary: Api Grounded Answer
-      description: Return a grounded answer using vector search + synthesis.
-      operationId: api_grounded_answer_api_grounded_answer_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GroundedAnswerReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/rerank:
-    post:
-      summary: Api Rerank
-      description: Rerank provided passages for a query.
-      operationId: api_rerank_api_rerank_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RerankReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/verify_grounding:
-    post:
-      summary: Api Verify
-      description: Verify grounding against store using citation URIs.
-      operationId: api_verify_api_verify_grounding_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VerifyReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/verify_grounding_simple:
-    post:
-      summary: Api Verify Simple
-      description: Simple grounding verification against provided passages.
-      operationId: api_verify_simple_api_verify_grounding_simple_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VerifySimpleReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/health:
-    get:
-      summary: Api Health
-      description: Lightweight health check with basic store and index stats.
-      operationId: api_health_api_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResp'
-  /api/documents:
-    get:
-      summary: Api Documents
-      description: List all documents in the store.
-      operationId: api_documents_api_documents_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DocumentsResp'
-  /api/documents/delete:
-    post:
-      summary: Api Documents Delete
-      description: Delete documents by URI from the store and rebuild index.
-      operationId: api_documents_delete_api_documents_delete_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeleteDocsReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/documents/delete/status:
-    get:
-      summary: Api Deletion Status
-      description: Get deletion queue status.
-      operationId: api_deletion_status_api_documents_delete_status_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/config/mode:
-    get:
-      summary: Api Get Mode
-      description: Get the current backend mode.
-      operationId: api_get_mode_api_config_mode_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-    post:
-      summary: Api Set Mode
-      description: Set the backend mode (e.g., 'ollama', 'google').
-      operationId: api_set_mode_api_config_mode_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConfigModeReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/config/models:
-    get:
-      summary: Api List Models
-      description: List available models for the current backend.
-      operationId: api_list_models_api_config_models_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/jobs:
-    get:
-      summary: Api Jobs
-      description: List async indexing jobs (pass-through to MCP).
-      operationId: api_jobs_api_jobs_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                additionalProperties: true
-                type: object
-                title: Response Api Jobs Api Jobs Get
-  /api/jobs/{job_id}:
-    get:
-      summary: Api Job
-      description: Get a single async indexing job (pass-through to MCP).
-      operationId: api_job_api_jobs__job_id__get
-      parameters:
-      - name: _job_id
-        in: query
-        required: true
-        schema:
-          type: string
-          title: ' Job Id'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Api Job Api Jobs  Job Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/search/jobs/{job_id}:
-    get:
-      summary: Api Search Job
-      description: Get status/result for an async search job.
-      operationId: api_search_job_api_search_jobs__job_id__get
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Api Search Job Api Search Jobs  Job Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/flush_cache:
-    post:
-      summary: Api Flush Cache
-      description: Flush the document store and delete the backing DB file.
-      operationId: api_flush_cache_api_flush_cache_post
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/metrics/quality:
-    get:
-      summary: Api Quality Metrics
-      description: Return aggregated quality metrics for searches.
-      operationId: api_quality_metrics_api_metrics_quality_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QualityMetricsResp'
-  /api/metrics/today:
-    get:
-      summary: Api Today Metrics
-      description: Return same-day aggregates for queries, docs added, and avg latency.
-      operationId: api_today_metrics_api_metrics_today_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/services:
-    get:
-      summary: Api Service Status
-      description: List controller state for managed services.
-      operationId: api_service_status_api_services_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/services/{service}/start:
-    post:
-      summary: Api Start Service
-      description: Start a controller for the given service.
-      operationId: api_start_service_api_services__service__start_post
-      parameters:
-      - name: service
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Service
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/services/{service}/stop:
-    post:
-      summary: Api Stop Service
-      description: Stop a controller for the given service.
-      operationId: api_stop_service_api_services__service__stop_post
-      parameters:
-      - name: service
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Service
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/services/{service}/restart:
-    post:
-      summary: Api Restart Service
-      description: Restart a service controller.
-      operationId: api_restart_service_api_services__service__restart_post
-      parameters:
-      - name: service
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Service
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/auth/login:
-    get:
-      summary: Auth Login
-      description: Initiate Google OAuth2 flow.
-      operationId: auth_login_api_auth_login_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/auth/setup:
-    get:
-      summary: Auth Setup
-      description: Show the setup page for Google Auth.
-      operationId: auth_setup_api_auth_setup_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-    post:
-      summary: Auth Setup Post
-      description: Save the provided credentials to secrets/client_secrets.json.
-      operationId: auth_setup_post_api_auth_setup_post
-      requestBody:
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/Body_auth_setup_post_api_auth_setup_post'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/auth/callback:
-    get:
-      summary: Auth Callback
-      description: Handle Google OAuth2 callback.
-      operationId: auth_callback_api_auth_callback_get
-      parameters:
-      - name: code
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Code
-      - name: _oauth_state
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: ' Oauth State'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/auth/logout:
-    get:
-      summary: Auth Logout
-      description: Log out by deleting the stored token.
-      operationId: auth_logout_api_auth_logout_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/config/openai:
-    get:
-      summary: Get Openai Config
-      description: Get OpenAI configuration (API key is masked; use has_api_key to detect presence).
-      operationId: get_openai_config_api_config_openai_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-    post:
-      summary: Save Openai Config
-      description: Save OpenAI API configuration to secrets/openai_config.json.
-      operationId: save_openai_config_api_config_openai_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OpenAIConfigModel'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/ollama/cloud-config:
-    get:
-      summary: Get Ollama Cloud Config
-      description: Fetch stored Ollama Cloud configuration (API key is masked; use has_api_key to detect presence). To delete a stored key, POST with api_key set to an empty string or null.
-      operationId: api_get_ollama_cloud_config_api_ollama_cloud_config_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  api_key:
-                    type: string
-                    description: Masked secret placeholder when a key is stored.
-                    example: '***MASKED***'
-                  has_api_key:
-                    type: boolean
-                    description: Indicates whether a key is stored server-side.
-                  endpoint:
-                    type: string
-                  ca_bundle:
-                    type: string
-                  proxy:
-                    type: string
-    post:
-      summary: Save Ollama Cloud Config
-      description: Persist Ollama Cloud configuration (API key, endpoint, proxy, CA bundle). Send the masking placeholder to keep the key unchanged; send an empty string or null for api_key to clear the stored secret. Secrets are stored locally until overwritten or cleared.
-      operationId: api_save_ollama_cloud_config_api_ollama_cloud_config_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OllamaCloudConfigReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/chat:
-    post:
-      summary: Api Chat
-      description: Conversational chat.
-      operationId: api_chat_api_chat_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ChatReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/drive/files:
-    get:
-      summary: Api Drive Files
-      description: List Drive files.
-      operationId: api_drive_files_api_drive_files_get
-      parameters:
-      - name: folder_id
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Folder Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/drive/upload:
-    post:
-      summary: Api Drive Upload
-      description: Upload file to Drive.
-      operationId: api_drive_upload_api_drive_upload_post
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_api_drive_upload_api_drive_upload_post'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/drive/files/{file_id}:
-    delete:
-      summary: Api Drive Delete
-      description: Delete a file or folder from Google Drive.
-      operationId: api_drive_delete_api_drive_files__file_id__delete
-      parameters:
-      - name: file_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: File Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/drive/folders:
-    post:
-      summary: Api Drive Create Folder
-      description: Create a folder in Google Drive.
-      operationId: api_drive_create_folder_api_drive_folders_post
-      requestBody:
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/Body_api_drive_create_folder_api_drive_folders_post'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/extract:
-    post:
-      summary: Api Extract
-      description: Extract text from an uploaded file (in-memory, no storage).
-      operationId: api_extract_api_extract_post
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/Body_api_extract_api_extract_post'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/config/app:
-    get:
-      summary: Api Get App Config
-      description: Get application configuration.
-      operationId: api_get_app_config_api_config_app_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-    post:
-      summary: Api Save App Config
-      description: Save application configuration.
-      operationId: api_save_app_config_api_config_app_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AppConfigReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/config/vertex:
-    get:
-      summary: Api Get Vertex Config
-      description: Get Vertex AI configuration.
-      operationId: api_get_vertex_config_api_config_vertex_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-    post:
-      summary: Api Save Vertex Config
-      description: Save Vertex AI configuration.
-      operationId: api_save_vertex_config_api_config_vertex_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VertexConfigReq'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/logs/{log_type}:
-    get:
-      summary: Api Get Logs
-      description: "Get log file contents.\n\nArgs:\n    log_type: Type of log (rest,\
-        \ rest_access, mcp, mcp_access, ollama)\n    lines: Number of lines to return\
-        \ from the end of the file (default: 500)\n\nReturns:\n    JSON with log lines,\
-        \ total count, and file path"
-      operationId: api_get_logs_api_logs__log_type__get
-      parameters:
-      - name: log_type
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Log Type
-      - name: lines
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 500
-          title: Lines
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/logs/{log_type}/stream:
-    get:
-      summary: Api Stream Logs
-      description: "Stream log file contents using Server-Sent Events (SSE).\n\nArgs:\n\
-        \    log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)\n\
-        \    request: FastAPI request object for client disconnect detection\n\nReturns:\n\
-        \    StreamingResponse with SSE format"
-      operationId: api_stream_logs_api_logs__log_type__stream_get
-      parameters:
-      - name: log_type
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Log Type
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AppConfigReq:
+      description: Request model for application configuration.
       properties:
         apiEndpoint:
-          type: string
           title: Apiendpoint
-        model:
           type: string
-          title: Model
+        caBundlePath:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cabundlepath
+        debugMode:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          title: Debugmode
         embeddingModel:
-          type: string
           title: Embeddingmodel
-        temperature:
           type: string
-          title: Temperature
-        topP:
-          type: string
-          title: Topp
-        topK:
-          type: string
-          title: Topk
-        repeatPenalty:
-          type: string
-          title: Repeatpenalty
-        seed:
-          type: string
-          title: Seed
-        numCtx:
-          type: string
-          title: Numctx
         mcpHost:
-          type: string
           title: Mcphost
-        mcpPort:
           type: string
-          title: Mcpport
         mcpPath:
-          type: string
           title: Mcppath
+          type: string
+        mcpPort:
+          title: Mcpport
+          type: string
+        numCtx:
+          title: Numctx
+          type: string
+        ollamaCloudApiKey:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamacloudapikey
+        ollamaCloudCABundle:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamacloudcabundle
+        ollamaCloudEndpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamacloudendpoint
+        ollamaCloudModel:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamacloudmodel
+        ollamaLocalModel:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamalocalmodel
+        ollamaMode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollamamode
+        proxy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proxy
         ragHost:
-          type: string
           title: Raghost
-        ragPort:
           type: string
-          title: Ragport
         ragPath:
-          type: string
           title: Ragpath
-      type: object
+          type: string
+        ragPort:
+          title: Ragport
+          type: string
+        repeatPenalty:
+          title: Repeatpenalty
+          type: string
+        seed:
+          title: Seed
+          type: string
+        temperature:
+          title: Temperature
+          type: string
+        topK:
+          title: Topk
+          type: string
+        topP:
+          title: Topp
+          type: string
       required:
       - apiEndpoint
-      - model
       - embeddingModel
       - temperature
       - topP
@@ -989,229 +107,246 @@ components:
       - ragPort
       - ragPath
       title: AppConfigReq
-      description: Request model for application configuration.
+      type: object
     Body_api_drive_create_folder_api_drive_folders_post:
       properties:
         name:
-          type: string
           title: Name
+          type: string
         parent_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Parent Id
-      type: object
       required:
       - name
       title: Body_api_drive_create_folder_api_drive_folders_post
+      type: object
     Body_api_drive_upload_api_drive_upload_post:
       properties:
         file:
-          type: string
           format: binary
           title: File
+          type: string
         folder_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Folder Id
-      type: object
       required:
       - file
       title: Body_api_drive_upload_api_drive_upload_post
+      type: object
     Body_api_extract_api_extract_post:
       properties:
         file:
-          type: string
           format: binary
           title: File
-      type: object
+          type: string
       required:
       - file
       title: Body_api_extract_api_extract_post
+      type: object
     Body_auth_setup_post_api_auth_setup_post:
       properties:
         client_id:
-          type: string
           title: Client Id
-        client_secret:
           type: string
+        client_secret:
           title: Client Secret
-      type: object
+          type: string
       required:
       - client_id
       - client_secret
       title: Body_auth_setup_post_api_auth_setup_post
-    ChatMessage:
-      properties:
-        role:
-          type: string
-          title: Role
-        content:
-          type: string
-          title: Content
       type: object
+    ChatMessage:
+      description: Model for a chat message.
+      properties:
+        content:
+          title: Content
+          type: string
+        display_content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Content
+        role:
+          title: Role
+          type: string
       required:
       - role
       - content
       title: ChatMessage
-      description: Model for a chat message.
+      type: object
     ChatReq:
+      description: Request model for chat completion.
       properties:
-        messages:
-          items:
-            $ref: '#/components/schemas/ChatMessage'
-          type: array
-          title: Messages
-        model:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Model
-        temperature:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Temperature
-        max_tokens:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Max Tokens
         config:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
           title: Config
-      type: object
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Tokens
+        messages:
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+          title: Messages
+          type: array
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Temperature
       required:
       - messages
       title: ChatReq
-      description: Request model for chat completion.
+      type: object
     ConfigModeReq:
+      description: Request model for setting the backend mode.
       properties:
         mode:
-          type: string
+          description: 'Backend mode: ''ollama'', ''openai_assistants'', ''google_gemini'',
+            or ''vertex_ai_search'''
           title: Mode
-      type: object
+          type: string
       required:
       - mode
       title: ConfigModeReq
-      description: Request model for setting the backend mode.
+      type: object
     DeleteDocsReq:
+      description: Request model for deleting documents by URI.
       properties:
         uris:
           items:
             type: string
-          type: array
           title: Uris
-      type: object
+          type: array
       required:
       - uris
       title: DeleteDocsReq
-      description: Request model for deleting documents by URI.
-    DocumentInfo:
-      properties:
-        uri:
-          type: string
-          title: Uri
-        size_bytes:
-          type: integer
-          title: Size Bytes
       type: object
+    DocumentInfo:
+      description: Document metadata for listings.
+      properties:
+        size_bytes:
+          title: Size Bytes
+          type: integer
+        uri:
+          title: Uri
+          type: string
       required:
       - uri
       - size_bytes
       title: DocumentInfo
-      description: Document metadata for listings.
+      type: object
     DocumentsResp:
+      description: Response model for document listing.
       properties:
         documents:
           items:
             $ref: '#/components/schemas/DocumentInfo'
-          type: array
           title: Documents
-      type: object
+          type: array
       required:
       - documents
       title: DocumentsResp
-      description: Response model for document listing.
+      type: object
     GroundedAnswerReq:
+      description: Request model for grounded answer generation.
       properties:
-        question:
-          type: string
-          title: Question
-        k:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: K
-          default: 3
-        model:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Model
-        temperature:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Temperature
-        max_tokens:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Max Tokens
         config:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
           title: Config
-      type: object
+        k:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 3
+          title: K
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Tokens
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        question:
+          title: Question
+          type: string
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Temperature
       required:
       - question
       title: GroundedAnswerReq
-      description: Request model for grounded answer generation.
+      type: object
     HTTPValidationError:
       properties:
         detail:
           items:
             $ref: '#/components/schemas/ValidationError'
-          type: array
           title: Detail
-      type: object
+          type: array
       title: HTTPValidationError
-    HealthResp:
-      properties:
-        status:
-          type: string
-          title: Status
-        base_path:
-          type: string
-          title: Base Path
-        documents:
-          type: integer
-          title: Documents
-        vectors:
-          type: integer
-          title: Vectors
-        memory_mb:
-          type: number
-          title: Memory Mb
-        memory_limit_mb:
-          type: integer
-          title: Memory Limit Mb
-        total_size_bytes:
-          type: integer
-          title: Total Size Bytes
-          default: 0
-        store_file_bytes:
-          type: integer
-          title: Store File Bytes
-          default: 0
       type: object
+    HealthResp:
+      description: Response model for health checks.
+      properties:
+        base_path:
+          title: Base Path
+          type: string
+        documents:
+          title: Documents
+          type: integer
+        memory_limit_mb:
+          title: Memory Limit Mb
+          type: integer
+        memory_mb:
+          title: Memory Mb
+          type: number
+        status:
+          title: Status
+          type: string
+        store_file_bytes:
+          default: 0
+          title: Store File Bytes
+          type: integer
+        total_size_bytes:
+          default: 0
+          title: Total Size Bytes
+          type: integer
+        vectors:
+          title: Vectors
+          type: integer
       required:
       - status
       - base_path
@@ -1220,96 +355,225 @@ components:
       - memory_mb
       - memory_limit_mb
       title: HealthResp
-      description: Response model for health checks.
+      type: object
     IndexPathReq:
+      description: Request model for indexing a filesystem path.
       properties:
-        path:
-          type: string
-          title: Path
         glob:
           anyOf:
           - type: string
           - type: 'null'
-          title: Glob
           default: '**/*.txt'
-      type: object
+          title: Glob
+        path:
+          title: Path
+          type: string
       required:
       - path
       title: IndexPathReq
-      description: Request model for indexing a filesystem path.
-    LoadStoreReq:
-      properties: {}
       type: object
-      title: LoadStoreReq
-      description: Request model for sending the store to an LLM.
-    OpenAIConfigModel:
+    IndexUrlReq:
+      description: Request model for indexing remote URLs.
       properties:
-        api_key:
+        docId:
           anyOf:
           - type: string
           - type: 'null'
-          title: Api Key
-        model:
+          title: Docid
+        query:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Query
+        url:
+          title: Url
           type: string
-          title: Model
-          default: gpt-4-turbo-preview
-        assistant_id:
-          type: string
-          title: Assistant Id
-          default: ''
+      required:
+      - url
+      title: IndexUrlReq
       type: object
-      title: OpenAIConfigModel
-      description: OpenAI configuration model.
     OllamaCloudConfigReq:
+      description: Request model for persisting Ollama Cloud secrets/config.
       properties:
-        api_key:
+        apiKey:
           anyOf:
           - type: string
           - type: 'null'
-          title: Api Key
-          description: Send "***MASKED***" to leave the stored key unchanged; send an empty string or null to delete the stored key.
+          description: API key to store (masked value retains existing)
+          title: Apikey
+        caBundle:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Path to CA bundle PEM file
+          title: Cabundle
         endpoint:
           anyOf:
           - type: string
           - type: 'null'
+          description: Cloud endpoint URL
           title: Endpoint
         proxy:
           anyOf:
           - type: string
           - type: 'null'
+          description: HTTPS proxy URL
           title: Proxy
+      title: OllamaCloudConfigReq
+      type: object
+    OllamaModeReq:
+      description: Request model for setting Ollama mode.
+      properties:
+        mode:
+          description: 'Ollama mode: ''local'', ''cloud'', or ''auto'''
+          title: Mode
+          type: string
+      required:
+      - mode
+      title: OllamaModeReq
+      type: object
+    OllamaModelsReq:
+      description: Request model for fetching Ollama models dynamically.
+      properties:
+        apiKey:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: API key to use (optional, uses configured key if not provided)
+          title: Apikey
+        caBundle:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Path to CA bundle PEM file (optional)
+          title: Cabundle
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Endpoint to use (optional, uses configured endpoint if not
+            provided)
+          title: Endpoint
+        proxy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: HTTPS proxy URL (optional)
+          title: Proxy
+      title: OllamaModelsReq
+      type: object
+    OllamaTestConnectionReq:
+      description: Request model for testing Ollama Cloud connection.
+      properties:
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: API key to test (optional, uses configured key if not provided)
+          title: Api Key
         ca_bundle:
           anyOf:
           - type: string
           - type: 'null'
+          description: Path to CA bundle PEM file (optional)
           title: Ca Bundle
+        endpoint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Endpoint to test (optional, uses configured endpoint if not
+            provided)
+          title: Endpoint
+        proxy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: HTTPS proxy to use when testing (optional)
+          title: Proxy
+      title: OllamaTestConnectionReq
       type: object
-      title: OllamaCloudConfigReq
-      description: Request model for persisting Ollama Cloud secrets/config.
-    QualityMetricsResp:
+    OpenAIConfigModel:
+      description: OpenAI configuration model.
       properties:
-        total_searches:
-          type: integer
-          title: Total Searches
-        failed_searches:
-          type: integer
-          title: Failed Searches
-        responses_with_sources:
-          type: integer
-          title: Responses With Sources
-        total_sources:
-          type: integer
-          title: Total Sources
-        fallback_responses:
-          type: integer
-          title: Fallback Responses
-        success_rate:
-          type: number
-          title: Success Rate
-        avg_sources:
-          type: number
-          title: Avg Sources
+        apiKey:
+          description: OpenAI API key (sk-...)
+          title: Apikey
+          type: string
+        assistantId:
+          default: ''
+          description: Optional OpenAI Assistant ID
+          title: Assistantid
+          type: string
+        model:
+          default: gpt-4-turbo-preview
+          description: OpenAI model to use
+          title: Model
+          type: string
+      required:
+      - apiKey
+      title: OpenAIConfigModel
       type: object
+    OpenAIModelsReq:
+      description: Request model for fetching OpenAI models with a new API key.
+      properties:
+        apiKey:
+          description: OpenAI API key (sk-...)
+          title: Apikey
+          type: string
+      required:
+      - apiKey
+      title: OpenAIModelsReq
+      type: object
+    PgvectorConfigModel:
+      description: Request model for pgvector connection configuration.
+      properties:
+        dbname:
+          default: agentic_rag
+          title: Dbname
+          type: string
+        host:
+          default: 127.0.0.1
+          title: Host
+          type: string
+        password:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Password
+        port:
+          default: 5432
+          title: Port
+          type: integer
+        user:
+          default: agenticrag
+          title: User
+          type: string
+      title: PgvectorConfigModel
+      type: object
+    QualityMetricsResp:
+      description: Aggregated quality metrics for searches.
+      properties:
+        avg_sources:
+          title: Avg Sources
+          type: number
+        failed_searches:
+          title: Failed Searches
+          type: integer
+        fallback_responses:
+          title: Fallback Responses
+          type: integer
+        responses_with_sources:
+          title: Responses With Sources
+          type: integer
+        success_rate:
+          title: Success Rate
+          type: number
+        total_searches:
+          title: Total Searches
+          type: integer
+        total_sources:
+          title: Total Sources
+          type: integer
       required:
       - total_searches
       - failed_searches
@@ -1319,89 +583,96 @@ components:
       - success_rate
       - avg_sources
       title: QualityMetricsResp
-      description: Aggregated quality metrics for searches.
+      type: object
     RerankReq:
+      description: Request model for reranking passages.
       properties:
-        query:
-          type: string
-          title: Query
         passages:
           items:
             additionalProperties: true
             type: object
-          type: array
           title: Passages
+          type: array
+        query:
+          title: Query
+          type: string
         top_k:
           anyOf:
           - type: integer
           - type: 'null'
           title: Top K
-      type: object
       required:
       - query
       - passages
       title: RerankReq
-      description: Request model for reranking passages.
+      type: object
     SearchReq:
+      description: Request model for performing a search.
       properties:
-        query:
-          type: string
-          title: Query
         async:
-          type: boolean
-          title: Async
           default: false
-        timeout_seconds:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Timeout Seconds
-          default: 300
-        model:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Model
-        temperature:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Temperature
+          description: Run search asynchronously with polling
+          title: Async
+          type: boolean
         max_tokens:
           anyOf:
           - type: integer
           - type: 'null'
+          description: Maximum tokens in response
           title: Max Tokens
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Override LLM model (Ollama only, e.g. 'ollama/qwen2.5:3b')
+          title: Model
+        query:
+          description: The search query
+          title: Query
+          type: string
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: Generation temperature 0.0-1.0 (lower=factual, higher=creative)
+          title: Temperature
+        timeout_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 300
+          description: Timeout for async searches in seconds
+          title: Timeout Seconds
         top_k:
           anyOf:
           - type: integer
           - type: 'null'
+          description: Number of documents to retrieve (default 5)
           title: Top K
-      type: object
       required:
       - query
       title: SearchReq
-      description: Request model for performing a search.
+      type: object
     UpsertReq:
+      description: Request model for upserting a document.
       properties:
-        uri:
-          type: string
-          title: Uri
-        text:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Text
         binary_base64:
           anyOf:
           - type: string
           - type: 'null'
           title: Binary Base64
-      type: object
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+        uri:
+          title: Uri
+          type: string
       required:
       - uri
       title: UpsertReq
-      description: Request model for upserting a document.
+      type: object
     ValidationError:
       properties:
         loc:
@@ -1409,76 +680,1536 @@ components:
             anyOf:
             - type: string
             - type: integer
-          type: array
           title: Location
+          type: array
         msg:
-          type: string
           title: Message
-        type:
           type: string
+        type:
           title: Error Type
-      type: object
+          type: string
       required:
       - loc
       - msg
       - type
       title: ValidationError
+      type: object
     VerifyReq:
+      description: Request model for grounding verification (citations).
       properties:
-        question:
-          type: string
-          title: Question
-        draft_answer:
-          type: string
-          title: Draft Answer
         citations:
           items:
             type: string
-          type: array
           title: Citations
-      type: object
+          type: array
+        draft_answer:
+          title: Draft Answer
+          type: string
+        question:
+          title: Question
+          type: string
       required:
       - question
       - draft_answer
       - citations
       title: VerifyReq
-      description: Request model for grounding verification (citations).
+      type: object
     VerifySimpleReq:
+      description: Request model for grounding verification (passages provided).
       properties:
-        question:
-          type: string
-          title: Question
         draft_answer:
-          type: string
           title: Draft Answer
+          type: string
         passages:
           items:
             additionalProperties: true
             type: object
-          type: array
           title: Passages
-      type: object
+          type: array
+        question:
+          title: Question
+          type: string
       required:
       - question
       - draft_answer
       - passages
       title: VerifySimpleReq
-      description: Request model for grounding verification (passages provided).
-    VertexConfigReq:
-      properties:
-        project_id:
-          type: string
-          title: Project Id
-        location:
-          type: string
-          title: Location
-        data_store_id:
-          type: string
-          title: Data Store Id
       type: object
+    VertexConfigReq:
+      description: Request model for Vertex AI configuration.
+      properties:
+        data_store_id:
+          title: Data Store Id
+          type: string
+        location:
+          title: Location
+          type: string
+        project_id:
+          title: Project Id
+          type: string
       required:
       - project_id
       - location
       - data_store_id
       title: VertexConfigReq
-      description: Request model for Vertex AI configuration.
+      type: object
+info:
+  title: retrieval-rest-server
+  version: 0.1.0
+openapi: 3.1.0
+paths:
+  /api/auth/callback:
+    get:
+      description: Handle Google OAuth2 callback.
+      operationId: auth_callback_api_auth_callback_get
+      parameters:
+      - in: query
+        name: code
+        required: true
+        schema:
+          title: Code
+          type: string
+      - in: query
+        name: _oauth_state
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: ' Oauth State'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Auth Callback
+  /api/auth/login:
+    get:
+      description: Initiate Google OAuth2 flow.
+      operationId: auth_login_api_auth_login_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Auth Login
+  /api/auth/logout:
+    get:
+      description: "Log out by deleting the stored token.\n\nArgs:\n    provider:\
+        \ Optional provider to logout (google, openai_assistants). \n            \
+        \  If omitted, logs out all."
+      operationId: auth_logout_api_auth_logout_get
+      parameters:
+      - in: query
+        name: provider
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Auth Logout
+  /api/auth/setup:
+    get:
+      description: Show the setup page for Google Auth.
+      operationId: auth_setup_api_auth_setup_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Auth Setup
+    post:
+      description: Save the provided credentials to secrets/client_secrets.json.
+      operationId: auth_setup_post_api_auth_setup_post
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Body_auth_setup_post_api_auth_setup_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Auth Setup Post
+  /api/chat:
+    post:
+      description: Chat with the RAG backend, optionally maintaining history.
+      operationId: api_chat_api_chat_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat
+  /api/chat/history:
+    get:
+      description: List recent chat sessions.
+      operationId: api_chat_history_list_api_chat_history_get
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          default: 50
+          title: Limit
+          type: integer
+      - in: query
+        name: offset
+        required: false
+        schema:
+          default: 0
+          title: Offset
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat History List
+  /api/chat/history/delete-all:
+    post:
+      description: Delete all chat sessions. Use with caution!
+      operationId: api_chat_history_delete_all_api_chat_history_delete_all_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Chat History Delete All
+  /api/chat/history/{session_id}:
+    delete:
+      description: Soft delete a chat session (marks as deleted, data retained for
+        compliance).
+      operationId: api_chat_history_delete_api_chat_history__session_id__delete
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat History Delete
+    get:
+      description: Get messages for a specific session.
+      operationId: api_chat_history_get_api_chat_history__session_id__get
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat History Get
+  /api/chat/history/{session_id}/messages/{message_id}:
+    delete:
+      description: Delete a single message from a specific session.
+      operationId: api_chat_history_delete_message_api_chat_history__session_id__messages__message_id__delete
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      - in: path
+        name: message_id
+        required: true
+        schema:
+          title: Message Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat History Delete Message
+  /api/chat/history/{session_id}/title:
+    patch:
+      description: Update the title of a chat session.
+      operationId: api_chat_history_update_title_api_chat_history__session_id__title_patch
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          title: Session Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              title: Request
+              type: object
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Chat History Update Title
+  /api/config/app:
+    get:
+      description: Get application configuration.
+      operationId: api_get_app_config_api_config_app_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get App Config
+    post:
+      description: Save application configuration.
+      operationId: update_app_config_api_config_app_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppConfigReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Update App Config
+  /api/config/autotune:
+    get:
+      description: Peek at what parameters would be used for a given query.
+      operationId: get_autotune_params_api_config_autotune_get
+      parameters:
+      - in: query
+        name: query
+        required: true
+        schema:
+          title: Query
+          type: string
+      - in: query
+        name: default_k
+        required: false
+        schema:
+          default: 12
+          title: Default K
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Autotune Params
+  /api/config/mode:
+    get:
+      description: Get the current backend mode.
+      operationId: api_get_mode_api_config_mode_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get Mode
+    post:
+      description: Set the backend mode (e.g., 'ollama', 'google').
+      operationId: api_set_mode_api_config_mode_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigModeReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Set Mode
+  /api/config/models:
+    get:
+      description: List available models for the current backend.
+      operationId: api_list_models_api_config_models_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api List Models
+  /api/config/openai:
+    get:
+      description: Get OpenAI configuration (API key is masked; has_api_key indicates
+        presence).
+      operationId: get_openai_config_api_config_openai_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Get Openai Config
+    post:
+      description: Save OpenAI API configuration to secrets/openai_config.json.
+      operationId: save_openai_config_api_config_openai_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIConfigModel'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Save Openai Config
+  /api/config/openai/models:
+    get:
+      description: Get list of available OpenAI models using the configured API key.
+      operationId: get_openai_models_api_config_openai_models_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Get Openai Models
+    post:
+      description: Get list of available OpenAI models using the provided API key.
+      operationId: get_openai_models_post_api_config_openai_models_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenAIModelsReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Openai Models Post
+  /api/config/openai/reload:
+    post:
+      description: Reload OpenAI backend to pick up configuration changes.
+      operationId: reload_openai_backend_api_config_openai_reload_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Reload Openai Backend
+  /api/config/pgvector:
+    get:
+      description: Get pgvector configuration (password masked; has_password indicates
+        presence).
+      operationId: get_pgvector_config_api_config_pgvector_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Get Pgvector Config
+    post:
+      description: Save pgvector configuration (password stored in secrets; other
+        fields in settings.json).
+      operationId: save_pgvector_config_api_config_pgvector_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PgvectorConfigModel'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Save Pgvector Config
+  /api/config/vertex:
+    get:
+      description: Get Vertex AI configuration.
+      operationId: api_get_vertex_config_api_config_vertex_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get Vertex Config
+    post:
+      description: Save Vertex AI configuration.
+      operationId: api_save_vertex_config_api_config_vertex_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VertexConfigReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Save Vertex Config
+  /api/docs/content/{filename}:
+    get:
+      description: Get content of a documentation file.
+      operationId: api_docs_content_api_docs_content__filename__get
+      parameters:
+      - in: path
+        name: filename
+        required: true
+        schema:
+          title: Filename
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Docs Content
+  /api/docs/list:
+    get:
+      description: List available documentation files.
+      operationId: api_docs_list_api_docs_list_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Docs List
+  /api/documents:
+    get:
+      description: List all documents in the store.
+      operationId: api_documents_api_documents_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentsResp'
+          description: Successful Response
+      summary: Api Documents
+  /api/documents/delete:
+    post:
+      description: Delete documents by URI from the store and rebuild index.
+      operationId: api_documents_delete_api_documents_delete_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteDocsReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Documents Delete
+  /api/documents/delete/status:
+    get:
+      description: Get deletion queue status.
+      operationId: api_deletion_status_api_documents_delete_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Deletion Status
+  /api/drive/files:
+    get:
+      description: List Drive files.
+      operationId: api_drive_files_api_drive_files_get
+      parameters:
+      - in: query
+        name: folder_id
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Folder Id
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Drive Files
+  /api/drive/files/{file_id}:
+    delete:
+      description: Delete a file or folder from Google Drive.
+      operationId: api_drive_delete_api_drive_files__file_id__delete
+      parameters:
+      - in: path
+        name: file_id
+        required: true
+        schema:
+          title: File Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Drive Delete
+  /api/drive/folders:
+    post:
+      description: Create a folder in Google Drive.
+      operationId: api_drive_create_folder_api_drive_folders_post
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Body_api_drive_create_folder_api_drive_folders_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Drive Create Folder
+  /api/drive/upload:
+    post:
+      description: Upload file to Drive.
+      operationId: api_drive_upload_api_drive_upload_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_api_drive_upload_api_drive_upload_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Drive Upload
+  /api/extract:
+    post:
+      description: Extract text from an uploaded file (in-memory, no storage).
+      operationId: api_extract_api_extract_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_api_extract_api_extract_post'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Extract
+  /api/flush_cache:
+    post:
+      description: Flush indexed content (pgvector + cache/indexed artifacts).
+      operationId: api_flush_cache_api_flush_cache_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Flush Cache
+  /api/grounded_answer:
+    post:
+      description: Return a grounded answer using vector search + synthesis.
+      operationId: api_grounded_answer_api_grounded_answer_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroundedAnswerReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Grounded Answer
+  /api/health:
+    get:
+      description: Lightweight health check with basic store and index stats.
+      operationId: api_health_api_health_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResp'
+          description: Successful Response
+      summary: Api Health
+  /api/index_path:
+    post:
+      description: Index a filesystem path into the retrieval store.
+      operationId: api_index_path_api_index_path_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexPathReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Index Path
+  /api/index_url:
+    post:
+      description: Download and index a remote URL via MCP worker.
+      operationId: api_index_url_api_index_url_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexUrlReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Index Url
+  /api/jobs:
+    get:
+      description: List async indexing jobs (pass-through to MCP).
+      operationId: api_jobs_api_jobs_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Api Jobs Api Jobs Get
+                type: object
+          description: Successful Response
+      summary: Api Jobs
+  /api/jobs/cancel_all:
+    post:
+      description: Cancel all non-terminal indexing jobs via MCP.
+      operationId: api_cancel_all_jobs_api_jobs_cancel_all_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Api Cancel All Jobs Api Jobs Cancel All Post
+                type: object
+          description: Successful Response
+      summary: Api Cancel All Jobs
+  /api/jobs/{job_id}:
+    get:
+      description: Get a single async indexing job (pass-through to MCP).
+      operationId: api_job_api_jobs__job_id__get
+      parameters:
+      - in: query
+        name: _job_id
+        required: true
+        schema:
+          title: ' Job Id'
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Api Job Api Jobs  Job Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Job
+  /api/jobs/{job_id}/cancel:
+    post:
+      description: Cancel a queued indexing job via MCP.
+      operationId: api_cancel_job_api_jobs__job_id__cancel_post
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Api Cancel Job Api Jobs  Job Id  Cancel Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Cancel Job
+  /api/logs/{log_type}:
+    get:
+      description: "Get log file contents.\n\nArgs:\n    log_type: Type of log (rest,\
+        \ rest_access, mcp, mcp_access, ollama)\n    lines: Number of lines to return\
+        \ from the end of the file (default: 500)\n\nReturns:\n    JSON with log lines,\
+        \ total count, and file path"
+      operationId: api_get_logs_api_logs__log_type__get
+      parameters:
+      - in: path
+        name: log_type
+        required: true
+        schema:
+          title: Log Type
+          type: string
+      - in: query
+        name: lines
+        required: false
+        schema:
+          default: 500
+          title: Lines
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Get Logs
+  /api/logs/{log_type}/stream:
+    get:
+      description: "Stream log file contents using Server-Sent Events (SSE).\n\nArgs:\n\
+        \    log_type: Type of log (rest, rest_access, mcp, mcp_access, ollama)\n\
+        \    request: FastAPI request object for client disconnect detection\n\nReturns:\n\
+        \    StreamingResponse with SSE format"
+      operationId: api_stream_logs_api_logs__log_type__stream_get
+      parameters:
+      - in: path
+        name: log_type
+        required: true
+        schema:
+          title: Log Type
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Stream Logs
+  /api/metrics/performance:
+    get:
+      description: Return performance metrics from the last N hours.
+      operationId: api_performance_metrics_api_metrics_performance_get
+      parameters:
+      - in: query
+        name: hours
+        required: false
+        schema:
+          default: 24
+          title: Hours
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Performance Metrics
+  /api/metrics/quality:
+    get:
+      description: Return aggregated quality metrics for searches.
+      operationId: api_quality_metrics_api_metrics_quality_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityMetricsResp'
+          description: Successful Response
+      summary: Api Quality Metrics
+  /api/metrics/today:
+    get:
+      description: Return same-day aggregates for queries, docs added, and avg latency.
+      operationId: api_today_metrics_api_metrics_today_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Today Metrics
+  /api/ollama/cloud-config:
+    get:
+      description: Fetch stored Ollama Cloud configuration (API key is masked).
+      operationId: api_get_ollama_cloud_config_api_ollama_cloud_config_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get Ollama Cloud Config
+    post:
+      description: Persist Ollama Cloud secrets/config without forcing a live test.
+      operationId: api_save_ollama_cloud_config_api_ollama_cloud_config_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaCloudConfigReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Save Ollama Cloud Config
+  /api/ollama/local-test:
+    post:
+      description: Test connection to a local/self-hosted Ollama endpoint (no API
+        key, allow HTTP).
+      operationId: api_test_ollama_local_api_ollama_local_test_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaTestConnectionReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Test Ollama Local
+  /api/ollama/mode:
+    get:
+      description: Get current Ollama mode (local/cloud/auto).
+      operationId: api_get_ollama_mode_api_ollama_mode_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get Ollama Mode
+    post:
+      description: Set Ollama mode (local/cloud/auto).
+      operationId: api_set_ollama_mode_api_ollama_mode_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaModeReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Set Ollama Mode
+  /api/ollama/models:
+    get:
+      description: List available models from current Ollama endpoint (configured).
+      operationId: api_list_ollama_models_get_api_ollama_models_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api List Ollama Models Get
+    post:
+      description: List available models from Ollama endpoint with provided credentials.
+      operationId: api_list_ollama_models_post_api_ollama_models_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaModelsReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api List Ollama Models Post
+  /api/ollama/status:
+    get:
+      description: Get Ollama connection status for both local and cloud.
+      operationId: api_get_ollama_status_api_ollama_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Get Ollama Status
+  /api/ollama/test-connection:
+    post:
+      description: Test connection to Ollama Cloud with API key.
+      operationId: api_test_ollama_connection_api_ollama_test_connection_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OllamaTestConnectionReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Test Ollama Connection
+  /api/pgvector/backfill:
+    post:
+      description: Rebuild pgvector vectors from indexed artifacts.
+      operationId: api_pgvector_backfill_api_pgvector_backfill_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Pgvector Backfill
+  /api/pgvector/migrate:
+    post:
+      description: Create pgvector schema + indexes (idempotent).
+      operationId: api_pgvector_migrate_api_pgvector_migrate_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Pgvector Migrate
+  /api/pgvector/stats:
+    get:
+      description: Return vector store stats for UI.
+      operationId: api_pgvector_stats_api_pgvector_stats_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Pgvector Stats
+  /api/pgvector/test-connection:
+    post:
+      description: Test pgvector/Postgres connectivity.
+      operationId: api_pgvector_test_connection_api_pgvector_test_connection_post
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Pgvector Test Connection
+  /api/rerank:
+    post:
+      description: Rerank provided passages for a query.
+      operationId: api_rerank_api_rerank_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RerankReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Rerank
+  /api/search:
+    post:
+      description: Search the retrieval store.
+      operationId: api_search_api_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Search
+  /api/search/jobs/{job_id}:
+    get:
+      description: Get status/result for an async search job.
+      operationId: api_search_job_api_search_jobs__job_id__get
+      parameters:
+      - in: path
+        name: job_id
+        required: true
+        schema:
+          title: Job Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Api Search Job Api Search Jobs  Job Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Search Job
+  /api/services:
+    get:
+      description: List controller state for managed services.
+      operationId: api_service_status_api_services_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Api Service Status
+  /api/services/{service}/restart:
+    post:
+      description: Restart a service controller.
+      operationId: api_restart_service_api_services__service__restart_post
+      parameters:
+      - in: path
+        name: service
+        required: true
+        schema:
+          title: Service
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Restart Service
+  /api/services/{service}/start:
+    post:
+      description: Start a controller for the given service.
+      operationId: api_start_service_api_services__service__start_post
+      parameters:
+      - in: path
+        name: service
+        required: true
+        schema:
+          title: Service
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Start Service
+  /api/services/{service}/stop:
+    post:
+      description: Stop a controller for the given service.
+      operationId: api_stop_service_api_services__service__stop_post
+      parameters:
+      - in: path
+        name: service
+        required: true
+        schema:
+          title: Service
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Stop Service
+  /api/upsert_document:
+    post:
+      description: Upsert a document into the store.
+      operationId: api_upsert_api_upsert_document_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Upsert
+  /api/verify_grounding:
+    post:
+      description: Verify grounding against store using citation URIs.
+      operationId: api_verify_api_verify_grounding_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Verify
+  /api/verify_grounding_simple:
+    post:
+      description: Simple grounding verification against provided passages.
+      operationId: api_verify_simple_api_verify_grounding_simple_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifySimpleReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Api Verify Simple
+  /metrics:
+    get:
+      description: Expose Prometheus metrics for the REST server.
+      operationId: metrics_endpoint_metrics_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Metrics Endpoint
+

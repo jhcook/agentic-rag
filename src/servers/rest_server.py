@@ -1638,6 +1638,57 @@ def api_chat_history_delete_all():
         logger.error("Failed to delete all sessions: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Documentation Endpoints ---
+@app.get(f"/{pth}/docs/list")
+def api_docs_list():
+    """List available documentation files."""
+    docs_dir = Path("docs")
+    if not docs_dir.exists():
+        return {"documents": []}
+    
+    docs = []
+    for f in docs_dir.iterdir():
+        if f.is_file() and f.suffix.lower() == ".md":
+            # Extract title from first line if possible
+            title = f.name
+            try:
+                with open(f, "r", encoding="utf-8") as d:
+                    first_line = d.readline().strip()
+                    if first_line.startswith("# "):
+                        title = first_line[2:].strip()
+            except Exception:
+                pass
+                
+            docs.append({
+                "filename": f.name,
+                "title": title or f.name
+            })
+    
+    # Sort by filename
+    docs.sort(key=lambda x: x["filename"])
+    return {"documents": docs}
+
+@app.get(f"/{pth}/docs/content/{{filename}}")
+def api_docs_content(filename: str):
+    """Get content of a documentation file."""
+    # sanitize filename
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+        
+    docs_dir = Path("docs")
+    file_path = docs_dir / filename
+    
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return Response(content=content, media_type="text/plain")
+    except Exception as e:
+        logger.error("Failed to read doc %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail="Failed to read document")
+
 @app.post(f"/{pth}/rerank")
 def api_rerank(req: RerankReq):
     """Rerank provided passages for a query."""

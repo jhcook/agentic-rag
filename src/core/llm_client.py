@@ -138,6 +138,16 @@ def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
             lc_messages.append(HumanMessage(content=content))
     return lc_messages
 
+def _get_chat_model(
+    model: str,
+    api_base: str,
+    temperature: float,
+    timeout: int,
+    **kwargs
+) -> Any:
+    """
+    Construct a ChatLiteLLM client with proper configuration.
+    """
     # Use LiteLLM Model Factory
     from langchain_community.chat_models import ChatLiteLLM
 
@@ -163,10 +173,17 @@ def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
     if mode == "local" and "/" not in final_model and not final_model.startswith(("gpt-", "claude-", "gemini-")):
         final_model = f"ollama/{final_model}"
         logger.debug(f"Auto-prefixed model '{model}' with 'ollama/' for LiteLLM local mode")
+    
+    # Extract proxy if present in kwargs or env
+    proxy_url = kwargs.get("proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+    is_https = str(api_base).startswith("https") if api_base else False
 
     client_kwargs = {}
     if proxy_url and is_https:
         client_kwargs["proxy"] = proxy_url
+    
+    # Extract any extra headers
+    extra_headers = get_ollama_client_headers()
 
     # LiteLLM needs 'api_base' for Ollama/OpenAI-compatible endpoints
     # It prioritizes 'api_base' over environment variables if passed explicitly.
