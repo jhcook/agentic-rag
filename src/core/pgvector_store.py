@@ -138,6 +138,7 @@ def get_pool() -> ConnectionPool:
         reconnect_timeout=5,
         configure=_configure_connection,
         name="agentic-rag-pgvector",
+        open=True,
     )
     return _POOL
 

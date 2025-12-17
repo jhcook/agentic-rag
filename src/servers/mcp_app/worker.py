@@ -286,7 +286,7 @@ def _index_worker_loop(
                 res = _worker_upsert(uri, text)
             else:
                 res = {"error": f"unknown job type {job['type']}"}
-            _worker_rebuild()
+            # _worker_rebuild()  <-- REMOVED: Redundant O(N^2) rebuild. Upsert handles its own persistence.
             finished_at = _iso_now()
             result_queue.put({
                 "id": job_id,

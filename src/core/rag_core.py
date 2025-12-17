@@ -501,7 +501,75 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
     logger.info("Rebuilding pgvector index from %d documents", len(docs))
 
     total_chunks = 0
-    for doc in tqdm(iterable=docs, desc=None, unit="doc", disable=True):  # pylint: disable=no-value-for-parameter
+    # Batch processing constants
+    BATCH_SIZE = 50  # Reduced to avoid potential connection instabilities or timeouts
+
+    chunk_batch: List[str] = []
+    # Metadata parallel to chunk_batch to reconstruct upsert calls
+    # List of (uri, text_sha256, chunk_text, start, end)
+    meta_batch: List[Tuple[str, str, str, int, int]] = []
+
+    def _flush_batch() -> None:
+        """Helper to encode and upsert the current batch."""
+        nonlocal chunk_batch, meta_batch
+        if not chunk_batch:
+            return
+
+        try:
+            # 1. Generate embeddings for the whole batch
+            embeddings = _encode_with_metrics(
+                embedder,
+                chunk_batch,
+                "rebuild_index",
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
+            # Ensure 2D array
+            emb_array = np.array(embeddings, dtype=np.float32)
+            if emb_array.ndim == 1:
+                emb_array = emb_array.reshape(1, -1)
+
+            # 2. Group by document URI to minimize database round-trips
+            doc_map: Dict[str, Dict[str, Any]] = {} 
+            
+            for i, (uri, sha, text, start, end) in enumerate(meta_batch):
+                if uri not in doc_map:
+                    doc_map[uri] = {
+                        "sha": sha,
+                        "chunks": [],
+                        "offsets": [],
+                        "embeddings": []
+                    }
+                doc_map[uri]["chunks"].append(text)
+                doc_map[uri]["offsets"].append((start, end))
+                doc_map[uri]["embeddings"].append(emb_array[i])
+
+            # 3. Upsert per document
+            for uri, data in doc_map.items():
+                try:
+                    doc_emb = np.array(data["embeddings"], dtype=np.float32)
+                    pgvector_store.upsert_document_chunks(
+                        uri=uri,
+                        text_sha256=data["sha"],
+                        chunks=data["chunks"],
+                        offsets=data["offsets"],
+                        embeddings=doc_emb,
+                        embedding_model=EMBED_MODEL_NAME,
+                    )
+                except Exception as doc_exc:
+                    logger.error("Failed to upsert chunks for %s: %s", uri, doc_exc)
+        except Exception as batch_exc:
+            logger.error("Batch processing failed: %s", batch_exc)
+        finally:
+            # Clear batch regardless of success to facilitate progress
+            chunk_batch = []
+            meta_batch = []
+            # doc_map etc will be cleaned up by GC
+            gc.collect()
+
+
+    for doc in tqdm(iterable=docs, desc="Rebuilding Index", unit="doc", disable=not DEBUG_MODE):
         uri = str(doc.get("uri") or "")
         if _should_skip_uri(uri):
             continue
@@ -516,37 +584,26 @@ def rebuild_index() -> Dict[str, Any]:  # pylint: disable=too-many-locals
         if not text.strip():
             continue
 
-        chunks_with_offsets = _chunk_text_with_offsets(text)  # pylint: disable=no-value-for-parameter
-        chunks = [c[0] for c in chunks_with_offsets]
-        offsets = [(c[1], c[2]) for c in chunks_with_offsets]
-        if not chunks:
+        text_sha = hashlib.sha256(raw).hexdigest()
+        chunks_with_offsets = _chunk_text_with_offsets(text)
+        
+        if not chunks_with_offsets:
             continue
+            
+        # Accumulate chunks
+        for chunk_text, start, end in chunks_with_offsets:
+            chunk_batch.append(chunk_text)
+            meta_batch.append((uri, text_sha, chunk_text, start, end))
+            total_chunks += 1
+            
+            if len(chunk_batch) >= BATCH_SIZE:
+                _flush_batch()
 
-        embeddings = _encode_with_metrics(
-            embedder,
-            chunks,
-            "rebuild_index",
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        emb = np.array(embeddings, dtype=np.float32)
-        if emb.ndim == 1:
-            emb = emb.reshape(1, -1)
-
-        pgvector_store.upsert_document_chunks(
-            uri=uri,
-            text_sha256=hashlib.sha256(raw).hexdigest(),
-            chunks=chunks,
-            offsets=offsets,
-            embeddings=emb,
-            embedding_model=EMBED_MODEL_NAME,
-        )
-        total_chunks += len(chunks)
-
-        # Reduce peak memory
-        del chunks_with_offsets, chunks, offsets, embeddings, emb
-        gc.collect()
+        # Reduce loop memory pressure (though _flush_batch handles the big arrays)
+        del chunks_with_offsets
+    
+    # Process remaining items
+    _flush_batch()
 
     logger.info("pgvector rebuild complete (chunks=%d)", total_chunks)
     return {"status": "ok", "chunks": total_chunks, "documents": len(docs)}
