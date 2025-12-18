@@ -1,0 +1,19 @@
+---
+alwaysApply: true
+---
+Make the page conform to the platform settings such as dark mode on macOS. 
+
+Do not use emoticons in any output.
+
+Make the interface minimalist.
+
+Whenever generating web UI components that display cards, tiles, panels, or dashboard items:
+
+- Implement user-friendly *drag-and-relocate* functionality.
+- Use Pointer Events (`pointerdown`, `pointermove`, `pointerup`).
+- Place cards using absolute positioning so they can be freely moved.
+- Ensure the drag interaction is smooth (e.g., apply `cursor: grab` and `cursor: grabbing`).
+- Keep movement inside the parent container’s bounds.
+- Include subtle shadows and scale effects when dragging.
+
+If I explicitly request a static layout, then disable this behavior.

@@ -1,0 +1,77 @@
+OVERALL_VERDICT: APPROVE
+
+ROLE: @Architect
+VERDICT: APPROVE
+SUMMARY:
+- Architecture properly supports cloud-only Ollama users without requiring local endpoint
+- Data flows are clearly defined: API keys stored in secrets files, masked in API responses
+- Backend availability logic correctly handles cloud/local/auto modes with fallback
+FINDINGS:
+- [Architecture] Backend availability now supports cloud-only configuration (users can use Ollama Cloud without local endpoint)
+- [Data Flow] API keys flow: UI → REST API → secrets file (local storage) → masked in responses
+- [Trust Boundaries] Secrets stored in local filesystem with restrictive permissions (600), not exposed via API
+- [Availability] Backend availability check tries cloud endpoint first in auto mode, falls back to local if needed
+- [Design] Clear separation: config persistence endpoint (`/api/ollama/cloud-config`) separate from connection test endpoint
+REQUIRED_CHANGES (if VERDICT=BLOCK):
+- None
+
+ROLE: @Sentinel
+VERDICT: APPROVE
+SUMMARY:
+- Secrets properly masked with `***MASKED***` placeholder in API responses
+- File permissions correctly set to 600 (rw-------) for secrets files
+- API keys never exposed in logs or error messages (redaction implemented)
+- HTTPS enforced for cloud endpoints via URL validation
+FINDINGS:
+- [Security] API keys masked in GET responses using `***MASKED***` with `has_api_key` boolean flag
+- [Security] Secrets files (`secrets/openai_config.json`, `secrets/ollama_cloud_config.json`) use restrictive permissions (stat.S_IRUSR | stat.S_IWUSR)
+- [Security] Error messages properly redact API keys using `_redact_error_message()` function
+- [Security] HTTPS enforced for cloud endpoints via `_validate_url()` with `allow_local=False`
+- [Security] SSRF protection: private IP ranges and localhost blocked for cloud endpoints
+- [Privacy] No personal data logged in plaintext; API keys always redacted before logging
+- [GDPR] API keys stored locally only, can be deleted via API (send empty string or delete file)
+REQUIRED_CHANGES (if VERDICT=BLOCK):
+- None
+
+ROLE: @QA
+VERDICT: APPROVE
+SUMMARY:
+- Comprehensive tests added for cloud config persistence, masking behavior, and backend availability
+- No lint errors detected in modified files
+- Masking logic correctly handles None, empty strings, and masked placeholders
+- Error handling properly catches and sanitizes exceptions
+FINDINGS:
+- [Tests] New test class `TestOllamaCloudConfigPersistence` validates save/fetch cycle with masking
+- [Tests] New test class `TestOpenAIConfigMasking` validates key preservation when updating with masked placeholder
+- [Tests] New test class `TestHybridBackendAvailability` validates cloud-only backend availability
+- [Tests] Existing security tests validate API key redaction, HTTPS enforcement, SSRF protection, file permissions
+- [Correctness] Masking logic: `_mask_secret()` correctly returns tuple of (masked_value, has_value)
+- [Correctness] Update logic: sending `MASKED_SECRET` placeholder preserves existing key, sending empty clears it
+- [Robustness] Exception handling uses broad exception catching with proper error sanitization
+- [Types] Pydantic models correctly use Optional[str] for nullable fields with proper aliases
+- [Lint] No lint errors detected in staged changes (verified via read_lints)
+REQUIRED_CHANGES (if VERDICT=BLOCK):
+- None
+
+ROLE: @Scribe
+VERDICT: APPROVE
+SUMMARY:
+- API reference documentation updated with Ollama Cloud configuration endpoints
+- OpenAPI specifications (JSON and YAML) updated with new endpoints and schemas
+- GDPR documentation already exists in `docs/ollama-cloud-gdpr.md` covering data flows, retention, deletion
+- Clear documentation of masking behavior and `has_api_key` flag
+FINDINGS:
+- [Documentation] `docs/api_reference.md` includes new section "Ollama Cloud Configuration" with GET/POST endpoint examples
+- [Documentation] OpenAPI specs updated with `/api/ollama/cloud-config` endpoints and `OllamaCloudConfigReq` schema
+- [Documentation] Secret masking behavior documented: placeholder `***MASKED***`, `has_api_key` flag, update semantics
+- [Auditability] Clear separation between GET (read) and POST (write) endpoints with documented request/response schemas
+- [GDPR] Existing GDPR documentation (`docs/ollama-cloud-gdpr.md`) already covers:
+  - Lawful basis (contractual necessity, legitimate interest)
+  - Data flow lifecycle (source → use → storage → retention → deletion)
+  - API key storage, retention, and deletion procedures
+  - User rights (access, rectification, erasure, etc.)
+- [API Specs] OpenAPI schemas correctly mark `api_key` as nullable (`anyOf: [string, null]`) to support masking pattern
+- [Naming] Consistent naming: `OllamaCloudConfigReq` model, `/api/ollama/cloud-config` endpoint paths
+REQUIRED_CHANGES (if VERDICT=BLOCK):
+- None
+

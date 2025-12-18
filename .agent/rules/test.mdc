@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+Always create and update tests applicable to the code.

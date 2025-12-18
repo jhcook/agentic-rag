@@ -51,4 +51,4 @@ stop.sh
 .venv/bin/pylint src/servers/rest_server.py src/servers/control_daemon.py src/core/factory.py
 ```
 
-See `docs/` for more targeted guides (ops, testing, API calls, cloud integrations).
+See `docs/` for more targeted guides, including the [Application Walkthrough](docs/walkthrough.md).

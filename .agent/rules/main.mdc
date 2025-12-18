@@ -1,0 +1,72 @@
+---
+alwaysApply: true
+---
+
+# Project Rules and Standards
+
+## Code Quality
+
+### Python Code Standards
+- Follow PEP-8 style guidelines strictly
+- All code must be well-documented with docstrings
+- Use type hints where appropriate
+- Maximum line length: 100 characters (PEP-8 compliant)
+- Always use explicit encoding='utf-8' for file operations
+- Use lazy % formatting in logging functions (not f-strings)
+- Add timeout arguments to all HTTP requests
+
+### Documentation
+- Always ensure documentation in docs/ directory is up to date
+- All modules, classes, and functions must have docstrings
+- Follow PEP-257 for docstring conventions
+- Update README.md when adding new features
+
+### Testing
+- Always create and update tests applicable to the code
+- Test files should be in tests/ directory
+- Use pytest for testing
+- Aim for good test coverage
+
+## Import Organization
+- Standard library imports first
+- Third-party imports second
+- Local application imports last
+- Use absolute imports from src/ package
+
+## Error Handling
+- Use specific exception types when possible
+- Log errors with appropriate context
+- Handle exceptions gracefully with fallbacks
+
+## UI/UX Rules (for web components)
+
+### Platform Conformance
+- Make the page conform to the platform settings such as dark mode on macOS
+- Make the interface minimalist
+
+### Drag-and-Drop Functionality
+Whenever generating web UI components that display cards, tiles, panels, or dashboard items:
+
+- Implement user-friendly *drag-and-relocate* functionality
+- Use Pointer Events (`pointerdown`, `pointermove`, `pointerup`)
+- Place cards using absolute positioning so they can be freely moved
+- Ensure the drag interaction is smooth (e.g., apply `cursor: grab` and `cursor: grabbing`)
+- Keep movement inside the parent container's bounds
+- Include subtle shadows and scale effects when dragging
+
+**Exception**: If explicitly requested, static layout behavior can be disabled.
+
+## Code Organization
+- Keep functions focused and single-purpose
+- Maximum complexity limits (as per .pylintrc):
+  - max-branches: 16
+  - max-locals: 17
+  - max-returns: 13
+  - max-public-methods: 21
+  - max-module-lines: 1200
+
+## Security
+- Never hardcode API keys or secrets
+- Use environment variables for configuration
+- Validate all user inputs
+- Sanitize file paths and URLs

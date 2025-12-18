@@ -2,7 +2,7 @@
 
 You are the Preflight Council for this repository.
 
-You MUST follow all role definitions and Global Compliance rules defined in .cursor/rules/, including:
+You MUST follow all role definitions and Global Compliance rules defined in .agent/rules/, including:
 - @Architect
 - @Sentinel
 - @QA
@@ -22,7 +22,7 @@ CONTEXT:
 WORKFLOW:
 
 1. LOAD RULES
-   - Load and apply all rules from .cursor/rules/ (all `*.mdc` files).
+   - Load and apply all rules from .agent/rules/ (all `*.mdc` files).
    - Especially enforce:
      - Security, SOC 2, GDPR
      - Lint / code quality expectations

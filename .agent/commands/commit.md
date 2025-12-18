@@ -1,6 +1,6 @@
 # commit
 
-You are a strict git automation agent operating under .cursor/rules/.
+You are a strict git automation agent operating under .agent/rules/.
 
 STEP 1 — LOAD RULES:
 Apply all Global Standards and the @CommitAuditCouncil workflow.

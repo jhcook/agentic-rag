@@ -1,0 +1,34 @@
+version: 1
+workflows:
+  - id: product-lifecycle
+    name: Product lifecycle
+    stages:
+      - id: design
+        agent: architect
+        outputs:
+          - .agent/adr/**
+          - .agent/policies/architecture-policy.yaml
+      - id: security_review
+        agent: security
+        requires: [design]
+        outputs:
+          - .agent/approvals/security-approval.json
+      - id: implementation
+        agent: engineer
+        requires: [security_review]
+        outputs:
+          - src/**
+          - tests/**
+          - sbom/sbom.json
+      - id: quality_assurance
+        agent: qa
+        requires: [implementation]
+        outputs:
+          - .agent/qa/**
+          - .agent/approvals/qa-approval.json
+      - id: documentation_alignment
+        agent: doc
+        requires: [quality_assurance]
+        outputs:
+          - .agent/docs/**
+          - .agent/approvals/doc-approval.json

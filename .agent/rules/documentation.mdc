@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+Always ensure documentation in docs/ directory is up to date.
+
+Always ensure code is well documented following language mandates such as PEP-008 for Python.
+
