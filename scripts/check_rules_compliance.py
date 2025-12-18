@@ -3,7 +3,7 @@
 Check compliance with project rules and standards.
 
 This script verifies that the codebase follows the rules defined in
-.cursor/rules/ directory.
+.agent/rules/ directory.
 """
 import os
 import subprocess
@@ -178,9 +178,9 @@ def check_line_length():
 
 
 def check_cursor_rules_exist():
-    """Verify cursor rules files exist."""
-    print("\n🔍 Checking cursor rules files...")
-    rules_dir = PROJECT_ROOT / ".cursor" / "rules"
+    """Verify governance rules files exist."""
+    print("\n🔍 Checking governance rules files...")
+    rules_dir = PROJECT_ROOT / ".agent" / "rules"
     required_files = [
         "commit-workflow.mdc",
         "global-compliance-requirements.mdc",
@@ -197,7 +197,7 @@ def check_cursor_rules_exist():
         print(f"❌ Missing cursor rules files: {', '.join(missing)}")
         return False
     
-    print("✅ All cursor rules files present")
+    print("✅ All governance rules files present")
     return True
 
 
@@ -209,8 +209,8 @@ def main():
     
     results = []
     
-    # Check cursor rules exist
-    results.append(("Cursor Rules", check_cursor_rules_exist()))
+    # Check governance rules exist
+    results.append(("Governance Rules", check_cursor_rules_exist()))
     
     # Check pylint
     pylint_result = check_pylint()
