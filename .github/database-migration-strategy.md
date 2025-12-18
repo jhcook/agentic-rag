@@ -1,20 +1,26 @@
 # Database Migration & Scaling Strategy
 
-**Version:** 1.4  
-**Date:** December 14, 2025  
-**Status:** Phase 1 Complete, Phase 2+ Planning  
-**Update:** Phase 1 (pgvector + SQLite chat) completed, including in-app dashboard visualization. Added tiered replication requirements + chat conversation fidelity model for future phases.
+**Version:** 1.5  
+**Date:** December 18, 2025  
+**Status:** Phase 1 Complete, Phase 2 Architecture Defined  
+**Update:** Added premium tier licensing model, multi-user conversation architecture, and agent participation model (see ADR-0002). Phase 2 now includes authentication, authorization, and billing integration scope.
+
+## Related Documents
+
+- [Phase 2 Premium Architecture](./../.agent/plans/phase2-premium-architecture.md) - Licensing, RBAC, multi-tenancy
+- [ADR-0002: Multi-User Agent Participation](./../.agent/adr/ADR-0002-multi-user-agent-participation.md) - Agent behavior in team chats
+- [ADR-0001: Apple Silicon M2 Pro](./../.agent/adr/ADR-0001-apple-silicon-m2-pro.md) - Platform baseline
 
 ## Executive Summary
 
 This document outlines the migration path from local-first storage to a production-ready, globally-replicated database architecture supporting:
-- **Power users** (local desktop/laptop)
-- **Small teams** (collaborative workspaces)
-- **Enterprise multi-tenant** (global replication)
+- **Power users** (local desktop/laptop) - **FREE TIER**
+- **Small teams** (collaborative workspaces) - **TEAMS TIER ($25/user/mo)**
+- **Enterprise multi-tenant** (global replication) - **ENTERPRISE TIER (custom pricing)**
 - **Messaging platform integrations** (Slack, Microsoft Teams, Discord with two-way sync)
-- **Mobile access** (iOS/Android with offline sync)
+- **Mobile access** (iOS/Android with offline sync) - **PERSONAL SYNC+ ($9/mo)**
 
-Additionally, it defines a **conversation fidelity** requirement for Search & Chat so that, after restart (and eventually across devices), the user sees the **exact same conversation transcript** as was displayed during live interaction (user prompts + assistant replies + grounded/cited answers), regardless of which LLM backend produced the response.
+**Key Principle:** The free tier remains fully functional offline with no license required. Premium features (sync, collaboration, integrations) require authentication and a valid license.
 
 ## Customer Tiers (Replication & Governance)
 
@@ -697,16 +703,72 @@ src/core/db/
 
 ---
 
-### Phase 2: Cloud Portal + Mobile + Messaging Integrations - 6-8 weeks
+### Phase 2: Premium Platform + Authentication + Collaboration - 10-14 weeks
 
-**Goal:** Deploy cloud dashboard, enable mobile access, integrate Slack/Teams/Discord
+**Goal:** Transform from free local-only tool to paid SaaS with authentication, licensing, multi-user collaboration, cloud sync, and messaging integrations.
 
-#### Tasks
+**Scope Expansion:** This phase now includes the full premium platform architecture:
+- Licensing and billing (Stripe integration)
+- Authentication (Supabase Auth, OAuth, SSO)
+- Authorization (RBAC, RLS, policies)
+- Multi-user conversations with agent participation model
+- Admin portal for tenant/workspace management
+
+See [Phase 2 Premium Architecture](./../.agent/plans/phase2-premium-architecture.md) for detailed specifications.
+
+#### Phase 2A: Authentication & Licensing Foundation (2-3 weeks)
+
 - [ ] **Supabase Deployment**
   - Deploy Supabase Cloud instance (or self-hosted)
   - Configure authentication (email + OAuth providers)
   - Set up real-time subscriptions for chat messages
   - Create API keys and connection strings
+
+- [ ] **License Enforcement**
+  - Implement license key validation API
+  - Add tier-based feature gating
+  - Offline grace period (24h cached validation)
+  - License status UI indicators
+
+- [ ] **Authentication Integration**
+  - Email/password + magic link (Supabase Auth)
+  - Google OAuth, GitHub OAuth
+  - JWT token middleware for REST API
+  - Protected endpoints for premium features
+
+- [ ] **User Portal MVP**
+  - Login/signup pages
+  - User profile and account settings
+  - License status and upgrade prompts
+
+#### Phase 2B: Multi-User Conversations & Authorization (3-4 weeks)
+
+- [ ] **Database Schema Migration**
+  - Deploy users, tenants, workspaces, roles tables
+  - Extended conversation_messages with attribution (see ADR-0002)
+  - workspace_agent_settings table
+  - Row-Level Security policies
+
+- [ ] **Agent Participation Model** (per ADR-0002)
+  - Implement participation modes: explicit_mention, question_detection, proactive, silent
+  - Message classification (user_message, agent_response, human_to_human)
+  - @mention detection and addressee tracking
+  - Follow-up window logic
+  - Proactive intervention guardrails (rate limit, cooldown, confidence)
+
+- [ ] **RBAC Implementation**
+  - Role definitions (workspace_owner, admin, editor, viewer)
+  - Permission checking middleware
+  - Workspace membership management
+  - Invitation flow
+
+- [ ] **Admin Portal**
+  - Workspace settings (including agent behavior config)
+  - Member management panel
+  - Role assignment UI
+  - Audit log viewer
+
+#### Phase 2C: Sync Engine & Real-Time (2-3 weeks)
 
 - [ ] **Sync Engine**
   - Adopt append-only message replication with server-assigned `seq` per conversation
@@ -719,6 +781,13 @@ src/core/db/
   - Add `/api/sync/pull` endpoint (cloud → desktop)
   - Add WebSocket endpoint for real-time updates
   - Implement authentication middleware
+
+- [ ] **Real-Time Features**
+  - Typing indicators (including agent "thinking" state)
+  - Presence tracking (who's online in workspace)
+  - Live message updates via Supabase Realtime
+
+#### Phase 2D: Messaging Platform Integrations (2-3 weeks)
 
 - [ ] **Slack Integration**
   - Create Slack app manifest (OAuth scopes: `chat:write`, `commands`, `app_mentions:read`)
