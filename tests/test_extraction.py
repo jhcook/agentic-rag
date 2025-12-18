@@ -3,14 +3,14 @@ import pathlib
 
 import pytest
 
-from src.core.extractors import _extract_text_from_file
+from src.core.extractors import extract_text_from_file
 
 
 def test_txt_extraction(tmp_path):
     """Test text extraction from TXT files."""
     txt_file = tmp_path / "test.txt"
     txt_file.write_text("Hello world! This is a test.")
-    text = _extract_text_from_file(txt_file)
+    text = extract_text_from_file(txt_file)
     assert "Hello world!" in text
 
 def test_html_extraction(tmp_path):
@@ -18,7 +18,7 @@ def test_html_extraction(tmp_path):
     html_file = tmp_path / "test.html"
     html_file.write_text(
         "<html><body><h1>Title</h1><p>Paragraph</p></body></html>")
-    text = _extract_text_from_file(html_file)
+    text = extract_text_from_file(html_file)
     assert "Title" in text and "Paragraph" in text
 
 
@@ -48,7 +48,7 @@ def test_url_extraction(monkeypatch):
         return DummyResponse(b"Web page text")
 
     monkeypatch.setattr("src.core.extractors.requests.get", dummy_get)
-    text = _extract_text_from_file("http://example.com/test.txt")
+    text = extract_text_from_file("http://example.com/test.txt")
     assert "Web page text" in text
 
 
@@ -63,7 +63,7 @@ def test_ssl_error(monkeypatch):
         raise Exception("SSL error")
 
     monkeypatch.setattr("src.core.extractors.requests.get", dummy_get)
-    text = _extract_text_from_file("https://example.com/test.txt")
+    text = extract_text_from_file("https://example.com/test.txt")
     assert "SSL ERROR" in text or "ERROR" in text
 
 
@@ -71,12 +71,12 @@ def test_empty_file(tmp_path):
     """Test extraction from empty files."""
     empty_file = tmp_path / "empty.txt"
     empty_file.write_text("")
-    text = _extract_text_from_file(empty_file)
+    text = extract_text_from_file(empty_file)
     assert text == ""
 
 
 def test_bad_path():
     """Test extraction from non-existent files."""
-    text = _extract_text_from_file(pathlib.Path("/nonexistent/file.txt"))
+    text = extract_text_from_file(pathlib.Path("/nonexistent/file.txt"))
     assert text == ""
 

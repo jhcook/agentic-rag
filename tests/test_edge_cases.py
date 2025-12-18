@@ -1,6 +1,6 @@
 import pytest
 from src.core import document_repo
-from src.core.rag_core import _extract_text_from_file, upsert_document
+from src.core.rag_core import extract_text_from_file, upsert_document
 import pathlib
 
 
@@ -18,7 +18,7 @@ def test_empty_doc_upsert(require_pgvector, temp_indexed_dir):
     assert artifact_path.read_text(encoding="utf-8") == ""
 
 def test_nonexistent_file_extraction():
-    text = _extract_text_from_file(pathlib.Path("/nonexistent/file.txt"))
+    text = extract_text_from_file(pathlib.Path("/nonexistent/file.txt"))
     assert text == ""
 
 def test_bad_url_extraction(monkeypatch):
@@ -26,5 +26,5 @@ def test_bad_url_extraction(monkeypatch):
         raise Exception("Connection error")
     import src.core.extractors as extractors
     monkeypatch.setattr(extractors.requests, "get", dummy_get)
-    text = _extract_text_from_file("http://badurl.test")
+    text = extract_text_from_file("http://badurl.test")
     assert "CONNECTION ERROR" in text or "ERROR" in text

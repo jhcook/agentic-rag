@@ -8,8 +8,9 @@ import json
 import logging
 import uuid
 import time
+import contextlib
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +21,17 @@ class ChatStore:
         self.db_path = db_path
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection."""
+    @contextlib.contextmanager
+    def _get_connection(self) -> Iterator[sqlite3.Connection]:
+        """Get a managed database connection."""
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        # Ensure FK constraints like ON DELETE CASCADE are enforced.
         try:
+            # Ensure FK constraints like ON DELETE CASCADE are enforced.
             conn.execute("PRAGMA foreign_keys=ON;")
-        except Exception:  # pylint: disable=broad-exception-caught
-            pass
-        return conn
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _recompute_session_updated_at(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Recompute a session's updated_at based on its remaining messages."""

@@ -15,6 +15,7 @@ requires PGVECTOR_PASSWORD in .env.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 from pgvector.psycopg import Vector, register_vector
 from psycopg_pool import ConnectionPool
+
+logger = logging.getLogger(__name__)
 
 
 def redact_error_message(message: str) -> str:
@@ -513,3 +516,29 @@ def get_performance_metrics(
             }
         )
     return results
+
+
+def prune_performance_metrics(hours_retention: int = 48) -> int:
+    """
+    Delete performance metrics older than the specified retention period.
+    Returns the number of deleted rows.
+    """
+    if hours_retention < 0:
+        logger.warning("Invalid retention period %d, defaulting to 48", hours_retention)
+        hours_retention = 48
+
+    pool = get_pool()
+    try:
+        with pool.connection() as conn:
+            _configure_connection(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM performance_metrics "
+                    "WHERE created_at < NOW() - (CAST(%s AS INT) * INTERVAL '1 hour')",
+                    (int(hours_retention),),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            return int(deleted or 0)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError(redact_error_message(str(exc))) from exc

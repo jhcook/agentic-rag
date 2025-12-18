@@ -6,6 +6,7 @@ from typing import Union
 
 try:
     from pypdf import PdfReader  # type: ignore
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
 except ImportError:
     PdfReader = None
 
@@ -380,5 +381,4 @@ def extract_text_from_file(file_path: Union[str, pathlib.Path]) -> str:
         return ""
 
 
-# Backwards compatibility for legacy imports. Remove once callers migrate.
-_extract_text_from_file = extract_text_from_file
+

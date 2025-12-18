@@ -32,6 +32,8 @@ except Exception:  # pragma: no cover
 
 from src.core.extractors import extract_text_from_file
 from src.core.indexer import index_path, upsert_document
+from src.core import pgvector_store
+from src.core.rag_core import EMBED_MODEL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +211,6 @@ def _index_worker_loop(
     from src.core.rag_core import (
         index_path as _worker_index_path,
         upsert_document as _worker_upsert,
-        rebuild_index as _worker_rebuild,
     )
     while True:
         job = job_queue.get()
@@ -286,8 +287,26 @@ def _index_worker_loop(
                 res = _worker_upsert(uri, text)
             else:
                 res = {"error": f"unknown job type {job['type']}"}
-            # _worker_rebuild()  <-- REMOVED: Redundant O(N^2) rebuild. Upsert handles its own persistence.
+
             finished_at = _iso_now()
+
+            # Record metrics for upsert operations
+            if job["type"] == "upsert_document" and isinstance(res, dict):
+                duration = (datetime.fromisoformat(finished_at.replace('Z', '+00:00')) - 
+                          datetime.fromisoformat(started_at.replace('Z', '+00:00'))).total_seconds() * 1000
+                tokens = res.get("tokens")
+                if tokens:
+                     try:
+                        pgvector_store.insert_performance_metric(
+                            operation="upsert_document",
+                            duration_ms=int(duration),
+                            token_count=int(tokens),
+                            model=EMBED_MODEL_NAME,
+                            error=None
+                        )
+                     except Exception as e:
+                        logger.error("Failed to insert worker metrics: %s", e)
+
             result_queue.put({
                 "id": job_id,
                 "status": "completed",

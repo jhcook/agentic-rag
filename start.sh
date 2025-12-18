@@ -570,14 +570,6 @@ fi
 PIP_VERSION=$("$PYTHON_CMD" -m pip --version 2>&1 | awk '{print $2}')
 echo "✓ pip: $PIP_VERSION"
 
-# Check if requirements.txt exists (uv will be installed from here)
-# Check if requirements.txt exists (uv will be installed from here)
-# if [[ ! -f "requirements.txt" ]]; then
-#     echo -e "${RED}Error: requirements.txt not found${NC}"
-#     exit 1
-# fi
-# echo "✓ requirements.txt found"
-
 # Check Ollama if starting locally
 if [[ "$START_OLLAMA" == true ]]; then
     if ! command -v ollama &> /dev/null; then

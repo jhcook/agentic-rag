@@ -23,13 +23,13 @@ def test_index_documents_tool(mock_backend):
         mock_path.rglob.return_value = [mock_file]
         mock_resolve.return_value = mock_path
         
-        with patch("src.servers.mcp_server._extract_text_from_file", return_value="content"):
+        with patch("src.servers.mcp_server.extract_text_from_file", return_value="content"):
             result = index_documents_tool(path="docs", glob="*.txt")
             assert "indexed" in result
             assert result["indexed"] == 1
 
 def test_index_url_tool(mock_backend):
-    with patch("src.servers.mcp_server._extract_text_from_file", return_value="content"):
+    with patch("src.servers.mcp_server.extract_text_from_file", return_value="content"):
         result = index_url_tool(url="http://example.com/test.txt", doc_id="test_url_doc")
         assert "indexed" in result
         assert result["indexed"] == 1

@@ -46,8 +46,7 @@ from src.core import pgvector_store
 from src.core import document_repo
 from src.core.extractors import extract_text_from_file
 
-# Backwards compatibility for tests/legacy imports.
-_extract_text_from_file = extract_text_from_file
+
 
 # Import new LLM client wrappers
 from src.core.llm_client import sync_completion, safe_completion, reload_llm_config
@@ -304,7 +303,21 @@ def _encode_with_metrics(embedder: Optional[SentenceTransformer], inputs: Any,
         if EMBEDDING_DURATION:
             EMBEDDING_DURATION.labels(stage=stage).observe(
                 time.perf_counter() - start)
-        return result
+        
+        # Calculate token count
+        token_count = 0
+        try:
+            if isinstance(inputs, str):
+                inputs = [inputs]
+            if hasattr(embedder, "tokenizer"):
+                # Fast estimation
+                for text in inputs:
+                     token_count += len(embedder.tokenizer.tokenize(text))
+        except Exception:
+            # Fallback or silent failure for metrics
+            pass
+
+        return result, token_count
     except Exception:
         if EMBEDDING_ERRORS:
             EMBEDDING_ERRORS.labels(stage=stage).inc()
@@ -648,8 +661,9 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
     chunks = [c[0] for c in chunks_with_offsets]
     offsets = [(c[1], c[2]) for c in chunks_with_offsets]
 
+    token_count = 0
     if chunks:
-        embeddings = _encode_with_metrics(
+        embeddings, token_count = _encode_with_metrics(
             embedder,
             chunks,
             "upsert_document",
@@ -686,7 +700,7 @@ def upsert_document(uri: str, text: str) -> Dict[str, Any]:  # pylint: disable=t
             "pgvector stats failed after upsert: %s",
             pgvector_store.redact_error_message(str(exc)),
         )
-    return {"upserted": True, "existed": existed}
+    return {"upserted": True, "existed": existed, "tokens": token_count}
 
 
 def list_documents() -> List[Dict[str, Any]]:
@@ -966,14 +980,14 @@ def send_store_to_llm() -> str:  # pylint: disable=too-many-locals
     return resp
 
 
-def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  # pylint: disable=too-many-locals
+def _vector_search(query: str, k: int = SEARCH_TOP_K) -> Tuple[List[Dict[str, Any]], int]:  # pylint: disable=too-many-locals
     """Perform vector similarity search using PostgreSQL + pgvector."""
 
     embedder = get_embedder()
     if embedder is None:
-        return []
+        return [], 0
 
-    query_emb = _encode_with_metrics(
+    query_emb, query_tokens = _encode_with_metrics(
         embedder,
         query,
         "search_query",
@@ -998,26 +1012,31 @@ def _vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:  
     for row in results:
         hits.append(
             {
-                "score": float(row.get("score", 0.0)),
-                "uri": row.get("uri", ""),
-                "text": (row.get("text") or ""),
+                "uri": row["uri"],
+                "text": row["text"],
+                "score": float(row["score"]),
+                "start": row["start"],
+                "end": row["end"]
             }
         )
-    return hits
+    return hits, query_tokens
 
 
 def vector_search(query: str, k: int = SEARCH_TOP_K) -> List[Dict[str, Any]]:
     """Public vector search helper for REST and MCP layers."""
-    return _vector_search(query, k)
+    hits, _ = _vector_search(query, k)
+    return hits
 
 
-def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> Dict[str, Any]:
+def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None,
+                            base_tokens: int = 0) -> Dict[str, Any]:
     """
     Normalize LLM response (AIMessage, dict, or string) to a consistent dict format.
 
     Args:
         resp: Response from LLM client (AIMessage, dict, or string)
         sources: Optional list of source URIs to include
+        base_tokens: Base token count (e.g. from retrieval) to add to prompt/total
 
     Returns:
         Dict with 'answer' or 'content' key and optional 'sources'
@@ -1035,19 +1054,31 @@ def _normalize_llm_response(resp: Any, sources: Optional[List[str]] = None) -> D
             "sources": sources or [],
             "model": "unknown"
         }
+        usage = {}
         if hasattr(resp, "usage"):
-            normalized_resp["usage"] = resp.usage
+            usage = resp.usage.copy() if resp.usage else {}
         elif hasattr(resp, "usage_metadata") and isinstance(resp.usage_metadata, dict):
-            normalized_resp["usage"] = resp.usage_metadata
+            usage = resp.usage_metadata.copy()
         elif hasattr(resp, "response_metadata") and isinstance(resp.response_metadata, dict):
             if "total_duration" in resp.response_metadata and "prompt_eval_count" in resp.response_metadata:
                 prompt_count = resp.response_metadata.get("prompt_eval_count") or 0
                 completion_count = resp.response_metadata.get("eval_count") or 0
-                normalized_resp["usage"] = {
+                usage = {
                     "total_tokens": prompt_count + completion_count,
                     "prompt_tokens": prompt_count,
                     "completion_tokens": completion_count,
                 }
+        
+        # Add base tokens (retrieval/embedding cost)
+        if base_tokens > 0:
+            if not usage:
+                 usage = {"total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0}
+            usage["total_tokens"] = usage.get("total_tokens", 0) + base_tokens
+            usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + base_tokens
+        
+        if usage:
+            normalized_resp["usage"] = usage
+            
         return normalized_resp
 
     # Handle dict responses (legacy or other backends)
@@ -1085,7 +1116,7 @@ def _build_rag_context(
     query: str,
     top_k: int = SEARCH_TOP_K,
     max_context_chars: int = SEARCH_MAX_CONTEXT_CHARS
-) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+) -> Tuple[str, List[str], List[Dict[str, Any]], int]:
     """
     Build RAG context from indexed documents for a query.
 
@@ -1095,11 +1126,11 @@ def _build_rag_context(
         max_context_chars: Maximum characters of context to include
 
     Returns:
-        Tuple of (context_string, sources_list, candidates_list)
+        Tuple of (context_string, sources_list, candidates_list, query_tokens)
         Returns empty context if no documents found
     """
     logger.info("Building RAG context for query: %s", query)
-    candidates = _vector_search(query, k=top_k)
+    candidates, query_tokens = _vector_search(query, k=top_k)
 
     if not candidates:
         # No hits can be perfectly normal (query unrelated). Only rebuild if the
@@ -1118,26 +1149,42 @@ def _build_rag_context(
                 docs,
             )
             rebuild_index()
-            candidates = _vector_search(query, k=top_k)
-        if not candidates:
-            logger.info("No vector hits; refusing to answer from outside sources.")
-    # Re-rank to prioritize query overlap
-    candidates = rerank(query, candidates)[:top_k]
-    sources = [c.get("uri", "") for c in candidates if c.get("uri")]
+            candidates, query_tokens = _vector_search(query, k=top_k)
 
-    # Build context from document content only (no file names/metadata)
-    context_parts, total_chars = [], 0
-    for entry in candidates:
-        text_content = entry.get("text", "").strip()
-        if not text_content:
+    if not candidates:
+        return "", [], [], query_tokens
+
+    # Sort candidates by score descending
+    candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    # Build context string
+    sources = []
+    current_chars = 0
+    used_candidates = []
+
+    context_parts = []
+    seen_uris = set()
+
+    for cand in candidates:
+        text = cand.get("text", "")
+        # Very rough estimation of "useful content" length
+        if not text.strip():
             continue
-        if total_chars + len(text_content) > max_context_chars:
-            break
-        context_parts.append(text_content)
-        total_chars += len(text_content)
 
-    context = "\n\n---\n\n".join(context_parts) if context_parts else ""
-    return (context, sources, candidates)
+        if current_chars + len(text) > max_context_chars:
+            break
+
+        context_parts.append(text)
+        current_chars += len(text)
+        used_candidates.append(cand)
+
+        uri = cand.get("uri")
+        if uri and uri not in seen_uris:
+            sources.append(uri)
+            seen_uris.add(uri)
+
+    context = "\n\n---\n\n".join(context_parts)
+    return context, sources, used_candidates, query_tokens
 
 
 def search(query: str, top_k: int = SEARCH_TOP_K,
@@ -1160,7 +1207,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
     if top_k == SEARCH_TOP_K: # Only tune if using defaults
         top_k, max_context_chars = _autotune_rag_params(query, top_k)
     
-    context, sources, candidates = _build_rag_context(query, top_k, max_context_chars)
+    context, sources, candidates, query_tokens = _build_rag_context(query, top_k, max_context_chars)
     
     retrieval_duration = time.time() - start_time
     logger.info(f"Retrieval finished in {retrieval_duration:.2f}s (top_k={top_k}, context_chars={len(context)})")
@@ -1234,7 +1281,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
         # Try primary endpoint (cloud for auto mode)
         try:
             resp = completion(**completion_kwargs)  # type: ignore
-            return _normalize_llm_response(resp, sources)
+            return _normalize_llm_response(resp, sources, base_tokens=query_tokens)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             # Any cloud failure in auto mode should attempt local fallback once.
             if fallback_endpoint:
@@ -1257,7 +1304,7 @@ def search(query: str, top_k: int = SEARCH_TOP_K,
                 completion_kwargs.pop("extra_headers", None)
                 try:
                     resp = completion(**completion_kwargs)  # type: ignore
-                    result = _normalize_llm_response(resp, sources)
+                    result = _normalize_llm_response(resp, sources, base_tokens=query_tokens)
                     result["fallback_used"] = True
                     if fallback_reason:
                         result["fallback_reason"] = fallback_reason
@@ -1380,7 +1427,7 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
         return False
 
     # Retrieve and rerank candidates
-    hits = _vector_search(question, k=k or SEARCH_TOP_K)
+    hits, query_tokens = _vector_search(question, k=k or SEARCH_TOP_K)
     if not hits:
         return {"answer": "I don't know.", "sources": []}
     reranked = rerank(question, hits)
@@ -1489,7 +1536,7 @@ def grounded_answer(  # pylint: disable=too-many-locals,too-many-statements
                 resp = completion(**completion_kwargs)
             else:
                 raise
-        return _normalize_llm_response(resp, sources)
+        return _normalize_llm_response(resp, sources, base_tokens=query_tokens)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("grounded_answer completion failed: %s", exc)
         error_msg = str(exc)
@@ -1690,7 +1737,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
     logger.info(f"Autotuned RAG params: k={top_k}, ctx_len={max_context_chars}")
 
     # Search for relevant documents using RAG
-    context, sources, _ = _build_rag_context(query, top_k, max_context_chars)
+    context, sources, _, query_tokens = _build_rag_context(query, top_k, max_context_chars)
     
     retrieval_time = time.time() - start_time
 
@@ -1806,7 +1853,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
 
 
         # Normalize response to extract conten
-        normalized = _normalize_llm_response(resp, sources)
+        normalized = _normalize_llm_response(resp, sources, base_tokens=query_tokens)
         content = normalized.get("answer") or normalized.get("content") or str(resp)
 
         # Extract and deduplicate sources based on what was actually cited (from Sources block or fallback list)
@@ -1831,6 +1878,7 @@ def chat(messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:  # py
             "role": "assistant", 
             "content": content_with_citations, 
             "sources": cited_sources,
+            "usage": normalized.get("usage"),
             "metrics": {
                 "total_time": total_duration,
                 "retrieval_time": retrieval_time,

@@ -7,7 +7,7 @@ type PerformanceMetric = {
   timestamp: string;
   operation: string;
   duration_ms: number;
-  token_count: number | null;
+  tokens: number | null;
   model: string | null;
   error: string | null;
 };
@@ -70,37 +70,68 @@ export function MetricsView({ config }: { config: OllamaConfig }) {
     return acc;
   }, {} as Record<string, { operation: string, success: number, error: number }>);
 
+  const durationData = data.reduce((acc, metric) => {
+    const op = metric.operation;
+    if (!acc[op]) {
+      acc[op] = { operation: op, totalDuration: 0, count: 0 };
+    }
+    acc[op].totalDuration += metric.duration_ms;
+    acc[op].count++;
+    return acc;
+  }, {} as Record<string, { operation: string, totalDuration: number, count: number }>);
+
+  const avgDurationByOp = Object.values(durationData).map(d => ({
+    operation: d.operation,
+    avgDuration: Math.round(d.totalDuration / d.count)
+  }));
+
+  const tokenData = data.reduce((acc, metric) => {
+    // Handle both 'tokens' (new) and 'token_count' (legacy/UI-compat) keys
+    const val = (metric as any).tokens ?? (metric as any).token_count;
+
+    if (val !== null && val !== undefined) {
+      const op = metric.operation;
+      if (!acc[op]) {
+        acc[op] = { operation: op, totalTokens: 0 };
+      }
+      acc[op].totalTokens += val;
+    }
+    return acc;
+  }, {} as Record<string, { operation: string, totalTokens: number }>);
+
+  const tokensByOp = Object.values(tokenData);
+
   return (
     <div className="space-y-8">
       <h2 className="text-3xl font-bold tracking-tight">Performance Metrics</h2>
 
       <Card>
         <CardHeader>
-          <CardTitle>Operation Duration (Last 24 hours)</CardTitle>
+          <CardTitle>Avg Duration by Operation (Last 24 hours)</CardTitle>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data}>
+            <BarChart data={avgDurationByOp}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="timestamp" tickFormatter={(ts) => new Date(ts).toLocaleTimeString()} />
-              <YAxis yAxisId="left" label={{ value: 'Duration (ms)', angle: -90, position: 'insideLeft' }} />
+              <XAxis dataKey="operation" />
+              <YAxis label={{ value: 'Avg Duration (ms)', angle: -90, position: 'insideLeft' }} />
               <Tooltip />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="duration_ms" name="Duration (ms)" stroke="#8884d8" />
-            </LineChart>
+              <Bar dataKey="avgDuration" fill="#8884d8" name="Avg Duration (ms)" />
+            </BarChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Token Count (Last 24 hours)</CardTitle>
+          <CardTitle>Total Tokens by Operation (Last 24 hours)</CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
             Tracks prompt and completion tokens from LLM API calls
           </p>
         </CardHeader>
         <CardContent>
-          {data.filter(d => d.token_count !== null).length === 0 ? (
+          {tokensByOp.length === 0 ? (
             <div className="h-[300px] flex items-center justify-center text-muted-foreground">
               <div className="text-center space-y-2">
                 <p className="font-medium">No token count data yet</p>
@@ -110,14 +141,14 @@ export function MetricsView({ config }: { config: OllamaConfig }) {
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={data.filter(d => d.token_count !== null)}>
+              <BarChart data={tokensByOp}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="timestamp" tickFormatter={(ts) => new Date(ts).toLocaleTimeString()} />
+                <XAxis dataKey="operation" />
                 <YAxis label={{ value: 'Tokens', angle: -90, position: 'insideLeft' }} />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="token_count" name="Token Count" stroke="#82ca9d" />
-              </LineChart>
+                <Bar dataKey="totalTokens" fill="#82ca9d" name="Total Tokens" />
+              </BarChart>
             </ResponsiveContainer>
           )}
         </CardContent>

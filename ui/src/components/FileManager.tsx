@@ -53,10 +53,10 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const [showJobsOverlay, setShowJobsOverlay] = useState<boolean>(false)
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null)
-  const [folderStack, setFolderStack] = useState<{id: string | null, name: string}[]>([{id: null, name: 'Root'}])
+  const [folderStack, setFolderStack] = useState<{ id: string | null, name: string }[]>([{ id: null, name: 'Root' }])
   const [sortBy, setSortBy] = useState<SortOption>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
-  const [deleteConfirm, setDeleteConfirm] = useState<{id: string, name: string, type: 'file' | 'folder'} | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string, name: string, type: 'file' | 'folder' } | null>(null)
   const [purgeConfirm, setPurgeConfirm] = useState(false)
   const [createFolderDialog, setCreateFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
@@ -78,7 +78,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
 
@@ -98,9 +98,9 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       if (e.name !== 'AbortError') {
         console.error("Failed to fetch drive files", e)
         if (e.message.includes("401") || e.message.includes("403")) {
-           toast.error("Access denied. Please re-authenticate.")
+          toast.error("Access denied. Please re-authenticate.")
         } else {
-           toast.error("Failed to load Drive files")
+          toast.error("Failed to load Drive files")
         }
       }
     } finally {
@@ -114,7 +114,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
 
@@ -213,7 +213,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
   const sortedLocalFiles = [...localFiles]
     .filter(file => {
       if (!searchText) return true
-      
+
       if (useRegex) {
         try {
           const regex = new RegExp(searchText, 'i')
@@ -223,7 +223,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
           return file.uri.toLowerCase().includes(searchText.toLowerCase())
         }
       }
-      
+
       return file.uri.toLowerCase().includes(searchText.toLowerCase())
     })
     .sort((a, b) => {
@@ -240,23 +240,23 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const formData = new FormData()
     formData.append('file', file)
     if (currentFolderId) {
       formData.append('folder_id', currentFolderId)
     }
-    
+
     const toastId = toast.loading(`Uploading ${file.name}...`)
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/drive/upload`, {
         method: 'POST',
         body: formData
       })
-      
+
       if (!res.ok) throw new Error('Upload failed')
-      
+
       toast.success(`Uploaded ${file.name}`, { id: toastId })
       fetchDriveFiles(currentFolderId)
     } catch (e) {
@@ -268,16 +268,16 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const toastId = toast.loading('Deleting...')
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/drive/files/${fileId}`, {
         method: 'DELETE'
       })
-      
+
       if (!res.ok) throw new Error('Delete failed')
-      
+
       toast.success('Deleted successfully', { id: toastId })
       fetchDriveFiles(currentFolderId)
       setDeleteConfirm(null)
@@ -290,18 +290,18 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const toastId = toast.loading('Queueing deletion...')
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/documents/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uris: [uri] })
       })
-      
+
       if (!res.ok) throw new Error('Delete failed')
-      
+
       const data = await res.json()
       if (data.status === 'queued') {
         toast.success(`Queued for deletion (${data.queue_size} in queue)`, { id: toastId })
@@ -317,23 +317,23 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
   const handleDeleteSelectedFiles = async () => {
     if (selectedFiles.size === 0) return
-    
+
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const uris = Array.from(selectedFiles)
     const toastId = toast.loading(`Queueing ${uris.length} file(s) for deletion...`)
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/documents/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uris })
       })
-      
+
       if (!res.ok) throw new Error('Delete failed')
-      
+
       const data = await res.json()
       if (data.status === 'queued') {
         toast.success(`Queued ${uris.length} file(s) for deletion (${data.queue_size} in queue)`, { id: toastId })
@@ -369,27 +369,27 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return
-    
+
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const formData = new FormData()
     formData.append('name', newFolderName.trim())
     if (currentFolderId) {
       formData.append('parent_id', currentFolderId)
     }
-    
+
     const toastId = toast.loading('Creating folder...')
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/drive/folders`, {
         method: 'POST',
         body: formData
       })
-      
+
       if (!res.ok) throw new Error('Create failed')
-      
+
       toast.success('Folder created', { id: toastId })
       fetchDriveFiles(currentFolderId)
       setCreateFolderDialog(false)
@@ -403,16 +403,16 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
     const host = config?.ragHost || '127.0.0.1'
     const port = config?.ragPort || '8001'
     const base = (config?.ragPath || 'api').replace(/^\/+|\/+$/g, '')
-    
+
     const toastId = toast.loading('Purging index...')
-    
+
     try {
       const res = await fetch(`http://${host}:${port}/${base}/flush_cache`, {
         method: 'POST'
       })
-      
+
       if (!res.ok) throw new Error('Purge failed')
-      
+
       toast.success('Index purged successfully', { id: toastId })
       fetchLocalFiles()
       setPurgeConfirm(false)
@@ -665,10 +665,10 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       if (!jobsDragRef.current.dragging) return
       const deltaX = e.clientX - jobsDragRef.current.startX
       const deltaY = e.clientY - jobsDragRef.current.startY
-      
+
       const nextRight = Math.max(8, jobsDragRef.current.startRight - deltaX)
       const nextTop = Math.max(8, jobsDragRef.current.startTop + deltaY)
-      
+
       setJobsPosition({ x: nextRight, y: nextTop })
     }
     window.addEventListener('mouseup', handleMouseUp)
@@ -677,11 +677,34 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
       fetchLocalFiles()
       fetchJobs()
     }
+
     const interval = setInterval(() => {
-    if (isLocalMode) {
-      fetchJobs()
-    }
-  }, 8000)
+      if (isLocalMode) {
+        const hadJobs = jobs.length > 0
+        fetchJobs().then(() => {
+          // If we have active jobs, or if we had active jobs (meaning one might have just finished),
+          // refresh the file list to show progress/completion.
+          // We use the state 'jobs' from the render cycle, but inside the interval we get the fresh
+          // data from fetchJobs. However, 'jobs' state updates are async.
+          // A simpler heuristic: if the updated job queue is not empty, OR if we previously had jobs, refresh files.
+          // Since we can't easily see the *result* of fetchJobs immediately without refactoring,
+          // we can piggyback on the fact that we are polling.
+          // Let's just refresh files every time we refresh jobs if there's *any* activity.
+          // For simplicity and robustness, if there are jobs, we refresh files.
+          // To catch the "just finished" case, we can rely on the fact that the user
+          // will likely see the file appear on the next poll 8s later, or we can just always poll files
+          // in local mode, but that might be heavy.
+          // Better approach: If we detect active jobs, we refresh files.
+
+          // Actually, let's just assume if we are polling jobs, we might as well poll files
+          // but maybe less frequently? 
+          // For now, matching the user request: "Make it auto refresh like the queued files list does."
+          // The queued files list refreshes every 8s via this interval.
+          // So we should just add fetchLocalFiles() here.
+          fetchLocalFiles()
+        })
+      }
+    }, 8000)
     return () => {
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('mousemove', handleMouseMove)
@@ -814,18 +837,18 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                     <SelectItem value="size">Size</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button 
-                  size="sm" 
-                  variant="ghost" 
+                <Button
+                  size="sm"
+                  variant="ghost"
                   onClick={() => setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
                   className="h-8 w-8 p-0"
                 >
                   {sortDirection === 'asc' ? <ArrowUpAZ className="h-4 w-4" /> : <ArrowDownAZ className="h-4 w-4" />}
                 </Button>
-                <Button 
-                  size="sm" 
-                  variant="ghost" 
-                  onClick={() => isLocalMode ? fetchLocalFiles() : fetchDriveFiles(currentFolderId)} 
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => isLocalMode ? fetchLocalFiles() : fetchDriveFiles(currentFolderId)}
                   disabled={loading}
                   className="h-8 w-8 p-0 relative z-10 cursor-pointer"
                   title="Refresh file list"
@@ -835,7 +858,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                 </Button>
               </div>
             </div>
-            
+
             {isLocalMode && (
               <div className="flex items-center gap-2">
                 <div className="flex-1 relative">
@@ -889,12 +912,12 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                 </Button>
               </div>
             )}
-            
+
             {!isLocalMode && (
               <div className="flex items-center gap-2 text-sm bg-muted/30 p-2 rounded-md">
-                <Button 
-                  size="sm" 
-                  variant="ghost" 
+                <Button
+                  size="sm"
+                  variant="ghost"
                   disabled={folderStack.length <= 1}
                   onClick={handleNavigateUp}
                   className="h-6 w-6 p-0"
@@ -905,7 +928,7 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
                   {folderStack.map((folder, index) => (
                     <div key={index} className="flex items-center">
                       {index > 0 && <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                      <button 
+                      <button
                         onClick={() => handleBreadcrumbClick(index)}
                         className={`hover:underline truncate max-w-[150px] ${index === folderStack.length - 1 ? 'font-semibold' : 'text-muted-foreground'}`}
                       >
@@ -1009,169 +1032,169 @@ export function FileManager({ config, activeMode }: { config: any, activeMode?: 
           <div className="flex flex-col h-full gap-3">
             {isLocalMode ? (
               <div className="flex-1 min-h-0">
-              {sortedLocalFiles.length === 0 && !loading ? (
-                <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
-                  <HardDrive className="h-10 w-10 mb-2 opacity-50" />
-                  {searchText ? (
-                    <>
-                      <p>No files match your search</p>
-                      <p className="text-xs mt-1">Try a different search term or pattern</p>
-                    </>
-                  ) : (
-                    <>
-                      <p>No indexed files</p>
-                      <p className="text-xs mt-1">Files will appear here after indexing</p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <ScrollArea className="h-full">
-                  <div className="space-y-2 p-1">
-                    {localFiles.length > 0 && (
-                      <div className="flex items-center gap-2 p-2 border-b">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={selectAllFiles}
-                          className="h-8"
-                        >
-                          {selectedFiles.size === localFiles.length ? (
-                            <CheckSquare className="h-4 w-4" />
-                          ) : (
-                            <Square className="h-4 w-4" />
-                          )}
-                        </Button>
-                        <span className="text-xs text-muted-foreground">
-                          {selectedFiles.size > 0 ? `${selectedFiles.size} selected` : 'Select all'}
-                        </span>
-                      </div>
+                {sortedLocalFiles.length === 0 && !loading ? (
+                  <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+                    <HardDrive className="h-10 w-10 mb-2 opacity-50" />
+                    {searchText ? (
+                      <>
+                        <p>No files match your search</p>
+                        <p className="text-xs mt-1">Try a different search term or pattern</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>No indexed files</p>
+                        <p className="text-xs mt-1">Files will appear here after indexing</p>
+                      </>
                     )}
-                    {sortedLocalFiles.map((f) => (
-                      <div 
-                        key={f.uri} 
-                        className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
-                      >
-                        <div className="flex items-center gap-3 overflow-hidden flex-1">
+                  </div>
+                ) : (
+                  <ScrollArea className="h-full">
+                    <div className="space-y-2 p-1">
+                      {localFiles.length > 0 && (
+                        <div className="flex items-center gap-2 p-2 border-b">
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => toggleFileSelection(f.uri)}
-                            className="h-8 w-8 p-0 shrink-0"
+                            onClick={selectAllFiles}
+                            className="h-8"
                           >
-                            {selectedFiles.has(f.uri) ? (
-                              <CheckSquare className="h-4 w-4 text-primary" />
+                            {selectedFiles.size === localFiles.length ? (
+                              <CheckSquare className="h-4 w-4" />
                             ) : (
                               <Square className="h-4 w-4" />
                             )}
                           </Button>
-                          <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
-                          <div className="truncate flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate">{getFileName(f.uri)}</p>
-                            <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
-                              <span>{formatSize(f.size_bytes)}</span>
-                              <span className="truncate">{f.uri}</span>
-                            </div>
-                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {selectedFiles.size > 0 ? `${selectedFiles.size} selected` : 'Select all'}
+                          </span>
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Button 
-                            size="sm" 
-                            variant="ghost" 
-                            onClick={() => setDeleteConfirm({ id: f.uri, name: getFileName(f.uri), type: 'file' })}
-                          >
-                            <Trash className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              )}
-            </div>
-          ) : (
-            <div 
-              className="h-full border-2 border-transparent rounded-lg transition-colors hover:bg-muted/10"
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.add('border-primary/50', 'bg-primary/5')
-              }}
-              onDragLeave={(e) => {
-                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
-                handleDropToDrive(e)
-              }}
-            >
-              {sortedDriveFiles.length === 0 && !loading ? (
-                <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
-                  <Cloud className="h-10 w-10 mb-2 opacity-50" />
-                  <p>No files found in this folder</p>
-                  <p className="text-xs mt-1">Drop files here to upload</p>
-                </div>
-              ) : (
-                <ScrollArea className="h-full">
-                  <div className="space-y-2 p-1">
-                    {sortedDriveFiles.map((f) => (
-                      <div 
-                        key={f.id} 
-                        className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
-                        onDoubleClick={() => f.mimeType.includes('folder') ? handleNavigate(f) : setPreviewFile(f)}
-                      >
-                        <div className="flex items-center gap-3 overflow-hidden flex-1">
-                          {f.mimeType.includes('folder') ? (
-                            <Folder className="h-8 w-8 shrink-0 text-blue-500 fill-blue-500/20" />
-                          ) : (
+                      )}
+                      {sortedLocalFiles.map((f) => (
+                        <div
+                          key={f.uri}
+                          className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
+                        >
+                          <div className="flex items-center gap-3 overflow-hidden flex-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleFileSelection(f.uri)}
+                              className="h-8 w-8 p-0 shrink-0"
+                            >
+                              {selectedFiles.has(f.uri) ? (
+                                <CheckSquare className="h-4 w-4 text-primary" />
+                              ) : (
+                                <Square className="h-4 w-4" />
+                              )}
+                            </Button>
                             <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
-                          )}
-                          <div className="truncate flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate">{f.name}</p>
-                            <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
-                              <span>{formatSize(f.size)}</span>
-                              <span className="flex items-center gap-1">
-                                <Calendar className="h-3 w-3" />
-                                {formatDate(f.modifiedTime)}
-                              </span>
+                            <div className="truncate flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{getFileName(f.uri)}</p>
+                              <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
+                                <span>{formatSize(f.size_bytes)}</span>
+                                <span className="truncate">{f.uri}</span>
+                              </div>
                             </div>
                           </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setDeleteConfirm({ id: f.uri, name: getFileName(f.uri), type: 'file' })}
+                            >
+                              <Trash className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {f.mimeType.includes('folder') ? (
-                            <>
-                              <Button size="sm" variant="ghost" onClick={() => handleNavigate(f)}>
-                                Open
-                              </Button>
-                              <Button 
-                                size="sm" 
-                                variant="ghost" 
-                                onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'folder' })}
-                              >
-                                <Trash className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button size="sm" variant="ghost" onClick={() => setPreviewFile(f)}>
-                                <Eye className="h-4 w-4" />
-                              </Button>
-                              <Button 
-                                size="sm" 
-                                variant="ghost" 
-                                onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'file' })}
-                              >
-                                <Trash className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+              </div>
+            ) : (
+              <div
+                className="h-full border-2 border-transparent rounded-lg transition-colors hover:bg-muted/10"
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.currentTarget.classList.add('border-primary/50', 'bg-primary/5')
+                }}
+                onDragLeave={(e) => {
+                  e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  e.currentTarget.classList.remove('border-primary/50', 'bg-primary/5')
+                  handleDropToDrive(e)
+                }}
+              >
+                {sortedDriveFiles.length === 0 && !loading ? (
+                  <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
+                    <Cloud className="h-10 w-10 mb-2 opacity-50" />
+                    <p>No files found in this folder</p>
+                    <p className="text-xs mt-1">Drop files here to upload</p>
                   </div>
-                </ScrollArea>
-              )}
-            </div>
-          )}
+                ) : (
+                  <ScrollArea className="h-full">
+                    <div className="space-y-2 p-1">
+                      {sortedDriveFiles.map((f) => (
+                        <div
+                          key={f.id}
+                          className="flex items-center justify-between p-2 rounded border bg-card hover:bg-accent cursor-pointer group"
+                          onDoubleClick={() => f.mimeType.includes('folder') ? handleNavigate(f) : setPreviewFile(f)}
+                        >
+                          <div className="flex items-center gap-3 overflow-hidden flex-1">
+                            {f.mimeType.includes('folder') ? (
+                              <Folder className="h-8 w-8 shrink-0 text-blue-500 fill-blue-500/20" />
+                            ) : (
+                              <FileIcon className="h-8 w-8 shrink-0 text-gray-500" />
+                            )}
+                            <div className="truncate flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{f.name}</p>
+                              <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
+                                <span>{formatSize(f.size)}</span>
+                                <span className="flex items-center gap-1">
+                                  <Calendar className="h-3 w-3" />
+                                  {formatDate(f.modifiedTime)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {f.mimeType.includes('folder') ? (
+                              <>
+                                <Button size="sm" variant="ghost" onClick={() => handleNavigate(f)}>
+                                  Open
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'folder' })}
+                                >
+                                  <Trash className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button size="sm" variant="ghost" onClick={() => setPreviewFile(f)}>
+                                  <Eye className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setDeleteConfirm({ id: f.id, name: f.name, type: 'file' })}
+                                >
+                                  <Trash className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

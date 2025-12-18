@@ -50,8 +50,7 @@ from src.core.rag_core import (
 )
 from src.core.extractors import extract_text_from_file, is_supported_filename
 
-# Backwards compatibility for tests that patch this symbol.
-_extract_text_from_file = extract_text_from_file
+
 
 from src.servers.mcp_app.logging_config import (
     configure_logging,
@@ -216,7 +215,7 @@ def upsert_document_tool(uri: str, text: str) -> Dict[str, Any]:
                         "upserted": False
                     }
                 try:
-                    content = _extract_text_from_file(file_path)
+                    content = extract_text_from_file(file_path)
                     if not content:
                         return {
                             "error": f"No text extracted from {normalized_uri}",

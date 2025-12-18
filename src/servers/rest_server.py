@@ -780,6 +780,21 @@ def _stop_service_controller(service: str) -> Dict[str, Any]:
     logger.info("Stopped controller for %s (PID %s)", service, pid)
     return {"service": service, "status": "stopped", "controller_pid": pid}
 
+
+async def _prune_metrics_task():
+    """Background task to prune old performance metrics daily."""
+    while True:
+        try:
+            # Prune metrics older than 48 hours
+            deleted = pgvector_store.prune_performance_metrics(hours_retention=48)
+            if deleted > 0:
+                logger.info("Pruned %d old performance metric rows (retention: 48h)", deleted)
+        except Exception as e:
+            logger.error("Error pruning performance metrics: %s", e)
+        
+        # Sleep for 24 hours (86400 seconds)
+        await asyncio.sleep(86400)
+
 @asynccontextmanager
 async def lifespan(_fastapi_app: FastAPI):
     """Manage application lifecycle."""
@@ -795,7 +810,18 @@ async def lifespan(_fastapi_app: FastAPI):
         os.getenv("RAG_PORT", "8001")
     )
 
+    # Start background maintenance tasks
+    prune_task = asyncio.create_task(_prune_metrics_task())
+
     yield
+    
+    # Cleanup background tasks
+    prune_task.cancel()
+    try:
+        await prune_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("REST server shutting down")
 
 from fastapi.routing import APIRoute
@@ -1187,8 +1213,30 @@ def _append_access_log(log_entry: str) -> None:
         f.flush()
         os.fsync(f.fileno())
 
+def _track_token_metrics(request: Request, result: Any) -> None:
+    """Helper to extract and record token counts from operation results."""
+    if not isinstance(result, dict):
+        return
+
+    # Direct token count (upsert)
+    if "tokens" in result:
+         request.state.token_count = result["tokens"]
+         return
+
+    # Usage object (chat, search, grounded_answer)
+    if "usage" in result:
+        usage = result["usage"]
+        if isinstance(usage, dict):
+            total = usage.get("total_tokens")
+            # If total missing, try summing parts
+            if total is None:
+                prompt = usage.get("prompt_tokens", 0)
+                completion = usage.get("completion_tokens", 0)
+                total = prompt + completion
+            request.state.token_count = total
+
 @app.post(f"/{pth}/upsert_document")
-async def api_upsert(req: UpsertReq):
+async def api_upsert(req: UpsertReq, request: Request):
     """Upsert a document into the store."""
     logger.info("Upserting document: uri=%s", req.uri)
     try:
@@ -1220,6 +1268,10 @@ async def api_upsert(req: UpsertReq):
         )
         if isinstance(result, dict) and result.get("upserted") and not result.get("existed"):
             _record_documents_added(1)
+        
+        # Record tokens if available
+        _track_token_metrics(request, result)
+
         return result
     except HTTPException:
         raise
@@ -1257,7 +1309,7 @@ def api_index_path(req: IndexPathReq):
         raise
 
 @app.post(f"/{pth}/search")
-def api_search(req: SearchReq):
+def api_search(req: SearchReq, request: Request):
     """Search the retrieval store."""
     logger.info("Processing search query: %s", req.query)
     # Async mode: queue job and return immediately
@@ -1297,9 +1349,11 @@ def api_search(req: SearchReq):
             logger.error("Backend.search returned None! Backend type: %s", type(backend))
             raise HTTPException(status_code=500, detail="Backend returned None")
         _record_quality_metrics(result)
-        # Ensure result is JSON-serializable (already normalized by _normalize_llm_response)
         if hasattr(result, 'model_dump'):
             result = result.model_dump()
+        # Record metrics for middleware
+        _track_token_metrics(request, result)
+                 
         return result
     except HTTPException as e:
         _record_quality_metrics(None, error=e)
@@ -1333,7 +1387,7 @@ def metrics_endpoint():
         )
 
 @app.post(f"/{pth}/grounded_answer")
-def api_grounded_answer(req: GroundedAnswerReq):
+def api_grounded_answer(req: GroundedAnswerReq, request: Request):
     """Return a grounded answer using vector search + synthesis."""
     logger.info("Processing grounded answer request: %s", req.question)
     try:
@@ -1398,6 +1452,11 @@ def api_grounded_answer(req: GroundedAnswerReq):
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     logger.error("Failed to save grounded answer assistant message: %s", exc)
 
+        # Record metrics for middleware
+        _track_token_metrics(request, result)
+        
+        request.state.model = req.model or (backend.model_name if hasattr(backend, "model_name") else None)
+
         # Include session_id in response for UI to attach or restore.
         result["session_id"] = session_id
         return result
@@ -1408,7 +1467,7 @@ def api_grounded_answer(req: GroundedAnswerReq):
         raise
 
 @app.post(f"/{pth}/chat")
-def api_chat(req: ChatReq):
+def api_chat(req: ChatReq, request: Request):
     """Chat with the RAG backend, optionally maintaining history."""
     logger.info("Chat request received. Backend type: %s", type(backend))
     
@@ -1524,6 +1583,20 @@ def api_chat(req: ChatReq):
                     )
                 except Exception as e:
                     logger.error("Failed to save AI message: %s", e)
+
+        # Record metrics for middleware
+        if "usage" in result:
+            usage = result["usage"]
+            # Handle various usage formats
+            if isinstance(usage, dict):
+                total = usage.get("total_tokens")
+                if total is None:
+                    prompt = usage.get("prompt_tokens", 0)
+                    completion = usage.get("completion_tokens", 0)
+                    total = prompt + completion
+                request.state.token_count = total
+        
+        request.state.model = req.model or (backend.model_name if hasattr(backend, "model_name") else None)
         
         # Include session_id in response
         result["session_id"] = session_id

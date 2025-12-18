@@ -58,7 +58,7 @@ def test_search(monkeypatch):
     # Avoid external dependencies by mocking retrieval + LLM completion.
     def mock_build(*_args, **_kwargs):
         candidates = [{"uri": "doc1.txt", "text": "This is a passage about artificial intelligence.", "score": 1.0}]
-        return ("context", ["doc1.txt"], candidates)
+        return ("context", ["doc1.txt"], candidates, 100)
 
     monkeypatch.setattr("src.core.rag_core._build_rag_context", mock_build)
     monkeypatch.setattr(
@@ -100,11 +100,11 @@ def test_grounded_answer(monkeypatch, temp_indexed_dir):
 
     monkeypatch.setattr(
         "src.core.rag_core._vector_search",
-        lambda *_args, **_kwargs: [{
+        lambda *_args, **_kwargs: ([{
             "uri": "ai_doc.txt",
             "text": "AI is artificial intelligence and widely used in software.",
             "score": 1.0,
-        }],
+        }], 0)
     )
     monkeypatch.setattr(
         "src.core.rag_core.completion",
@@ -162,7 +162,7 @@ def test_grounded_answer_with_config(monkeypatch):
     # Text must be long enough to pass _is_low_signal filter (>= 12 words)
     long_text = "This is a sample document content that is long enough to pass the low signal filter check in the grounded answer function."
     def mock_search(*args, **kwargs):
-        return [{"uri": "doc1.txt", "text": long_text, "score": 1.0}]
+        return [{"uri": "doc1.txt", "text": long_text, "score": 1.0}], 0
     monkeypatch.setattr("src.core.rag_core._vector_search", mock_search)
     
     # Call with config
