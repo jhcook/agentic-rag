@@ -20,6 +20,7 @@ def test_index_documents_tool(mock_backend):
         # Mock rglob to return a list of mock paths
         mock_file = MagicMock()
         mock_file.__str__.return_value = "test_file.txt"
+        mock_file.suffix = ".txt"
         mock_path.rglob.return_value = [mock_file]
         mock_resolve.return_value = mock_path
         

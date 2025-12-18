@@ -339,7 +339,7 @@ def index_documents_tool(path: str, glob: str = "**/*") -> Dict[str, Any]:
                     rejected.append(str(file_path))
                     logger.info("Skipping unsupported file type: %s", file_path)
                     continue
-                content = _extract_text_from_file(file_path)
+                content = extract_text_from_file(file_path)
                 if not content:
                     logger.warning("No text extracted from %s, skipping", file_path)
                     continue
@@ -422,7 +422,7 @@ def index_url_tool(
             return {"error": f"Unsupported file type: {suffix}", "indexed": 0, "uri": url, "rejected": [url]}
 
         # Pass URL directly as string to extract_text_from_file
-        content = _extract_text_from_file(url)
+        content = extract_text_from_file(url)
 
         if not content:
             logger.warning("No text extracted from URL %s", url)
